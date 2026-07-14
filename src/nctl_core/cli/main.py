@@ -13,10 +13,13 @@ from typing import Annotated, Optional
 import typer
 
 from nctl_core.config import Config, ConfigError
+from nctl_core.dnsmasq_render import build_dnsmasq_render, render_dnsmasq_conf_text, render_dnsmasq_summary_text
 from nctl_core.output import emit
 from nctl_core.status import build_status, render_status_text
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
+render_app = typer.Typer(help="Deterministic renders of desired state into consumer formats.")
+app.add_typer(render_app, name="render")
 
 
 @app.callback()
@@ -50,6 +53,30 @@ def status(config: ConfigOption = None, json_output: JsonOption = False) -> None
     cfg = _load_config(config)
     envelope = build_status(cfg)
     emit(envelope, json_output, render_status_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+OutOption = Annotated[
+    Optional[Path],
+    typer.Option("--out", help="Write the conf to this path instead of stdout (prints a summary instead)."),
+]
+RenderJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.render.dnsmasq.v1 envelope as JSON.")]
+
+
+@render_app.command("dnsmasq")
+def render_dnsmasq(config: ConfigOption = None, out: OutOption = None, json_output: RenderJsonOption = False) -> None:
+    """Render the dnsmasq conf from desired endpoints, IP ranges, and intent evaluations."""
+    cfg = _load_config(config)
+    envelope = build_dnsmasq_render(cfg)
+
+    if json_output:
+        print(envelope.to_json())
+    elif envelope.ok and out is not None:
+        out.write_text(envelope.data.conf)
+        print(render_dnsmasq_summary_text(envelope))
+    else:
+        print(render_dnsmasq_conf_text(envelope))
+
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
