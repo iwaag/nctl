@@ -1,0 +1,17 @@
+# Copy to nctl.toml at the pj-clusterintent repo root (git-ignored) and adjust.
+# Never put an API token in this file; use token_env or token_file.
+
+[nautobot]
+url = "http://localhost:8000"
+token_env = "NAUTOBOT_TOKEN"
+# token_file = "~/.config/nctl/nautobot_token"
+
+[inventory]
+dumps_dir = "/var/lib/nodeutils"
+
+[events]
+log_dir = "~/.local/state/nctl/events"
+
+[repo]
+# pj-clusterintent checkout, relative to this file's directory.
+root = "."

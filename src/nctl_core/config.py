@@ -1,0 +1,134 @@
+"""Configuration layer: locate, parse, and validate nctl.toml."""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+CONFIG_FILENAME = "nctl.toml"
+CONFIG_ENV_VAR = "NCTL_CONFIG"
+
+
+class ConfigError(Exception):
+    """Raised when nctl.toml cannot be found, parsed, or validated."""
+
+
+class ConfigNotFoundError(ConfigError):
+    pass
+
+
+class ConfigInvalidError(ConfigError):
+    pass
+
+
+class StrictModel(BaseModel):
+    # extra="forbid" also rejects an inline `token` key: credentials must come
+    # from token_env or token_file, never from nctl.toml itself.
+    model_config = ConfigDict(extra="forbid")
+
+
+class NautobotConfig(StrictModel):
+    url: str
+    token_env: str = "NAUTOBOT_TOKEN"
+    token_file: Path | None = None
+
+    def resolve_token(self) -> str | None:
+        """Return the API token from token_file or the token_env variable, if set."""
+        if self.token_file is not None:
+            path = self.token_file.expanduser()
+            if not path.is_file():
+                raise ConfigInvalidError(f"nautobot.token_file does not exist: {path}")
+            return path.read_text().strip()
+        return os.environ.get(self.token_env)
+
+
+class InventoryConfig(StrictModel):
+    dumps_dir: Path
+
+    def resolved_dumps_dir(self) -> Path:
+        return self.dumps_dir.expanduser()
+
+
+class EventsConfig(StrictModel):
+    log_dir: Path = Path("~/.local/state/nctl/events")
+
+    def resolved_log_dir(self) -> Path:
+        return self.log_dir.expanduser()
+
+
+class RepoConfig(StrictModel):
+    root: Path = Path(".")
+
+
+class Config(StrictModel):
+    nautobot: NautobotConfig
+    inventory: InventoryConfig
+    events: EventsConfig = EventsConfig()
+    repo: RepoConfig = RepoConfig()
+
+    # Where the config file was loaded from; relative paths resolve against its parent.
+    source_path: Path
+
+    def repo_root(self) -> Path:
+        root = self.repo.root.expanduser()
+        if not root.is_absolute():
+            root = (self.source_path.parent / root).resolve()
+        return root
+
+    @classmethod
+    def load(cls, explicit_path: Path | None = None, cwd: Path | None = None) -> "Config":
+        path = find_config(explicit_path, cwd=cwd)
+        try:
+            raw = tomllib.loads(path.read_text())
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ConfigInvalidError(f"cannot parse {path}: {exc}") from exc
+        try:
+            return cls.model_validate({**raw, "source_path": path})
+        except ValidationError as exc:
+            raise ConfigInvalidError(f"invalid config {path}: {exc}") from exc
+
+
+def find_config(explicit_path: Path | None = None, cwd: Path | None = None) -> Path:
+    """Resolve the config file location.
+
+    Order: explicit --config path > $NCTL_CONFIG > ./nctl.toml > nctl.toml at the
+    pj-clusterintent repo root (nearest ancestor whose .gitmodules mentions nctl).
+    """
+    if explicit_path is not None:
+        if not explicit_path.is_file():
+            raise ConfigNotFoundError(f"config file not found: {explicit_path}")
+        return explicit_path
+
+    env_path = os.environ.get(CONFIG_ENV_VAR)
+    if env_path:
+        path = Path(env_path).expanduser()
+        if not path.is_file():
+            raise ConfigNotFoundError(f"${CONFIG_ENV_VAR} points to a missing file: {path}")
+        return path
+
+    cwd = (cwd or Path.cwd()).resolve()
+    local = cwd / CONFIG_FILENAME
+    if local.is_file():
+        return local
+
+    root = find_repo_root(cwd)
+    if root is not None:
+        candidate = root / CONFIG_FILENAME
+        if candidate.is_file():
+            return candidate
+
+    raise ConfigNotFoundError(
+        f"no {CONFIG_FILENAME} found (searched --config, ${CONFIG_ENV_VAR}, {cwd}, and the repo root)"
+    )
+
+
+def find_repo_root(start: Path) -> Path | None:
+    """Walk up from `start` to the nearest directory whose .gitmodules registers nctl."""
+    for directory in [start, *start.parents]:
+        gitmodules = directory / ".gitmodules"
+        if gitmodules.is_file() and "nctl" in gitmodules.read_text():
+            return directory
+    return None
