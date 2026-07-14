@@ -13,6 +13,8 @@ from typing import Annotated, Optional
 import typer
 
 from nctl_core.config import Config, ConfigError
+from nctl_core.output import emit
+from nctl_core.status import build_status, render_status_text
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
 
@@ -39,16 +41,16 @@ def _load_config(config_path: Path | None) -> Config:
         raise typer.Exit(EXIT_USAGE)
 
 
+JsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.status.v1 envelope as JSON.")]
+
+
 @app.command()
-def status(config: ConfigOption = None) -> None:
-    """Show cluster tooling status (Phase 0 stub: config resolution only)."""
+def status(config: ConfigOption = None, json_output: JsonOption = False) -> None:
+    """Check Nautobot connectivity, nodeutils dumps freshness, and submodule state."""
     cfg = _load_config(config)
-    typer.echo(f"config:      {cfg.source_path}")
-    typer.echo(f"nautobot:    {cfg.nautobot.url}")
-    typer.echo(f"dumps dir:   {cfg.inventory.resolved_dumps_dir()}")
-    typer.echo(f"events dir:  {cfg.events.resolved_log_dir()}")
-    typer.echo(f"repo root:   {cfg.repo_root()}")
-    typer.echo("checks:      not implemented yet (Steps 0.3-0.6)")
+    envelope = build_status(cfg)
+    emit(envelope, json_output, render_status_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
 def main() -> None:
