@@ -89,7 +89,10 @@ def render_status_text(envelope: Envelope[StatusData]) -> str:
     mark = "✓" if nb.reachable and nb.authenticated else "✗"
     lines.append(f"{mark} nautobot   {nb.url}")
     if nb.reachable:
-        lines.append(f"    version: {nb.version}, authenticated: {nb.authenticated}, intent_catalog: {nb.intent_catalog}")
+        lines.append(
+            f"    version: {nb.version}, authenticated: {nb.authenticated}, "
+            f"intent_catalog: {nb.intent_catalog}, intent_graphql: {nb.intent_graphql}"
+        )
     else:
         lines.append("    unreachable")
 
@@ -132,6 +135,11 @@ def _check_nautobot(cfg: Config) -> tuple[NautobotInfo, EnvelopeError | None]:
     if not info.authenticated:
         return info, EnvelopeError(
             code="nautobot_unauthenticated", message=f"authentication failed against {cfg.nautobot.url}"
+        )
+    if info.intent_catalog and not info.intent_graphql:
+        return info, EnvelopeError(
+            code="intent_graphql_missing",
+            message=f"intent-catalog GraphQL types not found in the schema at {cfg.nautobot.url}",
         )
     return info, None
 

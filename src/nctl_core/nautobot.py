@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
-INTENT_CATALOG_PROBE_PATH = "/api/plugins/intent-catalog/nodes/"
+INTENT_GRAPHQL_TYPES = ("DesiredNodeType", "DesiredEndpointType")
 
 
 class NautobotError(Exception):
@@ -34,6 +34,7 @@ class NautobotInfo(BaseModel):
     version: str | None = None
     authenticated: bool = False
     intent_catalog: bool = False
+    intent_graphql: bool = False
 
 
 class NautobotClient:
@@ -75,8 +76,9 @@ class NautobotClient:
     def ping(self) -> NautobotInfo:
         """Reachability + auth + version (`/api/status/`) and intent-catalog presence.
 
-        Phase 0-EX1 replaces the intent-catalog REST probe with a GraphQL schema
-        introspection check once nintent registers its GraphQL types.
+        `intent_catalog` means "app installed" (from `/api/status/`'s `nautobot-apps`).
+        `intent_graphql` means "the intent GraphQL types are present in the schema",
+        checked via introspection rather than the old intent-catalog REST probe.
         """
         status_response = self._get("/api/status/")
         if status_response.status_code in (401, 403):
@@ -86,15 +88,27 @@ class NautobotClient:
         version = body.get("nautobot-version")
         intent_catalog_installed = "nautobot_intent_catalog" in (body.get("nautobot-apps") or {})
 
-        intent_catalog_reachable = False
+        intent_graphql = False
         if intent_catalog_installed:
-            probe = self._get(f"{INTENT_CATALOG_PROBE_PATH}?limit=1")
-            intent_catalog_reachable = probe.status_code == 200
+            intent_graphql = self._check_intent_graphql()
 
         return NautobotInfo(
             reachable=True,
             url=self.url,
             version=version,
             authenticated=True,
-            intent_catalog=intent_catalog_installed and intent_catalog_reachable,
+            intent_catalog=intent_catalog_installed,
+            intent_graphql=intent_graphql,
         )
+
+    def _check_intent_graphql(self) -> bool:
+        """Introspect for the intent-catalog GraphQL types nctl consumes in Phases 1-2."""
+        fields = " ".join(
+            f'{alias}: __type(name: "{type_name}") {{ name }}'
+            for alias, type_name in zip(("node", "endpoint"), INTENT_GRAPHQL_TYPES)
+        )
+        try:
+            data = self.graphql(f"{{ {fields} }}")
+        except NautobotError:
+            return False
+        return all(data.get(alias) is not None for alias in ("node", "endpoint"))

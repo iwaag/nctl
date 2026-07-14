@@ -160,6 +160,37 @@ def test_build_status_not_ok_when_nautobot_unauthenticated(tmp_path, monkeypatch
     assert any(e.code == "nautobot_unauthenticated" for e in envelope.errors)
 
 
+def test_build_status_not_ok_when_intent_graphql_missing(tmp_path, monkeypatch):
+    dumps_dir = make_dump_dir(tmp_path)
+    outer = make_repo_with_submodule(tmp_path)
+    cfg = make_config(tmp_path, dumps_dir, outer)
+
+    class GraphqlMissingClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def ping(self):
+            return NautobotInfo(
+                reachable=True,
+                url="http://nautobot.test",
+                version="3.1.3",
+                authenticated=True,
+                intent_catalog=True,
+                intent_graphql=False,
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("nctl_core.status.NautobotClient", GraphqlMissingClient)
+
+    envelope = build_status(cfg)
+    assert envelope.ok is False
+    assert envelope.data.nautobot.intent_catalog is True
+    assert envelope.data.nautobot.intent_graphql is False
+    assert any(e.code == "intent_graphql_missing" for e in envelope.errors)
+
+
 def test_build_status_ok_when_all_checks_pass(tmp_path, monkeypatch):
     dumps_dir = make_dump_dir(tmp_path)
     outer = make_repo_with_submodule(tmp_path)
@@ -170,7 +201,14 @@ def test_build_status_ok_when_all_checks_pass(tmp_path, monkeypatch):
             pass
 
         def ping(self):
-            return NautobotInfo(reachable=True, url="http://nautobot.test", version="3.1.3", authenticated=True, intent_catalog=True)
+            return NautobotInfo(
+                reachable=True,
+                url="http://nautobot.test",
+                version="3.1.3",
+                authenticated=True,
+                intent_catalog=True,
+                intent_graphql=True,
+            )
 
         def close(self):
             pass
@@ -186,7 +224,14 @@ def test_build_status_ok_when_all_checks_pass(tmp_path, monkeypatch):
     assert set(parsed.keys()) == {"schema", "generated_at", "ok", "data", "errors"}
     assert parsed["schema"] == "nctl.status.v1"
     assert set(parsed["data"].keys()) == {"operation_id", "nautobot", "dumps", "submodules"}
-    assert set(parsed["data"]["nautobot"].keys()) == {"reachable", "url", "version", "authenticated", "intent_catalog"}
+    assert set(parsed["data"]["nautobot"].keys()) == {
+        "reachable",
+        "url",
+        "version",
+        "authenticated",
+        "intent_catalog",
+        "intent_graphql",
+    }
     assert set(parsed["data"]["dumps"].keys()) == {"dir", "hosts", "errors"}
 
     # the event log file was actually written, cross-referenced by operation_id.

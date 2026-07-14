@@ -36,6 +36,9 @@ Nautobot still yields dump and submodule info, with `ok: false` and an entry in 
 - **Event logs**: long-running operations emit JSON Lines with an operation ID
   (spec: `docs/event-log.md`).
 - **Exit codes**: 0 ok / 1 command failure / 2 usage or config error.
+- **Reads vs writes**: reads go through Nautobot GraphQL (`NautobotClient.graphql()`, a single
+  unified client for both core DCIM/IPAM and `nintent`'s desired-state types); writes stay REST
+  (Nautobot GraphQL is read-only by design, and the intent-catalog ViewSets remain the write path).
 
 ## Development
 

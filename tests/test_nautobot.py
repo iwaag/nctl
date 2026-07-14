@@ -13,15 +13,18 @@ BASE_URL = "http://nautobot.test"
 
 
 @respx.mock
-def test_ping_ok_with_intent_catalog():
+def test_ping_ok_with_intent_catalog_graphql_present():
     respx.get(f"{BASE_URL}/api/status/").mock(
         return_value=httpx.Response(
             200,
-            json={"nautobot-version": "3.1.3", "nautobot-apps": {"nautobot_intent_catalog": "0.3.0"}},
+            json={"nautobot-version": "3.1.3", "nautobot-apps": {"nautobot_intent_catalog": "0.4.0"}},
         )
     )
-    respx.get(f"{BASE_URL}/api/plugins/intent-catalog/nodes/?limit=1").mock(
-        return_value=httpx.Response(200, json={"count": 0, "results": []})
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": {"node": {"name": "DesiredNodeType"}, "endpoint": {"name": "DesiredEndpointType"}}},
+        )
     )
     client = NautobotClient(BASE_URL, "tok")
     info = client.ping()
@@ -29,6 +32,41 @@ def test_ping_ok_with_intent_catalog():
     assert info.authenticated is True
     assert info.version == "3.1.3"
     assert info.intent_catalog is True
+    assert info.intent_graphql is True
+
+
+@respx.mock
+def test_ping_intent_catalog_installed_but_graphql_types_missing():
+    respx.get(f"{BASE_URL}/api/status/").mock(
+        return_value=httpx.Response(
+            200,
+            json={"nautobot-version": "3.1.3", "nautobot-apps": {"nautobot_intent_catalog": "0.3.0"}},
+        )
+    )
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        return_value=httpx.Response(200, json={"data": {"node": None, "endpoint": None}})
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    info = client.ping()
+    assert info.intent_catalog is True
+    assert info.intent_graphql is False
+
+
+@respx.mock
+def test_ping_intent_graphql_false_on_graphql_endpoint_error():
+    respx.get(f"{BASE_URL}/api/status/").mock(
+        return_value=httpx.Response(
+            200,
+            json={"nautobot-version": "3.1.3", "nautobot-apps": {"nautobot_intent_catalog": "0.4.0"}},
+        )
+    )
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        return_value=httpx.Response(200, json={"data": None, "errors": [{"message": "boom"}]})
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    info = client.ping()
+    assert info.intent_catalog is True
+    assert info.intent_graphql is False
 
 
 @respx.mock
@@ -39,6 +77,7 @@ def test_ping_without_intent_catalog_plugin():
     client = NautobotClient(BASE_URL, "tok")
     info = client.ping()
     assert info.intent_catalog is False
+    assert info.intent_graphql is False
 
 
 @respx.mock
