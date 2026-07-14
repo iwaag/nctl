@@ -93,6 +93,10 @@ dumps_dir = "{dumps_dir}"
 [events]
 log_dir = "{tmp_path / 'events'}"
 
+[ansible]
+playbook_dir = "{tmp_path / 'ansible_agdev'}"
+inventory = "inventories/generated/hosts_intent.yml"
+
 [repo]
 root = "{repo_root}"
 """

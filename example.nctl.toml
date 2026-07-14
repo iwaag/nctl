@@ -12,6 +12,12 @@ dumps_dir = "/var/lib/nodeutils"
 [events]
 log_dir = "~/.local/state/nctl/events"
 
+[ansible]
+# ansible_agdev checkout, relative to this file's directory.
+playbook_dir = "ansible_agdev"
+# Absolute paths are accepted; relative paths resolve inside playbook_dir.
+inventory = "inventories/generated/production.yml"
+
 [repo]
 # pj-clusterintent checkout, relative to this file's directory.
 root = "."

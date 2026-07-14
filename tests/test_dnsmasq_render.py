@@ -55,6 +55,10 @@ url = "{BASE_URL}"
 
 [inventory]
 dumps_dir = "{tmp_path / 'dumps'}"
+
+[ansible]
+playbook_dir = "{tmp_path / 'ansible_agdev'}"
+inventory = "inventories/generated/hosts_intent.yml"
 """
     )
     return Config.load(config_path)
@@ -86,6 +90,16 @@ def test_build_dnsmasq_render_empty_desired_state(tmp_path):
     assert envelope.ok is True
     assert envelope.data.summary["total_endpoints"] == 0
     assert envelope.data.dns_records == []
+
+
+@respx.mock
+def test_build_dnsmasq_render_embeds_operation_id_when_requested(tmp_path):
+    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=EMPTY_GRAPHQL_RESPONSE))
+    cfg = make_config(tmp_path)
+
+    envelope = build_dnsmasq_render(cfg, operation_id="01JTESTOPERATION00000000000")
+
+    assert "# operation_id: 01JTESTOPERATION00000000000" in envelope.data.conf
 
 
 def test_build_dnsmasq_render_degrades_on_nautobot_failure(tmp_path, monkeypatch):

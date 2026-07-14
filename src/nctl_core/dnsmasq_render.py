@@ -32,7 +32,7 @@ class DnsmasqRenderData(BaseModel):
     conf: str = ""
 
 
-def build_dnsmasq_render(cfg: Config) -> Envelope[DnsmasqRenderData]:
+def build_dnsmasq_render(cfg: Config, operation_id: str | None = None) -> Envelope[DnsmasqRenderData]:
     generated_at = datetime.now(timezone.utc).isoformat()
 
     try:
@@ -54,7 +54,7 @@ def build_dnsmasq_render(cfg: Config) -> Envelope[DnsmasqRenderData]:
         endpoint_evaluations=fetch.endpoint_evaluations,
         node_evaluations=fetch.node_evaluations,
     )
-    payload = dnsmasq_export_payload(export, generated_at=generated_at)
+    payload = dnsmasq_export_payload(export, generated_at=generated_at, operation_id=operation_id)
     data = DnsmasqRenderData(
         schema_version=payload["schema_version"],
         summary=payload["summary"],
@@ -62,7 +62,7 @@ def build_dnsmasq_render(cfg: Config) -> Envelope[DnsmasqRenderData]:
         dhcp_reservations=payload["dhcp_reservations"],
         dhcp_ranges=payload["dhcp_ranges"],
         skipped=payload["skipped"],
-        conf=render_dnsmasq_records_conf(export, generated_at=generated_at),
+        conf=render_dnsmasq_records_conf(export, generated_at=generated_at, operation_id=operation_id),
     )
     return Envelope.build(RENDER_DNSMASQ_SCHEMA, data, [])
 

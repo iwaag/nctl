@@ -16,6 +16,10 @@ url = "http://localhost:8000"
 
 [inventory]
 dumps_dir = "/var/lib/nodeutils"
+
+[ansible]
+playbook_dir = "ansible_agdev"
+inventory = "inventories/generated/hosts_intent.yml"
 """
 
 
@@ -82,6 +86,10 @@ def test_load_valid(tmp_path):
     assert cfg.nautobot.url == "http://localhost:8000"
     assert cfg.nautobot.token_env == "NAUTOBOT_TOKEN"
     assert cfg.inventory.dumps_dir == Path("/var/lib/nodeutils")
+    assert cfg.ansible.resolved_playbook_dir(tmp_path) == (tmp_path / "ansible_agdev").resolve()
+    assert cfg.ansible.resolved_inventory(tmp_path) == (
+        tmp_path / "ansible_agdev/inventories/generated/hosts_intent.yml"
+    ).resolve()
     assert cfg.repo_root() == tmp_path.resolve()
 
 
@@ -102,6 +110,19 @@ def test_load_rejects_missing_section(tmp_path):
     path = write_config(tmp_path, "[nautobot]\nurl = 'x'\n")
     with pytest.raises(ConfigInvalidError):
         Config.load(path)
+
+
+def test_load_rejects_unknown_ansible_key(tmp_path):
+    path = write_config(tmp_path, VALID.replace('playbook_dir = "ansible_agdev"', 'playbook_dir = "ansible_agdev"\nunknown = true'))
+    with pytest.raises(ConfigInvalidError, match="unknown"):
+        Config.load(path)
+
+
+def test_absolute_ansible_inventory_is_not_rebased(tmp_path):
+    absolute = tmp_path / "inventory.yml"
+    body = VALID.replace('inventory = "inventories/generated/hosts_intent.yml"', f'inventory = "{absolute}"')
+    cfg = Config.load(write_config(tmp_path, body))
+    assert cfg.ansible.resolved_inventory(tmp_path) == absolute
 
 
 def test_resolve_token_from_env(tmp_path, monkeypatch):

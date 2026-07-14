@@ -59,6 +59,23 @@ class EventsConfig(StrictModel):
         return self.log_dir.expanduser()
 
 
+class AnsibleConfig(StrictModel):
+    playbook_dir: Path
+    inventory: Path
+
+    def resolved_playbook_dir(self, config_dir: Path) -> Path:
+        path = self.playbook_dir.expanduser()
+        if not path.is_absolute():
+            path = config_dir / path
+        return path.resolve()
+
+    def resolved_inventory(self, config_dir: Path) -> Path:
+        path = self.inventory.expanduser()
+        if not path.is_absolute():
+            path = self.resolved_playbook_dir(config_dir) / path
+        return path.resolve()
+
+
 class RepoConfig(StrictModel):
     root: Path = Path(".")
 
@@ -67,6 +84,7 @@ class Config(StrictModel):
     nautobot: NautobotConfig
     inventory: InventoryConfig
     events: EventsConfig = EventsConfig()
+    ansible: AnsibleConfig
     repo: RepoConfig = RepoConfig()
 
     # Where the config file was loaded from; relative paths resolve against its parent.

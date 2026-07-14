@@ -56,3 +56,11 @@ See [`status.py`](../src/nctl_core/status.py) `StatusData` for the authoritative
 `nautobot`, `dumps`, and `submodules` each degrade independently: e.g. an unreachable Nautobot
 still yields real `dumps`/`submodules` data, with `ok: false` and a `nautobot_unreachable` entry
 in `errors`.
+
+## `nctl.apply.dnsmasq.v1`
+
+The apply envelope cross-references `data.operation_id`, `data.event_log_path`, and the staged
+`data.artifact_path`. It also records the resolved inventory, selected target hosts, render
+summary, execution mode (`dry-run` or `apply`), and the Ansible command's exit code, stdout,
+stderr, and parsed per-host recap. A dry-run that reports changed hosts is still successful when
+Ansible exits zero; the diff is the deliverable.

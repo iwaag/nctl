@@ -13,13 +13,16 @@ from typing import Annotated, Optional
 import typer
 
 from nctl_core.config import Config, ConfigError
+from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
 from nctl_core.dnsmasq_render import build_dnsmasq_render, render_dnsmasq_conf_text, render_dnsmasq_summary_text
 from nctl_core.output import emit
 from nctl_core.status import build_status, render_status_text
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
 render_app = typer.Typer(help="Deterministic renders of desired state into consumer formats.")
+apply_app = typer.Typer(help="Apply rendered desired state through deployment automation.")
 app.add_typer(render_app, name="render")
+app.add_typer(apply_app, name="apply")
 
 
 @app.callback()
@@ -77,6 +80,19 @@ def render_dnsmasq(config: ConfigOption = None, out: OutOption = None, json_outp
     else:
         print(render_dnsmasq_conf_text(envelope))
 
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+ApplyJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.apply.dnsmasq.v1 envelope as JSON.")]
+YesOption = Annotated[bool, typer.Option("--yes", help="Apply changes instead of running the default check+diff dry-run.")]
+
+
+@apply_app.command("dnsmasq")
+def apply_dnsmasq(config: ConfigOption = None, yes: YesOption = False, json_output: ApplyJsonOption = False) -> None:
+    """Render and deploy dnsmasq configuration; dry-run with diff unless --yes is set."""
+    cfg = _load_config(config)
+    envelope = build_dnsmasq_apply(cfg, apply_changes=yes)
+    emit(envelope, json_output, render_dnsmasq_apply_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 

@@ -38,6 +38,14 @@ One JSON object per line:
 Later phases add operation-specific events (e.g. `drift_resolved` for `reconcile`) within this
 same shape — the vocabulary is extensible per-op via `data`, not a closed enum.
 
+`apply dnsmasq` currently adds:
+
+- `rendered` — the operation-specific configuration artifact was written.
+- `dry_run_completed` — the default Ansible check+diff run exited successfully.
+- `apply_started` / `apply_completed` — bracket the real Ansible run selected by `--yes`.
+- `failed` — rendering, validation, inventory resolution, or Ansible execution failed; followed by
+  the final `finished` record with `ok: false`.
+
 ## API
 
 ```python
