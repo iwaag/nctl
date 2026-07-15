@@ -13,6 +13,7 @@ from typing import Annotated, Optional
 import typer
 
 from nctl_core.config import Config, ConfigError
+from nctl_core.dashboard_render import build_dashboard, render_dashboard_text
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
 from nctl_core.dnsmasq_render import build_dnsmasq_render, render_dnsmasq_conf_text, render_dnsmasq_summary_text
 from nctl_core.drift_render import build_drift, render_drift_text
@@ -77,6 +78,41 @@ def drift(config: ConfigOption = None, host: HostOption = None, service: Service
     cfg = _load_config(config)
     envelope = build_drift(cfg, host=host, service=service)
     emit(envelope, json_output, render_drift_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+DashboardJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.dashboard.v1 envelope as JSON.")]
+DashboardOutOption = Annotated[
+    Optional[Path],
+    typer.Option("--out", help="Write index.html + drift.json to this directory (default: [dashboard].out_dir)."),
+]
+DashboardFromOption = Annotated[
+    Optional[Path],
+    typer.Option("--from", help="Render a saved nctl.drift.v1 envelope instead of computing drift."),
+]
+NoPushOption = Annotated[
+    bool,
+    typer.Option("--no-push", help="Generate only; skip writing reconciliation statuses back to nintent."),
+]
+
+
+@app.command()
+def dashboard(
+    config: ConfigOption = None,
+    out: DashboardOutOption = None,
+    from_file: DashboardFromOption = None,
+    no_push: NoPushOption = False,
+    json_output: DashboardJsonOption = False,
+) -> None:
+    """Generate the static drift dashboard (index.html + drift.json) and push statuses to nintent.
+
+    This is the regeneration entry point: it computes a fresh cluster-wide
+    drift internally (`nctl drift` itself stays side-effect free). A failed
+    drift run still writes a page that shows the errors.
+    """
+    cfg = _load_config(config)
+    envelope = build_dashboard(cfg, out_dir=out, from_file=from_file, push=not no_push)
+    emit(envelope, json_output, render_dashboard_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 

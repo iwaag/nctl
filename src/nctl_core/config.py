@@ -80,12 +80,23 @@ class RepoConfig(StrictModel):
     root: Path = Path(".")
 
 
+class DashboardConfig(StrictModel):
+    out_dir: Path = Path("~/.local/state/nctl/dashboard")
+    # Where the out_dir is served on the LAN, if anywhere. Informational only:
+    # nctl never fetches it; it is surfaced in output and pushed into docs.
+    url: str | None = None
+
+    def resolved_out_dir(self) -> Path:
+        return self.out_dir.expanduser()
+
+
 class Config(StrictModel):
     nautobot: NautobotConfig
     inventory: InventoryConfig
     events: EventsConfig = EventsConfig()
     ansible: AnsibleConfig
     repo: RepoConfig = RepoConfig()
+    dashboard: DashboardConfig = DashboardConfig()
 
     # Where the config file was loaded from; relative paths resolve against its parent.
     source_path: Path

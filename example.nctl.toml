@@ -21,3 +21,10 @@ inventory = "inventories/generated/production.yml"
 [repo]
 # pj-clusterintent checkout, relative to this file's directory.
 root = "."
+
+[dashboard]
+# Where `nctl dashboard` writes index.html + drift.json.
+out_dir = "~/.local/state/nctl/dashboard"
+# Where that directory is served on the LAN, if anywhere (informational only;
+# surfaced in output and used as the nintent dashboard link target).
+# url = "http://example.lan/nctl-dashboard/"
