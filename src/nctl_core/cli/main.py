@@ -15,6 +15,7 @@ import typer
 from nctl_core.config import Config, ConfigError
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
 from nctl_core.dnsmasq_render import build_dnsmasq_render, render_dnsmasq_conf_text, render_dnsmasq_summary_text
+from nctl_core.drift_render import build_drift, render_drift_text
 from nctl_core.output import emit
 from nctl_core.production_render import (
     build_production_render,
@@ -62,6 +63,20 @@ def status(config: ConfigOption = None, json_output: JsonOption = False) -> None
     cfg = _load_config(config)
     envelope = build_status(cfg)
     emit(envelope, json_output, render_status_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+DriftJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.drift.v1 envelope as JSON.")]
+HostOption = Annotated[Optional[str], typer.Option("--host", help="Filter to a single node by slug.")]
+ServiceOption = Annotated[Optional[str], typer.Option("--service", help="Filter to a single service by name.")]
+
+
+@app.command()
+def drift(config: ConfigOption = None, host: HostOption = None, service: ServiceOption = None, json_output: DriftJsonOption = False) -> None:
+    """Compute desired-vs-actual drift across nodes and services (converged/drifting/converging/unknown)."""
+    cfg = _load_config(config)
+    envelope = build_drift(cfg, host=host, service=service)
+    emit(envelope, json_output, render_drift_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
