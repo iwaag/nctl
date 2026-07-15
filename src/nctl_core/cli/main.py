@@ -16,6 +16,12 @@ from nctl_core.config import Config, ConfigError
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
 from nctl_core.dnsmasq_render import build_dnsmasq_render, render_dnsmasq_conf_text, render_dnsmasq_summary_text
 from nctl_core.output import emit
+from nctl_core.production_render import (
+    build_production_render,
+    render_production_inventory_text,
+    render_production_summary_text,
+    write_production_artifacts,
+)
 from nctl_core.status import build_status, render_status_text
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
@@ -79,6 +85,51 @@ def render_dnsmasq(config: ConfigOption = None, out: OutOption = None, json_outp
         print(render_dnsmasq_summary_text(envelope))
     else:
         print(render_dnsmasq_conf_text(envelope))
+
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+ProductionOutOption = Annotated[
+    Optional[Path],
+    typer.Option(
+        "--out",
+        help=(
+            "Write production.yml + production.reports/<id>.json to this directory instead of "
+            "stdout. Pass the directory containing the configured ansible.inventory path to "
+            "regenerate it in place."
+        ),
+    ),
+]
+RenderProductionJsonOption = Annotated[
+    bool, typer.Option("--json", help="Print the nctl.render.production.v1 envelope as JSON.")
+]
+
+
+@render_app.command("production")
+def render_production(
+    config: ConfigOption = None, out: ProductionOutOption = None, json_output: RenderProductionJsonOption = False
+) -> None:
+    """Compose the production inventory from desired placements and actual facts.
+
+    Without `--out`, the inventory YAML goes to stdout (pipeable, matches
+    `render dnsmasq`). With `--out DIR`, writes `DIR/production.yml` and
+    `DIR/production.reports/<generation_id>.json` (validated with
+    `ansible-inventory --list` first) and prints a summary instead.
+    """
+    cfg = _load_config(config)
+    envelope = build_production_render(cfg)
+
+    if envelope.ok and out is not None:
+        write_error = write_production_artifacts(envelope, out)
+        if write_error is not None:
+            envelope = envelope.model_copy(update={"ok": False, "errors": [write_error]})
+
+    if json_output:
+        print(envelope.to_json())
+    elif envelope.ok and out is not None:
+        print(render_production_summary_text(envelope))
+    else:
+        print(render_production_inventory_text(envelope))
 
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
