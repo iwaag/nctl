@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nctl dashboard</title>
+<style>
+:root {
+  --green: #2e7d32;
+  --yellow: #f9a825;
+  --red: #c62828;
+  --gray: #757575;
+  --bg: #f6f7f8;
+  --panel: #ffffff;
+  --text: #1f2429;
+  --muted: #5f6a75;
+  --border: #d9dee3;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 1rem 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+header h1 { margin: 0; font-size: 1.15rem; }
+#generated-at { color: var(--muted); font-size: 0.85rem; }
+#summary { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-left: auto; }
+.chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.8rem;
+  background: var(--panel);
+}
+.chip.status-converged { border-color: var(--green); color: var(--green); }
+.chip.status-converging { border-color: var(--yellow); color: #8a6d00; }
+.chip.status-drifting { border-color: var(--red); color: var(--red); }
+.chip.status-unknown { border-color: var(--gray); color: var(--gray); }
+.chip.severity-error { color: var(--red); }
+.chip.severity-warning { color: #8a6d00; }
+.chip.severity-info { color: var(--muted); }
+main { padding: 1.25rem 1.5rem; max-width: 72rem; margin: 0 auto; }
+#errors {
+  border: 1px solid var(--red);
+  border-left-width: 6px;
+  background: #fdecec;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+#errors h2 { margin: 0 0 0.5rem; font-size: 1rem; color: var(--red); }
+.error-line { font-size: 0.9rem; overflow-wrap: anywhere; }
+.error-line code { color: var(--red); }
+#targets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: 0.9rem;
+  align-items: start;
+}
+.tile {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 6px solid var(--gray);
+  border-radius: 6px;
+}
+.tile.status-converged { border-left-color: var(--green); }
+.tile.status-converging { border-left-color: var(--yellow); }
+.tile.status-drifting { border-left-color: var(--red); }
+.tile.status-unknown { border-left-color: var(--gray); }
+.tile > summary {
+  cursor: pointer;
+  padding: 0.7rem 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  list-style-position: outside;
+}
+.tile-kind { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.tile-name { font-weight: 600; overflow-wrap: anywhere; }
+.tile-status { margin-left: auto; font-size: 0.85rem; }
+.tile.status-converged .tile-status { color: var(--green); }
+.tile.status-converging .tile-status { color: #8a6d00; }
+.tile.status-drifting .tile-status { color: var(--red); }
+.tile.status-unknown .tile-status { color: var(--gray); }
+.tile-count { color: var(--muted); font-size: 0.8rem; }
+.diffs { list-style: none; margin: 0; padding: 0 0.9rem 0.8rem; }
+.diff { border-top: 1px solid var(--border); padding: 0.6rem 0; }
+.diff-head { display: flex; align-items: baseline; gap: 0.5rem; }
+.badge {
+  border-radius: 3px;
+  padding: 0 0.35rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--gray);
+}
+.badge.severity-error { background: var(--red); }
+.badge.severity-warning { background: var(--yellow); color: #3d3000; }
+.badge.severity-info { background: var(--gray); }
+.diff-code { font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.diff-message { margin: 0.35rem 0; overflow-wrap: anywhere; }
+.evidence { font-size: 0.8rem; margin: 0.3rem 0; }
+.evidence-label { color: var(--muted); text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.05em; }
+.evidence pre {
+  margin: 0.15rem 0 0;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.diff-sources { font-size: 0.75rem; color: var(--muted); }
+.no-diffs { padding: 0 0.9rem 0.8rem; margin: 0; color: var(--muted); font-size: 0.85rem; }
+.empty { color: var(--muted); }
+footer {
+  padding: 1rem 1.5rem 2rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  color: var(--muted);
+  font-size: 0.85rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+.source-error { flex-basis: 100%; color: var(--red); overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <h1>nctl dashboard</h1>
+  <span id="generated-at"></span>
+  <div id="summary"></div>
+</header>
+<main>
+  <section id="errors" hidden></section>
+  <section id="targets"></section>
+</main>
+<footer id="sources"></footer>
+<script type="application/json" id="nctl-drift">__NCTL_DRIFT_JSON__</script>
+<script>
+(function () {
+  "use strict";
+  var STATUS_ORDER = ["converged", "converging", "drifting", "unknown"];
+  var KIND_ORDER = ["node", "service"];
+  var envelope = JSON.parse(document.getElementById("nctl-drift").textContent);
+  var data = envelope.data || {};
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function kindRank(kind) {
+    var index = KIND_ORDER.indexOf(kind);
+    return index === -1 ? KIND_ORDER.length : index;
+  }
+
+  function renderHeader() {
+    document.getElementById("generated-at").textContent =
+      "generated " + (data.generated_at || envelope.generated_at || "?");
+    var strip = document.getElementById("summary");
+    STATUS_ORDER.forEach(function (status) {
+      var count = (data.summary || {})[status] || 0;
+      strip.appendChild(el("span", "chip status-" + status, status + " " + count));
+    });
+    var severities = data.severity_summary || {};
+    ["error", "warning", "info"].forEach(function (severity) {
+      strip.appendChild(el("span", "chip severity-" + severity, severity + " " + (severities[severity] || 0)));
+    });
+  }
+
+  function renderErrors() {
+    if (envelope.ok) return;
+    var panel = document.getElementById("errors");
+    panel.hidden = false;
+    panel.appendChild(el("h2", null, "drift run failed — statuses below may be empty or stale"));
+    (envelope.errors || []).forEach(function (err) {
+      var line = el("div", "error-line");
+      line.appendChild(el("code", null, err.code));
+      line.appendChild(el("span", null, " " + err.message));
+      panel.appendChild(line);
+    });
+  }
+
+  function evidenceBlock(label, value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "object" && Object.keys(value).length === 0) return null;
+    var box = el("div", "evidence");
+    box.appendChild(el("span", "evidence-label", label));
+    box.appendChild(el("pre", null, JSON.stringify(value, null, 2)));
+    return box;
+  }
+
+  function renderDiff(diff) {
+    var item = el("li", "diff");
+    var head = el("div", "diff-head");
+    head.appendChild(el("span", "badge severity-" + diff.severity, diff.severity));
+    head.appendChild(el("code", "diff-code", diff.code));
+    item.appendChild(head);
+    item.appendChild(el("p", "diff-message", diff.message));
+    var desired = evidenceBlock("desired", diff.desired);
+    if (desired) item.appendChild(desired);
+    var actual = evidenceBlock("actual", diff.actual);
+    if (actual) item.appendChild(actual);
+    if (diff.sources && diff.sources.length) {
+      item.appendChild(el("div", "diff-sources", "sources: " + diff.sources.join(", ")));
+    }
+    return item;
+  }
+
+  function renderTile(targetStatus) {
+    var tile = el("details", "tile status-" + targetStatus.status);
+    var target = targetStatus.target || {};
+    var summary = el("summary");
+    summary.appendChild(el("span", "tile-kind", target.kind || "?"));
+    summary.appendChild(el("span", "tile-name", target.slug || target.name || target.id || "?"));
+    summary.appendChild(el("span", "tile-status", targetStatus.status));
+    summary.appendChild(el("span", "tile-count", targetStatus.diffs.length + " diff(s)"));
+    tile.appendChild(summary);
+    if (targetStatus.diffs.length) {
+      var list = el("ul", "diffs");
+      targetStatus.diffs.forEach(function (diff) { list.appendChild(renderDiff(diff)); });
+      tile.appendChild(list);
+    } else {
+      tile.appendChild(el("p", "no-diffs", "no diffs"));
+    }
+    return tile;
+  }
+
+  function renderTargets() {
+    var section = document.getElementById("targets");
+    var targets = (data.targets || []).slice();
+    // Stable sort: nodes first, then services, then any open-set kinds;
+    // engine order (already deterministic) is preserved within a kind.
+    targets.sort(function (a, b) { return kindRank(a.target.kind) - kindRank(b.target.kind); });
+    targets.forEach(function (targetStatus) { section.appendChild(renderTile(targetStatus)); });
+    if (!targets.length) section.appendChild(el("p", "empty", "no targets in this drift payload"));
+  }
+
+  function renderSources() {
+    var sources = data.sources || {};
+    var footer = document.getElementById("sources");
+    footer.appendChild(el("span", null, "fetched: " + (sources.fetched_at || "-")));
+    footer.appendChild(el("span", null, "observed dumps: " + (sources.observed_dump_count || 0)));
+    (sources.observed_errors || []).forEach(function (message) {
+      footer.appendChild(el("div", "source-error", message));
+    });
+  }
+
+  renderHeader();
+  renderErrors();
+  renderTargets();
+  renderSources();
+})();
+</script>
+</body>
+</html>
