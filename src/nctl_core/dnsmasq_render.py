@@ -4,6 +4,16 @@ No operation ID or event log here: per the roadmap's Phase 0 convention, those
 are reserved for long-running operations. Render is a single fast GraphQL round
 trip plus a pure computation — `nctl apply dnsmasq` (Step 6) is the long-running
 command that gets an operation ID and JSON Lines events.
+
+Phase 2 Step 4: fetches a full `SourceSnapshot` (desired + actual, via
+`sources.snapshot.build_source_snapshot`) instead of the old dnsmasq-only
+GraphQL query, and derives the DHCP-MAC evaluation inputs from it via
+`dnsmasq_query.dnsmasq_inputs_from_snapshot` (the ported `drift/evaluation.py`
+logic) instead of reading persisted `intent_evaluations`. This costs one extra
+GraphQL round trip (the actual-side query) that the old dnsmasq-only fetch
+didn't make; accepted because a single evaluation source library is worth
+more than saving one query, and `nctl render dnsmasq`'s output is provably
+unchanged (Parity Gate B in `p2/report4.md`).
 """
 
 from __future__ import annotations
@@ -15,9 +25,10 @@ from pydantic import BaseModel
 
 from nctl_core.config import Config, ConfigError
 from nctl_core.dnsmasq import dnsmasq_export_payload, export_dnsmasq_records, render_dnsmasq_records_conf
-from nctl_core.dnsmasq_query import fetch_dnsmasq_inputs
+from nctl_core.dnsmasq_query import dnsmasq_inputs_from_snapshot
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
+from nctl_core.sources.snapshot import build_source_snapshot
 
 RENDER_DNSMASQ_SCHEMA = "nctl.render.dnsmasq.v1"
 
@@ -42,11 +53,12 @@ def build_dnsmasq_render(cfg: Config, operation_id: str | None = None) -> Envelo
 
     client = NautobotClient(cfg.nautobot.url, token)
     try:
-        fetch = fetch_dnsmasq_inputs(client)
+        snapshot = build_source_snapshot(cfg, client)
     except NautobotError as exc:
         return _failed(EnvelopeError(code="nautobot_fetch_failed", message=str(exc)))
     finally:
         client.close()
+    fetch = dnsmasq_inputs_from_snapshot(snapshot)
 
     export = export_dnsmasq_records(
         fetch.endpoints,

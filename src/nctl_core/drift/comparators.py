@@ -21,6 +21,27 @@
   disagree by construction. A composition-wide `ContractError` (e.g. a
   placement referencing an unknown deployment profile) becomes one
   `kind="global"` diff rather than failing the whole drift run.
+- `node_intent_matching` / `endpoint_intent_matching` / `service_intent_matching`
+  (Phase 2 Step 4) — thin wrappers around the ported `evaluation.py` pure
+  functions (`evaluate_node_intent`/`evaluate_endpoint_intent`/
+  `evaluate_service_intent`, via `evaluation_snapshot.py`'s snapshot adapter):
+  each gap the evaluator produces becomes one `DiffRecord` whose `code` is the
+  gap's code unchanged and whose severity is derived from the gap's nintent
+  severity (`conflict`/`missing`/`unknown` -> `error`, `partial`/
+  `needs_review` -> `warning`) — see `_SEVERITY_BY_GAP_SEVERITY`. This
+  supersedes `node_existence`'s existence-only check with the real fuzzy
+  candidate-ranking nintent's Evaluate Jobs did; `node_existence` stays
+  registered too (not removed) because it is a strictly faster, narrower
+  check (dangling FK / policy-requires-realization) that a reader might want
+  independent of the heavier candidate-scoring pass, and removing it would
+  make `realized_device_missing`/`realized_vm_missing`/`no_realized_object`
+  indistinguishable from the fuzzy-matching codes in the diff stream.
+  `endpoint_intent_matching` and `service_intent_matching` are registered
+  under their own resource types (`"endpoint"`/`"service"`) for registry
+  bookkeeping only — `Target.kind` for an endpoint gap is still `"node"`
+  (attributed to the endpoint's owning desired node, matching the seeded
+  per-node targets in `engine.py`) since a desired endpoint has no
+  independent drift-status lifecycle of its own in the roadmap's vocabulary.
 """
 
 from __future__ import annotations
@@ -34,8 +55,18 @@ from nctl_core.sources.actual import ActualDevice
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .context import DriftContext
+from .evaluation import EvaluationResult
+from .evaluation_snapshot import evaluate_all_endpoints, evaluate_all_nodes, evaluate_all_services
 from .model import DiffRecord, Severity, Target
 from .registry import register
+
+_SEVERITY_BY_GAP_SEVERITY = {
+    "conflict": Severity.ERROR,
+    "missing": Severity.ERROR,
+    "unknown": Severity.ERROR,
+    "partial": Severity.WARNING,
+    "needs_review": Severity.WARNING,
+}
 
 # A canonical placeholder generation id/digest: production_policy discards the
 # composed inventory/report's generation-specific fields (only `skipped` and
@@ -192,5 +223,55 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
             ),
             desired={"expected_host_os": drift_entry.get("expected_host_os")},
             actual={"observed_host_os": drift_entry.get("observed_host_os")},
+            sources=["desired", "actual"],
+        )
+
+
+@register("node")
+def node_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    node_evaluations = evaluate_all_nodes(snapshot)
+    for node in snapshot.desired.nodes:
+        target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
+        yield from _gap_diffs(target, node_evaluations[node.id])
+
+
+@register("endpoint")
+def endpoint_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    node_evaluations = evaluate_all_nodes(snapshot)
+    endpoint_evaluations = evaluate_all_endpoints(snapshot, node_evaluations)
+    nodes_by_id = {node.id: node for node in snapshot.desired.nodes}
+    for endpoint in snapshot.desired.endpoints:
+        node = nodes_by_id.get(endpoint.node_id)
+        target = Target(
+            kind="node",
+            slug=node.slug if node is not None else None,
+            name=node.name if node is not None else None,
+            id=endpoint.node_id,
+        )
+        yield from _gap_diffs(target, endpoint_evaluations[endpoint.id])
+
+
+@register("service")
+def service_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    service_evaluations = evaluate_all_services(snapshot)
+    for service in snapshot.desired.services:
+        target = Target(kind="service", slug=service.slug, name=service.name, id=service.id)
+        yield from _gap_diffs(target, service_evaluations[service.id])
+
+
+def _gap_diffs(target: Target, evaluation: EvaluationResult) -> Iterator[DiffRecord]:
+    label = target.slug or target.name or target.id or "?"
+    for gap in evaluation.gap_summary.get("gaps", []):
+        code = gap["code"]
+        severity = _SEVERITY_BY_GAP_SEVERITY.get(gap.get("severity"), Severity.WARNING)
+        desired = {"expected": gap["expected"]} if "expected" in gap else {}
+        actual = {"actual": gap["actual"]} if "actual" in gap else {}
+        yield DiffRecord(
+            target=target,
+            code=code,
+            severity=severity,
+            message=f"{label}: {code}",
+            desired=desired,
+            actual=actual,
             sources=["desired", "actual"],
         )

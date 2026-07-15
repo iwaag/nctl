@@ -13,6 +13,13 @@ logic (Steps 2 and 4) expects. Free-form JSON fields (`config`,
 This is a superset of `dnsmasq_query.py`'s desired-side fetch (endpoints + IP
 ranges); Step 4 switches `render dnsmasq` onto this module instead of
 maintaining two desired-state queries.
+
+Step 4 addition: `desired_nodes.accepted_actual_types`/`expected_spec` and
+`desired_endpoints.realized_ip_address` are pinned here (empirically checked
+against the live dev Nautobot instance, 2026-07-15) because the ported
+`drift/evaluation.py` node/endpoint matching needs them — these are real
+JSONField/ForeignKey fields on the nintent models, not derived, so adding them
+here is a schema-completeness fix rather than new domain logic.
 """
 
 from __future__ import annotations
@@ -32,6 +39,8 @@ DESIRED_QUERY = """
     lifecycle
     node_type
     role
+    accepted_actual_types
+    expected_spec
     realized_device { id }
     realized_vm { id }
   }
@@ -48,6 +57,7 @@ DESIRED_QUERY = """
     port
     generate_dnsmasq
     dnsmasq_record_type
+    realized_ip_address { id }
     desired_node { id slug }
   }
   desired_ip_ranges {
@@ -133,6 +143,8 @@ class DesiredNode(BaseModel):
     lifecycle: str
     node_type: str
     role: str | None = None
+    accepted_actual_types: list[str] = []
+    expected_spec: dict[str, Any] = {}
     realized_device_id: str | None = None
     realized_vm_id: str | None = None
 
@@ -152,6 +164,7 @@ class DesiredEndpoint(BaseModel):
     port: int | None = None
     generate_dnsmasq: bool = False
     dnsmasq_record_type: str = "host_record"
+    realized_ip_address_id: str | None = None
 
 
 class DesiredIPRange(BaseModel):
@@ -254,6 +267,8 @@ def _build_node(row: dict[str, Any]) -> DesiredNode:
         lifecycle=_lower(row["lifecycle"]),
         node_type=_lower(row["node_type"]),
         role=row.get("role"),
+        accepted_actual_types=[_lower(item) for item in (row.get("accepted_actual_types") or [])],
+        expected_spec=row.get("expected_spec") or {},
         realized_device_id=realized_device["id"] if realized_device else None,
         realized_vm_id=realized_vm["id"] if realized_vm else None,
     )
@@ -261,6 +276,7 @@ def _build_node(row: dict[str, Any]) -> DesiredNode:
 
 def _build_endpoint(row: dict[str, Any]) -> DesiredEndpoint:
     node = row["desired_node"]
+    realized_ip_address = row.get("realized_ip_address")
     return DesiredEndpoint(
         id=row["id"],
         name=row["name"],
@@ -276,6 +292,7 @@ def _build_endpoint(row: dict[str, Any]) -> DesiredEndpoint:
         port=row.get("port"),
         generate_dnsmasq=bool(row.get("generate_dnsmasq")),
         dnsmasq_record_type=_lower(row.get("dnsmasq_record_type")) or "host_record",
+        realized_ip_address_id=realized_ip_address["id"] if realized_ip_address else None,
     )
 
 

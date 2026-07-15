@@ -79,6 +79,8 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
                         {
                             "id": "dev-1",
                             "name": "agpc",
+                            "serial": "SER123",
+                            "platform": {"name": "ubuntu"},
                             "_custom_field_data": {
                                 "host_system": "linux",
                                 "primary_mac_address": "aa:bb:cc:dd:ee:ff",
@@ -95,6 +97,7 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
                             "id": "iface-1",
                             "name": "eth0",
                             "mac_address": "aa:bb:cc:dd:ee:ff",
+                            "enabled": True,
                             "device": {"id": "dev-1"},
                         }
                     ],
@@ -103,6 +106,7 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
                             "id": "ip-1",
                             "host": "192.168.0.110",
                             "mask_length": 24,
+                            "dns_name": "agpc.example.test",
                             "interfaces": [{"id": "iface-1"}],
                         }
                     ],
@@ -116,16 +120,20 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
 
     device = snapshot.devices[0]
     assert device.name == "agpc"
+    assert device.serial == "SER123"
+    assert device.platform == "ubuntu"
     assert device.actual_facts().observed_system == "linux"
 
     assert snapshot.virtual_machines[0].name == "svc-1"
 
     interface = snapshot.interfaces[0]
     assert interface.mac_address == "aa:bb:cc:dd:ee:ff"
+    assert interface.enabled is True
     assert interface.device_id == "dev-1"
 
     ip_address = snapshot.ip_addresses[0]
     assert ip_address.host == "192.168.0.110"
+    assert ip_address.dns_name == "agpc.example.test"
     assert ip_address.interface_ids == ["iface-1"]
 
 

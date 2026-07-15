@@ -13,17 +13,43 @@ from nctl_core.nautobot import NautobotConnectionError
 
 BASE_URL = "http://nautobot.test"
 
-EMPTY_GRAPHQL_RESPONSE = {
+EMPTY_DESIRED_RESPONSE = {
     "data": {
+        "desired_nodes": [],
         "desired_endpoints": [],
         "desired_ip_ranges": [],
-        "endpoint_evaluations": [],
-        "node_evaluations": [],
+        "desired_node_operational_configs": [],
+        "desired_service_placements": [],
+        "desired_services": [],
+        "desired_dependencies": [],
     }
 }
 
-ONE_ENDPOINT_RESPONSE = {
+EMPTY_ACTUAL_RESPONSE = {
     "data": {
+        "devices": [],
+        "virtual_machines": [],
+        "interfaces": [],
+        "ip_addresses": [],
+    }
+}
+
+ONE_ENDPOINT_DESIRED_RESPONSE = {
+    "data": {
+        "desired_nodes": [
+            {
+                "id": "node-1",
+                "slug": "edge-1",
+                "name": "Edge 1",
+                "lifecycle": "ACTIVE",
+                "node_type": "DEVICE",
+                "role": None,
+                "accepted_actual_types": ["DEVICE"],
+                "expected_spec": {},
+                "realized_device": None,
+                "realized_vm": None,
+            }
+        ],
         "desired_endpoints": [
             {
                 "id": "endpoint-1",
@@ -34,14 +60,19 @@ ONE_ENDPOINT_RESPONSE = {
                 "dns_name": "edge-1.example.test",
                 "mdns_name": "edge-1.local",
                 "vpn_dns_name": None,
+                "protocol": None,
+                "port": None,
                 "generate_dnsmasq": True,
                 "dnsmasq_record_type": "HOST_RECORD",
-                "desired_node": {"id": "node-1", "name": "Edge 1", "slug": "edge-1", "lifecycle": "ACTIVE"},
+                "realized_ip_address": None,
+                "desired_node": {"id": "node-1", "slug": "edge-1"},
             }
         ],
         "desired_ip_ranges": [],
-        "endpoint_evaluations": [],
-        "node_evaluations": [],
+        "desired_node_operational_configs": [],
+        "desired_service_placements": [],
+        "desired_services": [],
+        "desired_dependencies": [],
     }
 }
 
@@ -64,9 +95,18 @@ inventory = "inventories/generated/hosts_intent.yml"
     return Config.load(config_path)
 
 
+def _mock_graphql(desired_response, actual_response=EMPTY_ACTUAL_RESPONSE):
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        side_effect=[
+            httpx.Response(200, json=desired_response),
+            httpx.Response(200, json=actual_response),
+        ]
+    )
+
+
 @respx.mock
 def test_build_dnsmasq_render_ok_with_one_endpoint(tmp_path):
-    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=ONE_ENDPOINT_RESPONSE))
+    _mock_graphql(ONE_ENDPOINT_DESIRED_RESPONSE)
     cfg = make_config(tmp_path)
 
     envelope = build_dnsmasq_render(cfg)
@@ -82,7 +122,7 @@ def test_build_dnsmasq_render_ok_with_one_endpoint(tmp_path):
 
 @respx.mock
 def test_build_dnsmasq_render_empty_desired_state(tmp_path):
-    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=EMPTY_GRAPHQL_RESPONSE))
+    _mock_graphql(EMPTY_DESIRED_RESPONSE)
     cfg = make_config(tmp_path)
 
     envelope = build_dnsmasq_render(cfg)
@@ -94,7 +134,7 @@ def test_build_dnsmasq_render_empty_desired_state(tmp_path):
 
 @respx.mock
 def test_build_dnsmasq_render_embeds_operation_id_when_requested(tmp_path):
-    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=EMPTY_GRAPHQL_RESPONSE))
+    _mock_graphql(EMPTY_DESIRED_RESPONSE)
     cfg = make_config(tmp_path)
 
     envelope = build_dnsmasq_render(cfg, operation_id="01JTESTOPERATION00000000000")
@@ -146,7 +186,7 @@ def test_render_dnsmasq_conf_text_returns_error_lines_when_not_ok(tmp_path, monk
 
 @respx.mock
 def test_render_dnsmasq_summary_text_reports_counts(tmp_path):
-    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=ONE_ENDPOINT_RESPONSE))
+    _mock_graphql(ONE_ENDPOINT_DESIRED_RESPONSE)
     cfg = make_config(tmp_path)
     envelope = build_dnsmasq_render(cfg)
 
@@ -157,7 +197,7 @@ def test_render_dnsmasq_summary_text_reports_counts(tmp_path):
 
 @respx.mock
 def test_envelope_json_round_trips_expected_keys(tmp_path):
-    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=ONE_ENDPOINT_RESPONSE))
+    _mock_graphql(ONE_ENDPOINT_DESIRED_RESPONSE)
     cfg = make_config(tmp_path)
     envelope = build_dnsmasq_render(cfg)
 

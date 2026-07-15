@@ -36,6 +36,8 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "lifecycle": "APPROVED",
                             "node_type": "DEVICE",
                             "role": None,
+                            "accepted_actual_types": ["DEVICE"],
+                            "expected_spec": {"serial": "SER123"},
                             "realized_device": {"id": "dev-1"},
                             "realized_vm": None,
                         }
@@ -54,6 +56,7 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "port": None,
                             "generate_dnsmasq": True,
                             "dnsmasq_record_type": "HOST_RECORD",
+                            "realized_ip_address": {"id": "ip-1"},
                             "desired_node": {"id": "node-1", "slug": "edge-1"},
                         }
                     ],
@@ -138,6 +141,8 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     node = snapshot.nodes[0]
     assert node.lifecycle == "approved"
     assert node.node_type == "device"
+    assert node.accepted_actual_types == ["device"]
+    assert node.expected_spec == {"serial": "SER123"}
     assert node.realized_device_id == "dev-1"
     assert node.realized_vm_id is None
 
@@ -146,6 +151,7 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert endpoint.ip_policy == "dhcp_reserved"
     assert endpoint.dnsmasq_record_type == "host_record"
     assert endpoint.node_slug == "edge-1"
+    assert endpoint.realized_ip_address_id == "ip-1"
 
     ip_range = snapshot.ip_ranges[0]
     assert ip_range.range_policy == "dhcp_dynamic_pool"

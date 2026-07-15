@@ -20,8 +20,13 @@ def make_snapshot(*, nodes=(), operational_configs=(), devices=(), observed=()) 
 
 
 def test_node_with_no_diffs_is_seeded_as_converged():
-    node = DesiredNode(id="n1", slug="agok", name="agok", lifecycle="active", node_type="device")
-    snapshot = make_snapshot(nodes=[node])
+    # Step 4's evaluation-port comparators (node_intent_matching) flag any
+    # unlinked node with no actual-node candidate as `missing_actual_node`,
+    # so a genuinely gap-free node needs a realized device that resolves
+    # cleanly (matching nintent's real Evaluate Node Intent Job behavior).
+    node = DesiredNode(id="n1", slug="agok", name="agok", lifecycle="active", node_type="device", realized_device_id="dev-1")
+    device = ActualDevice(id="dev-1", name="agok.local")
+    snapshot = make_snapshot(nodes=[node], devices=[device])
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00")
 
     result = compute_drift(snapshot, context)
@@ -48,9 +53,10 @@ def test_node_missing_realized_device_is_unknown():
 def test_multiple_nodes_sorted_and_summarized_independently():
     # Targets sort by (kind, id) — id is a node's primary identity, so this
     # asserts on id order (n1 before n2), not slug alphabetical order.
-    ok_node = DesiredNode(id="n1", slug="agok", name="agok", lifecycle="active", node_type="device")
+    ok_node = DesiredNode(id="n1", slug="agok", name="agok", lifecycle="active", node_type="device", realized_device_id="dev-1")
     bad_node = DesiredNode(id="n2", slug="agbad", name="agbad", lifecycle="active", node_type="device", realized_device_id="dev-gone")
-    snapshot = make_snapshot(nodes=[bad_node, ok_node])
+    device = ActualDevice(id="dev-1", name="agok.local")
+    snapshot = make_snapshot(nodes=[bad_node, ok_node], devices=[device])
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00")
 
     result = compute_drift(snapshot, context)

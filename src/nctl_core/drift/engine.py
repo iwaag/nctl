@@ -2,14 +2,17 @@
 over a `SourceSnapshot` and groups the resulting diff records into one
 `TargetStatus` per target.
 
-Every desired node is seeded into the result up front (with zero diffs, hence
-`converged`) so a node nobody flagged anything about still appears in
-`nctl.drift.v1`'s target list — the roadmap's "AI can read just that to
-explain the current state" only holds if silence means "nothing wrong", not
-"we forgot to report on it". Comparator-produced targets outside the desired-
-node set (a `kind="device"` ingest-lag diff for a dump with no matching
-desired node yet, or a `kind="global"` production contract error) are added
-as their own targets rather than dropped.
+Every desired node and desired service is seeded into the result up front
+(with zero diffs, hence `converged`) so a node or service nobody flagged
+anything about still appears in `nctl.drift.v1`'s target list — the
+roadmap's "AI can read just that to explain the current state" only holds if
+silence means "nothing wrong", not "we forgot to report on it". Service
+seeding is new in Step 4 (the `service_intent_matching` comparator is the
+first thing that can produce a `kind="service"` diff). Comparator-produced
+targets outside the desired-node/service sets (a `kind="device"` ingest-lag
+diff for a dump with no matching desired node yet, or a `kind="global"`
+production contract error) are added as their own targets rather than
+dropped.
 """
 
 from __future__ import annotations
@@ -57,6 +60,12 @@ def _group_by_target(
 
     for node in snapshot.desired.nodes:
         target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
+        key = _target_key(target)
+        grouped[key] = []
+        target_by_key[key] = target
+
+    for service in snapshot.desired.services:
+        target = Target(kind="service", slug=service.slug, name=service.name, id=service.id)
         key = _target_key(target)
         grouped[key] = []
         target_by_key[key] = target

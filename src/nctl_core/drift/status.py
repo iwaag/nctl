@@ -6,8 +6,9 @@ output as the single source of truth, so there is nothing to keep in sync.
 - `unknown` — an error-severity diff whose code means "we don't have reliable
   actual data" (no realized object, unsupported actual type, missing/stale/
   invalid actual data) rather than "the data disagrees". These are exactly
-  the skip reasons `production/composer.py::_host_actual_skip_reasons` and
-  the Step 3 `node_existence` comparator produce.
+  the skip reasons `production/composer.py::_host_actual_skip_reasons`, the
+  Step 3 `node_existence` comparator, and (Step 4) the ported evaluation
+  gap codes in `evaluation.NO_DATA_GAP_CODES` produce.
 - `drifting` — any other error-severity diff: we have actual data, and it
   disagrees with desired state (or a global contract violation).
 - `converging` — diffs exist, but an `nctl apply`/`reconcile` operation
@@ -23,6 +24,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from .evaluation import NO_DATA_GAP_CODES
 from .model import DiffRecord, Severity, Status
 from .operations import latest_operation_timestamp_for_target
 
@@ -39,6 +41,7 @@ UNKNOWN_CODES = frozenset(
         "nautobot_fetch_failed",
         "dump_parse_error",
     }
+    | NO_DATA_GAP_CODES
 )
 
 

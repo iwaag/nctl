@@ -1,91 +1,40 @@
-"""GraphQL fetch layer for the dnsmasq renderer (Phase 1 Step 2).
+"""Adapts a `SourceSnapshot` into `nctl_core.dnsmasq`'s plain-mapping input
+shape (Phase 1 Step 2; Phase 2 Step 4 MAC-source switch).
 
-Fetches desired endpoints, IP ranges, and intent evaluations in a single request
-and adapts the result into the plain-mapping shape `nctl_core.dnsmasq` expects.
+Originally this module fetched desired endpoints/IP ranges *and*
+`intent_evaluations` in one combined GraphQL query. Phase 2 Step 4 replaces
+the `intent_evaluations` half with the ported `drift/evaluation.py`
+computation over a `SourceSnapshot` (Decision 1 in `p2/plan.md`: the Evaluate
+Jobs and `IntentEvaluation` model are deleted in Step 6, so nothing should
+depend on reading them back). Evaluations are computed fresh on every render
+instead of read from a possibly-stale persisted row — there is exactly one
+evaluation per target now, so the old `latest_evaluations` reduction (which
+existed to pick the newest of possibly-many persisted rows for the same
+target) is gone too.
 
-Two things the live schema does that the ORM-based renderer never had to deal
-with:
-
-- Nautobot's GraphQL layer serializes ChoiceField values (`endpoint_type`,
-  `ip_policy`, `dnsmasq_record_type`, `lifecycle`, `range_policy`) as their
-  UPPERCASE enum *name*, not the lowercase value stored in the database and
-  used throughout `dnsmasq.py`'s vocabulary (`"primary"`, `"dhcp_reserved"`,
-  ...). This module lowercases them back on the way in. Free-form JSON fields
-  (`observed_facts`, `actual_refs`, ...) are untouched — they're `GenericScalar`,
-  not choice fields, and already round-trip in the DB's native case.
-- `intent_evaluations` accepts a `target_type` filter (confirmed against the
-  live schema: lowercase `"desired_endpoint"` / `"desired_node"` both filter
-  correctly despite the field echoing back as uppercase), so both evaluation
-  sets are fetched pre-split via query aliases instead of one fetch-and-split
-  client-side pass.
+`export_dnsmasq_records`'s input contract is unchanged: mapping-shaped
+endpoints/ip_ranges (with a `desired_node` sub-mapping carrying
+`id`/`name`/`slug`/`lifecycle`) and `{target_id: row}` evaluation mappings
+shaped like an `IntentEvaluation` GraphQL row
+(`observed_facts`/`deterministic_summary`/`actual_refs`). `dnsmasq.py` itself
+needed no changes — Parity Gate B in `p2/report4.md` proves byte-identical
+`render dnsmasq` output across the switch on live data.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from nctl_core.nautobot import NautobotClient
-
-ENDPOINT_TARGET_TYPE = "desired_endpoint"
-NODE_TARGET_TYPE = "desired_node"
-
-DNSMASQ_QUERY = """
-{
-  desired_endpoints {
-    id
-    name
-    endpoint_type
-    ip_address
-    ip_policy
-    dns_name
-    mdns_name
-    vpn_dns_name
-    generate_dnsmasq
-    dnsmasq_record_type
-    desired_node {
-      id
-      name
-      slug
-      lifecycle
-    }
-  }
-  desired_ip_ranges {
-    id
-    name
-    slug
-    start_address
-    end_address
-    range_policy
-    lifecycle
-    generate_dnsmasq
-    dnsmasq_options
-  }
-  endpoint_evaluations: intent_evaluations(target_type: "desired_endpoint") {
-    target_id
-    reviewed_at
-    created
-    observed_facts
-    deterministic_summary
-    actual_refs
-  }
-  node_evaluations: intent_evaluations(target_type: "desired_node") {
-    target_id
-    reviewed_at
-    created
-    observed_facts
-    deterministic_summary
-    actual_refs
-  }
-}
-"""
+from nctl_core.drift.evaluation_snapshot import evaluate_all_endpoints, evaluate_all_nodes
+from nctl_core.sources.desired import DesiredEndpoint, DesiredIPRange, DesiredNode
+from nctl_core.sources.snapshot import SourceSnapshot
 
 
 @dataclass(frozen=True)
 class DnsmasqFetch:
-    """Renderer-ready inputs: mappings with lowercased enum fields, evaluations
-    reduced to one row per target."""
+    """Renderer-ready inputs: mappings with lowercased enum fields, one fresh
+    evaluation per target."""
 
     endpoints: list[dict[str, Any]]
     ip_ranges: list[dict[str, Any]]
@@ -93,55 +42,48 @@ class DnsmasqFetch:
     node_evaluations: dict[str, dict[str, Any]]
 
 
-def fetch_dnsmasq_inputs(client: NautobotClient) -> DnsmasqFetch:
-    data = client.graphql(DNSMASQ_QUERY)
+def dnsmasq_inputs_from_snapshot(snapshot: SourceSnapshot) -> DnsmasqFetch:
+    nodes_by_id = {node.id: node for node in snapshot.desired.nodes}
+    node_evaluations = evaluate_all_nodes(snapshot)
+    endpoint_evaluations = evaluate_all_endpoints(snapshot, node_evaluations)
+
     return DnsmasqFetch(
-        endpoints=[_normalize_endpoint(row) for row in data["desired_endpoints"]],
-        ip_ranges=[_normalize_ip_range(row) for row in data["desired_ip_ranges"]],
-        endpoint_evaluations=latest_evaluations(data["endpoint_evaluations"]),
-        node_evaluations=latest_evaluations(data["node_evaluations"]),
+        endpoints=[_endpoint_mapping(endpoint, nodes_by_id.get(endpoint.node_id)) for endpoint in snapshot.desired.endpoints],
+        ip_ranges=[_ip_range_mapping(ip_range) for ip_range in snapshot.desired.ip_ranges],
+        endpoint_evaluations={target_id: evaluation.as_row() for target_id, evaluation in endpoint_evaluations.items()},
+        node_evaluations={target_id: evaluation.as_row() for target_id, evaluation in node_evaluations.items()},
     )
 
 
-def latest_evaluations(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Client-side equivalent of nintent's `_latest_evaluations`: group by
-    `target_id`, keep one row per target ordered by `-reviewed_at, -created`.
-
-    Ties (equal `reviewed_at` and `created`, or both null) fall back to input
-    order, same as a stable queryset iteration would for equal sort keys.
-    """
-    by_target: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        by_target[str(row["target_id"])].append(row)
-
-    latest: dict[str, dict[str, Any]] = {}
-    for target_id, group in by_target.items():
-        ranked = sorted(
-            enumerate(group),
-            key=lambda item: (item[1].get("reviewed_at") or "", item[1].get("created") or "", -item[0]),
-            reverse=True,
-        )
-        latest[target_id] = ranked[0][1]
-    return latest
+def _endpoint_mapping(endpoint: DesiredEndpoint, node: DesiredNode | None) -> dict[str, Any]:
+    return {
+        "id": endpoint.id,
+        "name": endpoint.name,
+        "endpoint_type": endpoint.endpoint_type,
+        "ip_address": endpoint.ip_address,
+        "ip_policy": endpoint.ip_policy,
+        "dns_name": endpoint.dns_name,
+        "mdns_name": endpoint.mdns_name,
+        "vpn_dns_name": endpoint.vpn_dns_name,
+        "generate_dnsmasq": endpoint.generate_dnsmasq,
+        "dnsmasq_record_type": endpoint.dnsmasq_record_type,
+        "desired_node": _node_mapping(node) if node is not None else {"id": endpoint.node_id, "slug": endpoint.node_slug},
+    }
 
 
-def _normalize_endpoint(raw: dict[str, Any]) -> dict[str, Any]:
-    endpoint = dict(raw)
-    endpoint["endpoint_type"] = _lower(endpoint.get("endpoint_type"))
-    endpoint["ip_policy"] = _lower(endpoint.get("ip_policy"))
-    endpoint["dnsmasq_record_type"] = _lower(endpoint.get("dnsmasq_record_type"))
-    node = endpoint.get("desired_node")
-    if isinstance(node, dict):
-        endpoint["desired_node"] = {**node, "lifecycle": _lower(node.get("lifecycle"))}
-    return endpoint
+def _node_mapping(node: DesiredNode) -> dict[str, Any]:
+    return {"id": node.id, "name": node.name, "slug": node.slug, "lifecycle": node.lifecycle}
 
 
-def _normalize_ip_range(raw: dict[str, Any]) -> dict[str, Any]:
-    ip_range = dict(raw)
-    ip_range["range_policy"] = _lower(ip_range.get("range_policy"))
-    ip_range["lifecycle"] = _lower(ip_range.get("lifecycle"))
-    return ip_range
-
-
-def _lower(value: Any) -> Any:
-    return value.lower() if isinstance(value, str) else value
+def _ip_range_mapping(ip_range: DesiredIPRange) -> dict[str, Any]:
+    return {
+        "id": ip_range.id,
+        "name": ip_range.name,
+        "slug": ip_range.slug,
+        "start_address": ip_range.start_address,
+        "end_address": ip_range.end_address,
+        "range_policy": ip_range.range_policy,
+        "lifecycle": ip_range.lifecycle,
+        "generate_dnsmasq": ip_range.generate_dnsmasq,
+        "dnsmasq_options": ip_range.dnsmasq_options,
+    }

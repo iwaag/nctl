@@ -15,6 +15,14 @@ Deviation from the ORM version, confirmed by introspecting the live schema
 therefore read from the raw `_custom_field_data` JSON instead, exactly as
 nintent's `_device_custom_fields` did — `read_actual_facts` already expects a
 plain mapping, so this needs no change to the ported function itself.
+
+Step 4 addition: `devices.serial`/`devices.platform`, `interfaces.enabled`,
+and `ip_addresses.dns_name` are pinned here (checked against the live schema,
+2026-07-15) because the ported `drift/evaluation.py` node/endpoint matching
+needs them — real Nautobot model fields nintent's ORM-based evaluator read
+directly (`Device.serial`, `Device.platform`, `Interface.enabled`,
+`IPAddress.dns_name`), not custom fields, so they were outside the original
+allowlisted-facts query.
 """
 
 from __future__ import annotations
@@ -31,6 +39,8 @@ ACTUAL_QUERY = """
   devices {
     id
     name
+    serial
+    platform { name }
     _custom_field_data
   }
   virtual_machines {
@@ -41,12 +51,14 @@ ACTUAL_QUERY = """
     id
     name
     mac_address
+    enabled
     device { id }
   }
   ip_addresses {
     id
     host
     mask_length
+    dns_name
     interfaces { id }
   }
 }
@@ -158,6 +170,8 @@ def missing_required_facts(facts: ActualFacts, consumers: Iterable[str]) -> list
 class ActualDevice(BaseModel):
     id: str
     name: str
+    serial: str | None = None
+    platform: str | None = None
     facts: dict[str, Any] = {}
 
     def actual_facts(self) -> ActualFacts:
@@ -173,6 +187,7 @@ class ActualInterface(BaseModel):
     id: str
     name: str
     mac_address: str | None = None
+    enabled: bool = True
     device_id: str | None = None
 
 
@@ -180,6 +195,7 @@ class ActualIPAddress(BaseModel):
     id: str
     host: str
     mask_length: int
+    dns_name: str | None = None
     interface_ids: list[str] = []
 
 
@@ -203,7 +219,14 @@ def fetch_actual_snapshot(client: NautobotClient) -> ActualSnapshot:
 
 
 def _build_device(row: dict[str, Any]) -> ActualDevice:
-    return ActualDevice(id=row["id"], name=row["name"], facts=row.get("_custom_field_data") or {})
+    platform = row.get("platform")
+    return ActualDevice(
+        id=row["id"],
+        name=row["name"],
+        serial=row.get("serial") or None,
+        platform=platform["name"] if platform else None,
+        facts=row.get("_custom_field_data") or {},
+    )
 
 
 def _build_interface(row: dict[str, Any]) -> ActualInterface:
@@ -212,6 +235,7 @@ def _build_interface(row: dict[str, Any]) -> ActualInterface:
         id=row["id"],
         name=row["name"],
         mac_address=row.get("mac_address"),
+        enabled=bool(row.get("enabled", True)),
         device_id=device["id"] if device else None,
     )
 
@@ -221,5 +245,6 @@ def _build_ip_address(row: dict[str, Any]) -> ActualIPAddress:
         id=row["id"],
         host=row["host"],
         mask_length=row["mask_length"],
+        dns_name=row.get("dns_name"),
         interface_ids=[iface["id"] for iface in row.get("interfaces") or []],
     )
