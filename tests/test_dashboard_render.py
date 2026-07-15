@@ -65,7 +65,7 @@ def test_build_dashboard_writes_artifacts_to_configured_out_dir(tmp_path, monkey
     drift_envelope = _ok_drift_envelope()
     monkeypatch.setattr(dashboard_render, "build_drift", lambda config: drift_envelope)
 
-    envelope = build_dashboard(cfg)
+    envelope = build_dashboard(cfg, push=False)
 
     assert envelope.ok
     html = (out_dir / HTML_FILENAME).read_text()
@@ -84,7 +84,7 @@ def test_build_dashboard_out_dir_argument_overrides_config(tmp_path, monkeypatch
     monkeypatch.setattr(dashboard_render, "build_drift", lambda config: _ok_drift_envelope())
     override = tmp_path / "elsewhere"
 
-    envelope = build_dashboard(cfg, out_dir=override)
+    envelope = build_dashboard(cfg, out_dir=override, push=False)
 
     assert envelope.ok
     assert (override / HTML_FILENAME).is_file()
@@ -99,7 +99,7 @@ def test_build_dashboard_from_file_skips_drift_computation(tmp_path, monkeypatch
     payload_path = tmp_path / "saved.json"
     payload_path.write_text(_ok_drift_envelope().to_json())
 
-    envelope = build_dashboard(cfg, from_file=payload_path)
+    envelope = build_dashboard(cfg, from_file=payload_path, push=False)
 
     assert envelope.ok
     assert envelope.data.summary == {"converged": 1}
@@ -146,7 +146,7 @@ def test_render_dashboard_text_ok(tmp_path, monkeypatch):
     cfg = make_config(tmp_path, f'[dashboard]\nout_dir = "{out_dir}"\nurl = "http://lan.test/dash/"')
     monkeypatch.setattr(dashboard_render, "build_drift", lambda config: _ok_drift_envelope())
 
-    text = render_dashboard_text(build_dashboard(cfg))
+    text = render_dashboard_text(build_dashboard(cfg, push=False))
 
     assert f"dashboard: {out_dir / HTML_FILENAME}" in text
     assert "served at: http://lan.test/dash/" in text

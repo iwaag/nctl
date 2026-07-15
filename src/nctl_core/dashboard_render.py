@@ -25,23 +25,16 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
-from nctl_core.config import Config
+from nctl_core.config import Config, ConfigError
 from nctl_core.dashboard.html import render_dashboard_html
+from nctl_core.dashboard.push import StatusPushData, push_statuses
 from nctl_core.drift_render import DRIFT_SCHEMA, DriftData, build_drift
+from nctl_core.nautobot import NautobotClient
 from nctl_core.output import Envelope, EnvelopeError
 
 DASHBOARD_SCHEMA = "nctl.dashboard.v1"
 HTML_FILENAME = "index.html"
 DRIFT_JSON_FILENAME = "drift.json"
-
-
-class StatusPushData(BaseModel):
-    pushed: bool = False
-    attempted: int = 0
-    updated: int = 0
-    skipped_no_row: int = 0
-    failed: int = 0
-    errors: list[str] = []
 
 
 class DashboardData(BaseModel):
@@ -87,8 +80,13 @@ def build_dashboard(
 
 
 def _push_statuses(cfg: Config, drift_envelope: Envelope[DriftData]) -> StatusPushData:
-    """Placeholder until Phase 3 Step 3 lands the REST write-back client."""
-    return StatusPushData()
+    try:
+        token = cfg.nautobot.resolve_token()
+    except ConfigError as exc:
+        return StatusPushData(errors=[f"nautobot_token_error: {exc}"])
+
+    with NautobotClient(cfg.nautobot.url, token) as client:
+        return push_statuses(client, drift_envelope.data)
 
 
 def _load_drift_envelope(path: Path) -> Envelope[DriftData] | EnvelopeError:

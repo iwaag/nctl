@@ -1,4 +1,6 @@
-"""Nautobot client: GraphQL for reads (Phase 1+), a couple of REST probes for `status`."""
+"""Nautobot client: GraphQL for reads (Phase 1+), a couple of REST probes for
+`status`, and REST writes (Phase 3+: the 0-EX1 split is reads = GraphQL,
+writes = REST)."""
 
 from __future__ import annotations
 
@@ -55,6 +57,18 @@ class NautobotClient:
     def _get(self, path: str) -> httpx.Response:
         try:
             return self._client.get(path)
+        except httpx.RequestError as exc:
+            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+
+    def rest_get(self, path: str, params: dict[str, Any] | None = None) -> httpx.Response:
+        try:
+            return self._client.get(path, params=params)
+        except httpx.RequestError as exc:
+            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+
+    def rest_patch(self, path: str, payload: dict[str, Any]) -> httpx.Response:
+        try:
+            return self._client.patch(path, json=payload)
         except httpx.RequestError as exc:
             raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
 
