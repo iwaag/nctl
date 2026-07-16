@@ -91,6 +91,9 @@ def test_load_valid(tmp_path):
         tmp_path / "ansible_agdev/inventories/generated/hosts_intent.yml"
     ).resolve()
     assert cfg.repo_root() == tmp_path.resolve()
+    assert cfg.reconcile.max_rounds == 3
+    assert cfg.reconcile.remote_report_path == Path("/var/lib/nodeutils/inventory.json")
+    assert cfg.reconcile.resolved_lock_path().is_absolute()
 
 
 def test_load_rejects_inline_token(tmp_path):
@@ -123,6 +126,17 @@ def test_absolute_ansible_inventory_is_not_rebased(tmp_path):
     body = VALID.replace('inventory = "inventories/generated/hosts_intent.yml"', f'inventory = "{absolute}"')
     cfg = Config.load(write_config(tmp_path, body))
     assert cfg.ansible.resolved_inventory(tmp_path) == absolute
+
+
+def test_reconcile_config_is_strict_and_bounded(tmp_path):
+    with pytest.raises(ConfigInvalidError, match="max_rounds"):
+        Config.load(write_config(tmp_path, VALID + "\n[reconcile]\nmax_rounds = 0\n"))
+
+    with pytest.raises(ConfigInvalidError, match="remote_report_path"):
+        Config.load(write_config(tmp_path, VALID + '\n[reconcile]\nremote_report_path = "relative.json"\n'))
+
+    with pytest.raises(ConfigInvalidError, match="unknown"):
+        Config.load(write_config(tmp_path, VALID + "\n[reconcile]\nunknown = true\n"))
 
 
 def test_resolve_token_from_env(tmp_path, monkeypatch):

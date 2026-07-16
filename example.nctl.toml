@@ -7,7 +7,7 @@ token_env = "NAUTOBOT_TOKEN"
 # token_file = "~/.config/nctl/nautobot_token"
 
 [inventory]
-dumps_dir = "/var/lib/nodeutils"
+dumps_dir = "~/.local/state/nctl/dumps"
 
 [events]
 log_dir = "~/.local/state/nctl/events"
@@ -21,6 +21,14 @@ inventory = "inventories/generated/production.yml"
 [repo]
 # pj-clusterintent checkout, relative to this file's directory.
 root = "."
+
+[reconcile]
+max_rounds = 3
+job_poll_interval_seconds = 2
+job_timeout_seconds = 300
+ansible_timeout_seconds = 1800
+remote_report_path = "/var/lib/nodeutils/inventory.json"
+lock_path = "~/.local/state/nctl/reconcile.lock"
 
 [dashboard]
 # Where `nctl dashboard` writes index.html + drift.json.

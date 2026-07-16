@@ -72,6 +72,18 @@ class NautobotClient:
         except httpx.RequestError as exc:
             raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
 
+    def rest_post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
+        try:
+            return self._client.post(path, json=payload)
+        except httpx.RequestError as exc:
+            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+
+    def rest_download(self, path: str) -> httpx.Response:
+        try:
+            return self._client.get(path, headers={"Accept": "*/*"})
+        except httpx.RequestError as exc:
+            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+
     def graphql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             response = self._client.post(

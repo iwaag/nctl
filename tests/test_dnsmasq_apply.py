@@ -72,14 +72,14 @@ def test_dry_run_renders_artifact_invokes_check_diff_and_emits_events(tmp_path, 
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
     monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
 
-    def fake_run(args, cwd):
+    def fake_run(args, cwd, timeout):
         calls.append((args, cwd))
         if args[0] == "ansible-inventory":
             return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload()), "")
         stdout = "PLAY RECAP ***\nagdnsmasq : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n"
         return subprocess.CompletedProcess(args, 0, stdout, "")
 
-    monkeypatch.setattr("nctl_core.dnsmasq_apply._run_command", fake_run)
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
     envelope = build_dnsmasq_apply(cfg)
 
@@ -102,12 +102,12 @@ def test_yes_runs_real_apply_without_check_flags(tmp_path, monkeypatch):
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
     monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
 
-    def fake_run(args, cwd):
+    def fake_run(args, cwd, timeout):
         calls.append(args)
         stdout = json.dumps(_inventory_payload()) if args[0] == "ansible-inventory" else "agdnsmasq : ok=3 changed=1 unreachable=0 failed=0\n"
         return subprocess.CompletedProcess(args, 0, stdout, "")
 
-    monkeypatch.setattr("nctl_core.dnsmasq_apply._run_command", fake_run)
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
     envelope = build_dnsmasq_apply(cfg, apply_changes=True)
 
@@ -124,8 +124,8 @@ def test_empty_dnsmasq_group_is_a_pointed_failure(tmp_path, monkeypatch):
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
     monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
-        "nctl_core.dnsmasq_apply._run_command",
-        lambda args, cwd: subprocess.CompletedProcess(args, 0, json.dumps({"ssh_hosts": {"hosts": ["agpc"]}}), ""),
+        "nctl_core.ansible._run_command",
+        lambda args, cwd, timeout: subprocess.CompletedProcess(args, 0, json.dumps({"ssh_hosts": {"hosts": ["agpc"]}}), ""),
     )
 
     envelope = build_dnsmasq_apply(cfg)
@@ -153,7 +153,7 @@ def test_ansible_failure_is_returned_with_exit_code_and_recap(tmp_path, monkeypa
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
     monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
 
-    def fake_run(args, cwd):
+    def fake_run(args, cwd, timeout):
         if args[0] == "ansible-inventory":
             return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload()), "")
         return subprocess.CompletedProcess(
@@ -163,7 +163,7 @@ def test_ansible_failure_is_returned_with_exit_code_and_recap(tmp_path, monkeypa
             "unreachable",
         )
 
-    monkeypatch.setattr("nctl_core.dnsmasq_apply._run_command", fake_run)
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
     envelope = build_dnsmasq_apply(cfg)
 

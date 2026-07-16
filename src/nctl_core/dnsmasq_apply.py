@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-import json
-import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from nctl_core.ansible import (
+    AnsibleRunResult,
+    AnsibleRunner,
+    inventory_group_hosts,
+    load_inventory,
+    parse_recap,
+)
+from nctl_core.artifacts import ArtifactError, OperationArtifacts
 from nctl_core.config import Config
 from nctl_core.dnsmasq_render import build_dnsmasq_render
 from nctl_core.events import OperationLog
@@ -19,15 +24,6 @@ from nctl_core.output import Envelope, EnvelopeError
 APPLY_DNSMASQ_SCHEMA = "nctl.apply.dnsmasq.v1"
 DEPLOY_PLAYBOOK = Path("playbooks/dnsmasq/deploy_dnsmasq_records.yml")
 TARGET_GROUP = "dnsmasq_server"
-
-
-class AnsibleRunResult(BaseModel):
-    mode: str
-    command: list[str] = Field(default_factory=list)
-    exit_code: int
-    stdout: str = ""
-    stderr: str = ""
-    recap: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class DnsmasqApplyData(BaseModel):
@@ -52,21 +48,27 @@ def build_dnsmasq_apply(cfg: Config, apply_changes: bool = False) -> Envelope[Dn
         event_log_path=str(op.path),
     )
 
+    try:
+        artifacts = OperationArtifacts.create(cfg.events.resolved_log_dir(), op.operation_id)
+    except ArtifactError as exc:
+        return _failure(
+            op,
+            data,
+            [EnvelopeError(code="artifact_write_failed", message=str(exc))],
+            "operation artifact directory is not writable",
+        )
+
     render = build_dnsmasq_render(cfg, operation_id=op.operation_id)
     if not render.ok:
         return _failure(op, data, render.errors, "dnsmasq render failed")
 
-    artifact_path = (
-        cfg.events.resolved_log_dir() / op.operation_id / "artifacts" / "dnsmasq-records.conf"
-    )
     try:
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        artifact_path.write_text(render.data.conf)
-    except OSError as exc:
+        artifact_path = artifacts.write_text("artifacts/dnsmasq-records.conf", render.data.conf)
+    except ArtifactError as exc:
         return _failure(
             op,
             data,
-            [EnvelopeError(code="artifact_write_failed", message=f"cannot write {artifact_path}: {exc}")],
+            [EnvelopeError(code="artifact_write_failed", message=str(exc))],
             "dnsmasq artifact write failed",
         )
 
@@ -82,7 +84,7 @@ def build_dnsmasq_apply(cfg: Config, apply_changes: bool = False) -> Envelope[Dn
     if inventory_error is not None:
         return _failure(op, data, [inventory_error], inventory_error.message)
 
-    target_hosts = sorted(_inventory_group_hosts(inventory_result, TARGET_GROUP))
+    target_hosts = sorted(inventory_group_hosts(inventory_result, TARGET_GROUP))
     data.target_hosts = target_hosts
     if not target_hosts:
         error = EnvelopeError(
@@ -110,10 +112,26 @@ def build_dnsmasq_apply(cfg: Config, apply_changes: bool = False) -> Envelope[Dn
     if apply_changes:
         op.emit("apply_started", "dnsmasq apply started", target_hosts=target_hosts)
 
-    result, run_error = _run_ansible(args, playbook_dir, mode)
+    runner = AnsibleRunner(
+        playbook_dir,
+        timeout_seconds=cfg.reconcile.ansible_timeout_seconds,
+        artifacts=artifacts,
+    )
+    result = runner.run(args, mode=mode, artifact_stem="ansible/dnsmasq")
     data.ansible = result
-    if run_error is not None:
-        return _failure(op, data, [run_error], run_error.message)
+    if result.exit_code != 0:
+        code = "ansible_apply_failed" if mode == "apply" else "ansible_dry_run_failed"
+        message = (
+            f"ansible-playbook {mode} timed out after {cfg.reconcile.ansible_timeout_seconds} seconds"
+            if result.timed_out
+            else f"ansible-playbook {mode} exited with code {result.exit_code}"
+        )
+        error = EnvelopeError(
+            code=code,
+            message=message,
+            detail={"exit_code": result.exit_code, "recap": result.recap, "timed_out": result.timed_out},
+        )
+        return _failure(op, data, [error], error.message)
 
     if apply_changes:
         op.emit("apply_completed", "dnsmasq apply completed", exit_code=result.exit_code, recap=result.recap)
@@ -177,104 +195,24 @@ def _validate_paths(cfg: Config, data: DnsmasqApplyData) -> EnvelopeError | None
 def _load_inventory(cfg: Config) -> tuple[dict[str, Any], EnvelopeError | None]:
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
-    try:
-        completed = _run_command(["ansible-inventory", "-i", str(inventory), "--list"], playbook_dir)
-    except OSError as exc:
-        return {}, EnvelopeError(code="ansible_inventory_failed", message=f"cannot run ansible-inventory: {exc}")
-    if completed.returncode != 0:
-        return {}, EnvelopeError(
-            code="ansible_inventory_failed",
-            message=f"ansible-inventory failed with exit code {completed.returncode}: {completed.stderr.strip()}",
-        )
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        return {}, EnvelopeError(code="ansible_inventory_invalid", message=f"ansible-inventory returned invalid JSON: {exc}")
-    if not isinstance(payload, dict):
-        return {}, EnvelopeError(code="ansible_inventory_invalid", message="ansible-inventory JSON root is not an object")
-    return payload, None
-
-
-def _inventory_group_hosts(payload: dict[str, Any], group: str) -> set[str]:
-    seen: set[str] = set()
-
-    def visit(name: str) -> set[str]:
-        if name in seen:
-            return set()
-        seen.add(name)
-        value = payload.get(name)
-        if not isinstance(value, dict):
-            return set()
-        hosts_value = value.get("hosts", [])
-        if isinstance(hosts_value, list):
-            hosts = set(hosts_value)
-        elif isinstance(hosts_value, dict):
-            hosts = set(hosts_value)
-        else:
-            hosts = set()
-        children = value.get("children", [])
-        if isinstance(children, list):
-            child_names = children
-        elif isinstance(children, dict):
-            child_names = list(children)
-        else:
-            child_names = []
-        for child in child_names:
-            hosts.update(visit(str(child)))
-        return {str(host) for host in hosts}
-
-    return visit(group)
-
-
-def _run_ansible(
-    args: list[str],
-    cwd: Path,
-    mode: str,
-) -> tuple[AnsibleRunResult, EnvelopeError | None]:
-    try:
-        completed = _run_command(args, cwd)
-    except OSError as exc:
-        result = AnsibleRunResult(mode=mode, command=args, exit_code=1, stderr=str(exc))
-        return result, EnvelopeError(code="ansible_run_failed", message=f"cannot run ansible-playbook: {exc}")
-
-    result = AnsibleRunResult(
-        mode=mode,
-        command=args,
-        exit_code=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        recap=_parse_recap(completed.stdout),
+    payload, error = load_inventory(
+        inventory,
+        playbook_dir,
+        timeout_seconds=cfg.reconcile.ansible_timeout_seconds,
     )
-    if completed.returncode != 0:
-        code = "ansible_apply_failed" if mode == "apply" else "ansible_dry_run_failed"
-        return result, EnvelopeError(
-            code=code,
-            message=f"ansible-playbook {mode} exited with code {completed.returncode}",
-            detail={"exit_code": completed.returncode, "recap": result.recap},
-        )
-    return result, None
+    if error is None:
+        return payload, None
+    code = (
+        "ansible_inventory_invalid"
+        if "invalid JSON" in error or "JSON root" in error
+        else "ansible_inventory_failed"
+    )
+    return {}, EnvelopeError(code=code, message=error)
 
 
-def _run_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
-
-
-def _parse_recap(stdout: str) -> dict[str, dict[str, int]]:
-    recap: dict[str, dict[str, int]] = {}
-    for line in stdout.splitlines():
-        match = re.match(r"^(\S+)\s*:\s*(.*)$", line.strip())
-        if not match:
-            continue
-        counts = {
-            key: int(value)
-            for key, value in re.findall(
-                r"(ok|changed|unreachable|failed|skipped|rescued|ignored)=(\d+)",
-                match.group(2),
-            )
-        }
-        if counts:
-            recap[match.group(1)] = counts
-    return recap
+# Compatibility aliases for callers/tests that used the pre-Step-1 private names.
+_inventory_group_hosts = inventory_group_hosts
+_parse_recap = parse_recap
 
 
 def _failure(

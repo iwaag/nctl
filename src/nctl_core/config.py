@@ -6,7 +6,7 @@ import os
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 CONFIG_FILENAME = "nctl.toml"
 CONFIG_ENV_VAR = "NCTL_CONFIG"
@@ -46,7 +46,7 @@ class NautobotConfig(StrictModel):
 
 
 class InventoryConfig(StrictModel):
-    dumps_dir: Path
+    dumps_dir: Path = Path("~/.local/state/nctl/dumps")
 
     def resolved_dumps_dir(self) -> Path:
         return self.dumps_dir.expanduser()
@@ -90,6 +90,25 @@ class DashboardConfig(StrictModel):
         return self.out_dir.expanduser()
 
 
+class ReconcileConfig(StrictModel):
+    max_rounds: int = Field(default=3, ge=1, le=10)
+    job_poll_interval_seconds: float = Field(default=2.0, gt=0, le=60)
+    job_timeout_seconds: float = Field(default=300.0, gt=0, le=86400)
+    ansible_timeout_seconds: float = Field(default=1800.0, gt=0, le=86400)
+    remote_report_path: Path = Path("/var/lib/nodeutils/inventory.json")
+    lock_path: Path = Path("~/.local/state/nctl/reconcile.lock")
+
+    @field_validator("remote_report_path")
+    @classmethod
+    def remote_report_path_must_be_absolute(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("remote_report_path must be absolute")
+        return value
+
+    def resolved_lock_path(self) -> Path:
+        return self.lock_path.expanduser()
+
+
 class Config(StrictModel):
     nautobot: NautobotConfig
     inventory: InventoryConfig
@@ -97,6 +116,7 @@ class Config(StrictModel):
     ansible: AnsibleConfig
     repo: RepoConfig = RepoConfig()
     dashboard: DashboardConfig = DashboardConfig()
+    reconcile: ReconcileConfig = ReconcileConfig()
 
     # Where the config file was loaded from; relative paths resolve against its parent.
     source_path: Path
