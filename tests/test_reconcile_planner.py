@@ -1,0 +1,354 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from nctl_core.drift.model import DiffRecord, Severity, Target
+from nctl_core.reconcile.classify import UnclassifiedDiffCodeError
+from nctl_core.reconcile.fingerprint import compute_drift_fingerprint
+from nctl_core.reconcile.planner import HostScopeError, build_plan, select_scoped_diffs
+from nctl_core.reconcile.model import PlanScope
+from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
+from nctl_core.sources.actual import ActualDevice, ActualSnapshot
+from nctl_core.sources.desired import DesiredNode, DesiredService, DesiredServicePlacement, DesiredSnapshot
+from nctl_core.sources.snapshot import SourceSnapshot
+
+
+def _node(node_id: str, slug: str, *, realized_device_id: str | None = None) -> DesiredNode:
+    return DesiredNode(
+        id=node_id,
+        slug=slug,
+        name=slug,
+        lifecycle="active",
+        node_type="device",
+        accepted_actual_types=["device"],
+        realized_device_id=realized_device_id,
+    )
+
+
+def _service(service_id: str, slug: str) -> DesiredService:
+    return DesiredService(
+        id=service_id,
+        slug=slug,
+        name=slug,
+        display_name=slug,
+        service_type="daemon",
+        lifecycle="active",
+        catalog_namespace="ns",
+        catalog_metadata_name=slug,
+    )
+
+
+def _placement(
+    placement_id: str, *, service_id: str, node_id: str, deployment_profile: str
+) -> DesiredServicePlacement:
+    return DesiredServicePlacement(
+        id=placement_id,
+        service_id=service_id,
+        node_id=node_id,
+        instance_name=f"{deployment_profile}-{node_id}",
+        deployment_profile=deployment_profile,
+        config_schema_version="1",
+    )
+
+
+def _snapshot(*, nodes=(), devices=(), services=(), placements=()) -> SourceSnapshot:
+    return SourceSnapshot(
+        desired=DesiredSnapshot(nodes=list(nodes), services=list(services), placements=list(placements)),
+        actual=ActualSnapshot(devices=list(devices)),
+        fetched_at=datetime.now(timezone.utc),
+    )
+
+
+def _node_diff(node: DesiredNode, code: str, severity: Severity = Severity.ERROR) -> DiffRecord:
+    return DiffRecord(
+        target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
+        code=code,
+        severity=severity,
+        message=f"{node.slug}: {code}",
+    )
+
+
+def _service_diff(service: DesiredService, code: str, severity: Severity = Severity.ERROR) -> DiffRecord:
+    return DiffRecord(
+        target=Target(kind="service", slug=service.slug, name=service.name, id=service.id),
+        code=code,
+        severity=severity,
+        message=f"{service.slug}: {code}",
+    )
+
+
+def _global_diff(code: str) -> DiffRecord:
+    return DiffRecord(target=Target(kind="global"), code=code, severity=Severity.ERROR, message=code)
+
+
+CLUSTER = PlanScope(kind="cluster")
+
+
+def _build(snapshot, diffs, scope=CLUSTER, profile_reconciliation=None):
+    return build_plan(
+        snapshot=snapshot,
+        diffs=diffs,
+        scope=scope,
+        drift_generated_at="2026-07-17T00:00:00+00:00",
+        profile_reconciliation=profile_reconciliation or {},
+    )
+
+
+# --- scope selection -------------------------------------------------------
+
+
+def test_select_scoped_diffs_host_scope_filters_correctly():
+    web = _node("n1", "agweb")
+    db = _node("n2", "agdb")
+    svc = _service("s1", "nginx")
+    placement = _placement("p1", service_id="s1", node_id="n1", deployment_profile="nginx")
+    snapshot = _snapshot(nodes=[web, db], services=[svc], placements=[placement])
+
+    diffs = [
+        _global_diff("unknown_profile"),
+        _node_diff(web, "actual_node_not_linked"),
+        _node_diff(db, "actual_node_not_linked"),
+        _service_diff(svc, "service_not_running"),
+    ]
+
+    scoped = select_scoped_diffs(diffs, PlanScope(kind="host", host_slug="agweb"), snapshot)
+
+    codes_by_target = {(d.target.kind, d.target.slug): d.code for d in scoped}
+    assert ("global", None) in codes_by_target
+    assert ("node", "agweb") in codes_by_target
+    assert ("node", "agdb") not in codes_by_target
+    assert ("service", "nginx") in codes_by_target  # placed on agweb
+
+
+def test_select_scoped_diffs_unknown_host_raises():
+    snapshot = _snapshot(nodes=[_node("n1", "agweb")])
+    with pytest.raises(HostScopeError):
+        select_scoped_diffs([], PlanScope(kind="host", host_slug="ghost"), snapshot)
+
+
+# --- link_actual_node / reconcile_ipam -------------------------------------
+
+
+def test_link_actual_node_builds_ledger_patch_action_with_candidate():
+    node = _node("n1", "agweb")
+    device = ActualDevice(id="dev-1", name="agweb")
+    snapshot = _snapshot(nodes=[node], devices=[device])
+    diffs = [_node_diff(node, "actual_node_not_linked")]
+
+    plan = _build(snapshot, diffs)
+
+    [action] = plan.actions
+    assert action.reconciler_id == "link_actual_node"
+    assert action.action_kind == "ledger_patch"
+    assert action.mutates is True
+    assert action.requires_observation is False
+    assert action.parameters["candidate"]["id"] == "dev-1"
+    assert plan.manual_review == []
+    assert plan.unsupported == []
+
+
+def test_reconcile_ipam_action_depends_on_link_actual_node_for_same_node():
+    node = _node("n1", "agweb")
+    device = ActualDevice(id="dev-1", name="agweb")
+    snapshot = _snapshot(nodes=[node], devices=[device])
+    diffs = [
+        _node_diff(node, "actual_node_not_linked"),
+        _node_diff(node, "missing_actual_ip_address"),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    by_reconciler = {action.reconciler_id: action for action in plan.actions}
+    assert set(by_reconciler) == {"link_actual_node", "reconcile_ipam"}
+    assert by_reconciler["reconcile_ipam"].dependencies == [by_reconciler["link_actual_node"].id]
+
+
+def test_link_actual_node_falls_back_to_manual_review_without_a_candidate():
+    node = _node("n1", "agweb")
+    snapshot = _snapshot(nodes=[node])  # no device candidates at all
+    diffs = [_node_diff(node, "actual_node_not_linked")]
+
+    plan = _build(snapshot, diffs)
+
+    assert plan.actions == []
+    [record] = plan.manual_review
+    assert record.code == "actual_node_not_linked"
+
+
+# --- service_profile / dnsmasq_config --------------------------------------
+
+
+def test_service_profile_playbook_action():
+    node = _node("n1", "agweb")
+    svc = _service("s1", "grafana")
+    placement = _placement("p1", service_id="s1", node_id="n1", deployment_profile="grafana")
+    snapshot = _snapshot(nodes=[node], services=[svc], placements=[placement])
+    diffs = [_service_diff(svc, "service_not_running")]
+    reconciliation = {
+        "grafana": ProfileReconciliation(
+            action=ProfileAction(kind="playbook", playbook="playbooks/monitoring/setup_grafana.yml")
+        )
+    }
+
+    plan = _build(snapshot, diffs, profile_reconciliation=reconciliation)
+
+    [action] = plan.actions
+    assert action.reconciler_id == "service_profile"
+    assert action.action_kind == "playbook"
+    assert action.parameters["playbook"] == "playbooks/monitoring/setup_grafana.yml"
+    assert action.parameters["host_slugs"] == ["agweb"]
+    assert action.requires_observation is True
+
+
+def test_service_profile_dnsmasq_config_action():
+    node = _node("n1", "agdnsmasq")
+    svc = _service("s1", "dnsmasq")
+    placement = _placement("p1", service_id="s1", node_id="n1", deployment_profile="dnsmasq")
+    snapshot = _snapshot(nodes=[node], services=[svc], placements=[placement])
+    diffs = [_service_diff(svc, "service_missing")]
+    reconciliation = {"dnsmasq": ProfileReconciliation(action=ProfileAction(kind="dnsmasq_config"))}
+
+    plan = _build(snapshot, diffs, profile_reconciliation=reconciliation)
+
+    [action] = plan.actions
+    assert action.reconciler_id == "dnsmasq_config"
+    assert action.action_kind == "dnsmasq_config"
+    assert action.requires_observation is False
+
+
+def test_service_profile_unsupported_when_profile_has_no_metadata():
+    node = _node("n1", "agweb")
+    svc = _service("s1", "mystery")
+    placement = _placement("p1", service_id="s1", node_id="n1", deployment_profile="mystery")
+    snapshot = _snapshot(nodes=[node], services=[svc], placements=[placement])
+    diffs = [_service_diff(svc, "service_not_running")]
+
+    plan = _build(snapshot, diffs, profile_reconciliation={})
+
+    assert plan.actions == []
+    [record] = plan.unsupported
+    assert record.code == "service_not_running"
+
+
+def test_service_profile_unsupported_when_observe_only():
+    node = _node("n1", "aghaos")
+    svc = _service("s1", "home_assistant")
+    placement = _placement("p1", service_id="s1", node_id="n1", deployment_profile="home_assistant")
+    snapshot = _snapshot(nodes=[node], services=[svc], placements=[placement])
+    diffs = [_service_diff(svc, "service_missing")]
+    reconciliation = {"home_assistant": ProfileReconciliation(observe_only=True)}
+
+    plan = _build(snapshot, diffs, profile_reconciliation=reconciliation)
+
+    assert plan.actions == []
+    assert plan.unsupported[0].reason.startswith("deployment profile 'home_assistant' is observe_only")
+
+
+def test_service_profile_manual_review_when_placements_disagree_on_profile():
+    node_a = _node("n1", "agweb")
+    node_b = _node("n2", "agweb2")
+    svc = _service("s1", "confused")
+    placements = [
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="profile_a"),
+        _placement("p2", service_id="s1", node_id="n2", deployment_profile="profile_b"),
+    ]
+    snapshot = _snapshot(nodes=[node_a, node_b], services=[svc], placements=placements)
+    diffs = [_service_diff(svc, "service_not_running")]
+
+    plan = _build(snapshot, diffs)
+
+    assert plan.actions == []
+    [record] = plan.manual_review
+    assert "different deployment profiles" in record.reason
+
+
+def test_profile_dependency_orders_actions_on_overlapping_hosts():
+    node = _node("n1", "agmon")
+    prometheus_svc = _service("s1", "prometheus")
+    exporter_svc = _service("s2", "node_exporter")
+    placements = [
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="prometheus"),
+        _placement("p2", service_id="s2", node_id="n1", deployment_profile="prometheus_node_exporter"),
+    ]
+    snapshot = _snapshot(nodes=[node], services=[prometheus_svc, exporter_svc], placements=placements)
+    diffs = [
+        _service_diff(prometheus_svc, "service_not_running"),
+        _service_diff(exporter_svc, "service_not_running"),
+    ]
+    reconciliation = {
+        "prometheus": ProfileReconciliation(
+            action=ProfileAction(kind="playbook", playbook="playbooks/monitoring/setup_prometheus.yml")
+        ),
+        "prometheus_node_exporter": ProfileReconciliation(
+            action=ProfileAction(kind="playbook", playbook="playbooks/monitoring/setup_node_exporter.yml"),
+            dependencies=["prometheus"],
+        ),
+    }
+
+    plan = _build(snapshot, diffs, profile_reconciliation=reconciliation)
+
+    by_profile = {action.parameters["deployment_profile"]: action for action in plan.actions}
+    exporter_action = by_profile["prometheus_node_exporter"]
+    prometheus_action = by_profile["prometheus"]
+    assert exporter_action.dependencies == [prometheus_action.id]
+    order = [a.id for a in plan.actions]
+    assert order.index(prometheus_action.id) < order.index(exporter_action.id)
+
+
+# --- observe_node aggregation, fingerprint, and fail-closed classification -
+
+
+def test_observe_node_aggregates_targets_and_codes():
+    web = _node("n1", "agweb")
+    db = _node("n2", "agdb")
+    snapshot = _snapshot(nodes=[web, db])
+    diffs = [
+        _node_diff(web, "missing_actual_data"),
+        _node_diff(db, "ingest_lag", Severity.INFO),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    [action] = plan.actions
+    assert action.id == "observe_node"
+    assert action.reconciler_id == "observe_node"
+    assert {t.slug for t in action.targets} == {"agweb", "agdb"}
+    assert set(action.claimed_diff_codes) == {"missing_actual_data", "ingest_lag"}
+
+
+def test_fingerprint_ignores_non_error_diffs():
+    web = _node("n1", "agweb")
+    snapshot = _snapshot(nodes=[web])
+    error_only = [_node_diff(web, "missing_actual_data")]
+    with_info = error_only + [_node_diff(web, "ingest_lag", Severity.INFO)]
+
+    assert compute_drift_fingerprint(error_only) == compute_drift_fingerprint(with_info)
+
+    plan_error_only = _build(snapshot, error_only)
+    plan_with_info = _build(snapshot, with_info)
+    assert plan_error_only.drift_fingerprint == plan_with_info.drift_fingerprint
+    # But the info diff still shows up as an extra observe_node target/code.
+    assert len(plan_with_info.actions[0].claimed_diff_codes) > len(plan_error_only.actions[0].claimed_diff_codes)
+
+
+def test_build_plan_raises_for_unclassified_error_diff():
+    web = _node("n1", "agweb")
+    snapshot = _snapshot(nodes=[web])
+    diffs = [_node_diff(web, "brand_new_error_code_nobody_reviewed")]
+
+    with pytest.raises(UnclassifiedDiffCodeError):
+        _build(snapshot, diffs)
+
+
+def test_build_plan_ignores_unclassified_non_error_diagnostic():
+    web = _node("n1", "agweb")
+    snapshot = _snapshot(nodes=[web])
+    diffs = [_node_diff(web, "some_new_diagnostic_nobody_reviewed", Severity.INFO)]
+
+    plan = _build(snapshot, diffs)
+
+    assert plan.actions == []
+    assert plan.manual_review == []
+    assert plan.unsupported == []
