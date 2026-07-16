@@ -11,10 +11,15 @@ output as the single source of truth, so there is nothing to keep in sync.
   gap codes in `evaluation.NO_DATA_GAP_CODES` produce.
 - `drifting` — any other error-severity diff: we have actual data, and it
   disagrees with desired state (or a global contract violation).
-- `converging` — diffs exist, but an `nctl apply`/`reconcile` operation
-  targeting this node is newer than the node's newest actual observation
-  (read via `operations.latest_operation_timestamp_for_target`). Rare until
-  Phase 4 registers reconcilers that emit per-node events.
+- `converging` — diffs exist, but the chronologically latest
+  `actuation_completed` event naming this target (Phase 4 Step 4; read via
+  `operations.latest_convergent_actuation_for_target`) is a successful,
+  observation-requiring actuation newer than the target's newest actual
+  observation, and every current error diff's code is one it claimed to
+  resolve. A generic event that merely mentions the target, a failed/
+  cancelled actuation, or a later failure superseding an earlier success
+  never produces `converging`; unclaimed errors keep the target
+  `drifting`/`unknown` instead.
 - `converged` — no error-severity diffs (warning/info diffs still show up in
   the payload, they just don't change the status).
 """
@@ -26,7 +31,7 @@ from pathlib import Path
 
 from .evaluation import NO_DATA_GAP_CODES
 from .model import DiffRecord, Severity, Status
-from .operations import latest_operation_timestamp_for_target
+from .operations import latest_convergent_actuation_for_target
 
 UNKNOWN_CODES = frozenset(
     {
@@ -58,7 +63,11 @@ def derive_status(
     if any(record.code in UNKNOWN_CODES for record in error_records):
         return Status.UNKNOWN
     if target_slug and events_dir is not None:
-        operation_ts = latest_operation_timestamp_for_target(events_dir, target_slug)
-        if operation_ts is not None and (observed_at is None or operation_ts > observed_at):
+        actuation = latest_convergent_actuation_for_target(events_dir, target_slug)
+        if (
+            actuation is not None
+            and (observed_at is None or actuation.ts > observed_at)
+            and all(record.code in actuation.claimed_diff_codes for record in error_records)
+        ):
             return Status.CONVERGING
     return Status.DRIFTING
