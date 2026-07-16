@@ -11,8 +11,6 @@ render-time safety check, not a long-running operation.
 
 from __future__ import annotations
 
-import subprocess
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from nctl_core.config import Config, ConfigError
+from nctl_core.inventory_write import write_validated_inventory
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production.adapter import build_production_node_inputs
@@ -120,48 +119,16 @@ def write_production_artifacts(
 
     data = envelope.data
     generation_id = data.report["generation_id"]
-    inventory_path = out_dir / INVENTORY_FILENAME
     reports_dir = out_dir / REPORTS_DIRNAME
     report_path = reports_dir / f"{generation_id}.json"
 
-    if shutil.which("ansible-inventory") is None:
-        return EnvelopeError(
-            code="ansible_executable_missing", message="ansible-inventory must be available on PATH"
-        )
-
-    try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return EnvelopeError(code="artifact_write_failed", message=f"cannot create {out_dir}: {exc}")
-
-    staged_path = out_dir / f".{INVENTORY_FILENAME}.{generation_id}.tmp"
-    try:
-        staged_path.write_text(data.inventory_yaml)
-    except OSError as exc:
-        return EnvelopeError(code="artifact_write_failed", message=f"cannot write {staged_path}: {exc}")
-
-    try:
-        completed = subprocess.run(
-            ["ansible-inventory", "-i", str(staged_path), "--list"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as exc:
-        staged_path.unlink(missing_ok=True)
-        return EnvelopeError(code="ansible_inventory_failed", message=f"cannot run ansible-inventory: {exc}")
-
-    if completed.returncode != 0:
-        staged_path.unlink(missing_ok=True)
-        return EnvelopeError(
-            code="ansible_inventory_invalid",
-            message=f"ansible-inventory --list rejected the rendered inventory: {completed.stderr.strip()}",
-        )
+    error = write_validated_inventory(data.inventory_yaml, out_dir / INVENTORY_FILENAME)
+    if error is not None:
+        return error
 
     try:
         reports_dir.mkdir(parents=True, exist_ok=True)
         report_path.write_text(data.report_json)
-        staged_path.replace(inventory_path)
     except OSError as exc:
         return EnvelopeError(code="artifact_write_failed", message=f"cannot write production artifacts: {exc}")
     return None

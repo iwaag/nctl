@@ -31,7 +31,7 @@ def test_write_production_artifacts_propagates_render_failure(tmp_path):
 
 
 def test_write_production_artifacts_requires_ansible_inventory_on_path(tmp_path, monkeypatch):
-    monkeypatch.setattr("nctl_core.production_render.shutil.which", lambda name: None)
+    monkeypatch.setattr("nctl_core.inventory_write.shutil.which", lambda name: None)
 
     error = write_production_artifacts(_ok_envelope(), tmp_path)
 
@@ -41,9 +41,9 @@ def test_write_production_artifacts_requires_ansible_inventory_on_path(tmp_path,
 
 
 def test_write_production_artifacts_atomically_replaces_on_success(tmp_path, monkeypatch):
-    monkeypatch.setattr("nctl_core.production_render.shutil.which", lambda name: "/usr/bin/ansible-inventory")
+    monkeypatch.setattr("nctl_core.inventory_write.shutil.which", lambda name: "/usr/bin/ansible-inventory")
     monkeypatch.setattr(
-        "nctl_core.production_render.subprocess.run",
+        "nctl_core.inventory_write.subprocess.run",
         lambda *a, **kw: subprocess.CompletedProcess(args=a, returncode=0, stdout="{}", stderr=""),
     )
 
@@ -57,9 +57,9 @@ def test_write_production_artifacts_atomically_replaces_on_success(tmp_path, mon
 
 
 def test_write_production_artifacts_leaves_no_file_when_validation_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr("nctl_core.production_render.shutil.which", lambda name: "/usr/bin/ansible-inventory")
+    monkeypatch.setattr("nctl_core.inventory_write.shutil.which", lambda name: "/usr/bin/ansible-inventory")
     monkeypatch.setattr(
-        "nctl_core.production_render.subprocess.run",
+        "nctl_core.inventory_write.subprocess.run",
         lambda *a, **kw: subprocess.CompletedProcess(args=a, returncode=1, stdout="", stderr="boom"),
     )
 

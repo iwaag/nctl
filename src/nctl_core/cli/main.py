@@ -17,6 +17,12 @@ from nctl_core.dashboard_render import build_dashboard, render_dashboard_text
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
 from nctl_core.dnsmasq_render import build_dnsmasq_render, render_dnsmasq_conf_text, render_dnsmasq_summary_text
 from nctl_core.drift_render import build_drift, render_drift_text
+from nctl_core.hosts_intent_render import (
+    build_hosts_intent_render,
+    render_hosts_intent_inventory_text,
+    render_hosts_intent_summary_text,
+    write_hosts_intent_artifacts,
+)
 from nctl_core.output import emit
 from nctl_core.production_render import (
     build_production_render,
@@ -181,6 +187,51 @@ def render_production(
         print(render_production_summary_text(envelope))
     else:
         print(render_production_inventory_text(envelope))
+
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+HostsIntentOutOption = Annotated[
+    Optional[Path],
+    typer.Option(
+        "--out",
+        help=(
+            "Write hosts_intent.yml + hosts-intent-export.json to this directory instead of "
+            "stdout (validated with `ansible-inventory --list` first)."
+        ),
+    ),
+]
+RenderHostsIntentJsonOption = Annotated[
+    bool, typer.Option("--json", help="Print the nctl.render.hosts_intent.v1 envelope as JSON.")
+]
+
+
+@render_app.command("hosts-intent")
+def render_hosts_intent(
+    config: ConfigOption = None, out: HostsIntentOutOption = None, json_output: RenderHostsIntentJsonOption = False
+) -> None:
+    """Render the mDNS bootstrap inventory from desired nodes.
+
+    Without `--out`, the inventory YAML goes to stdout (pipeable, matches the
+    other render commands). With `--out DIR`, writes `DIR/hosts_intent.yml`
+    (validated with `ansible-inventory --list` against a staged copy, then
+    atomically replaced) and `DIR/hosts-intent-export.json`, and prints a
+    summary instead.
+    """
+    cfg = _load_config(config)
+    envelope = build_hosts_intent_render(cfg)
+
+    if envelope.ok and out is not None:
+        write_error = write_hosts_intent_artifacts(envelope, out)
+        if write_error is not None:
+            envelope = envelope.model_copy(update={"ok": False, "errors": [write_error]})
+
+    if json_output:
+        print(envelope.to_json())
+    elif envelope.ok and out is not None:
+        print(render_hosts_intent_summary_text(envelope))
+    else:
+        print(render_hosts_intent_inventory_text(envelope))
 
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
