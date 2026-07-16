@@ -253,7 +253,11 @@ def endpoint_intent_matching(snapshot: SourceSnapshot, context: DriftContext) ->
 
 @register("service")
 def service_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
-    service_evaluations = evaluate_all_services(snapshot)
+    service_evaluations = evaluate_all_services(
+        snapshot,
+        generated_at=context.generated_at,
+        stale_after_hours=context.service_observation_max_age_hours,
+    )
     for service in snapshot.desired.services:
         target = Target(kind="service", slug=service.slug, name=service.name, id=service.id)
         yield from _gap_diffs(target, service_evaluations[service.id])

@@ -75,7 +75,12 @@ def build_drift(cfg: Config, *, host: str | None = None, service: str | None = N
     finally:
         client.close()
 
-    context = DriftContext(generated_at=generated_at, profiles=profiles, events_dir=cfg.events.resolved_log_dir())
+    context = DriftContext(
+        generated_at=generated_at,
+        profiles=profiles,
+        events_dir=cfg.events.resolved_log_dir(),
+        service_observation_max_age_hours=cfg.reconcile.service_observation_max_age_hours,
+    )
     result = compute_drift(snapshot, context)
     targets = _filter_targets(result.targets, host=host, service=service)
 

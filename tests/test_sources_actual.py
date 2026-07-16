@@ -25,6 +25,8 @@ def test_read_actual_facts_reads_only_the_allowlist():
             "network_interface": "eth0",
             "last_seen": "2026-07-14T00:00:00+00:00",
             "inventory_source": "nodeutils",
+            "observed_services": {"nomad": {"state": "running", "source": "systemd"}},
+            "service_inventory_updated_at": "2026-07-14T00:01:00+00:00",
             "inventory_raw_json": {"anything": "ignored"},
             "cpu_model": "ignored too",
         }
@@ -36,6 +38,8 @@ def test_read_actual_facts_reads_only_the_allowlist():
         network_interface="eth0",
         collected_at="2026-07-14T00:00:00+00:00",
         inventory_source="nodeutils",
+        observed_services={"nomad": {"state": "running", "source": "systemd"}},
+        service_inventory_updated_at="2026-07-14T00:01:00+00:00",
     )
 
 
@@ -88,6 +92,8 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
                                 "network_interface": "eth0",
                                 "last_seen": "2026-07-14T00:00:00+00:00",
                                 "inventory_source": "nodeutils",
+                                "observed_services": {"nomad": {"state": "running"}},
+                                "service_inventory_updated_at": "2026-07-14T00:01:00+00:00",
                             },
                         }
                     ],
@@ -123,6 +129,8 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
     assert device.serial == "SER123"
     assert device.platform == "ubuntu"
     assert device.actual_facts().observed_system == "linux"
+    assert device.actual_facts().observed_services["nomad"]["state"] == "running"
+    assert device.actual_facts().service_inventory_updated_at == "2026-07-14T00:01:00+00:00"
 
     assert snapshot.virtual_machines[0].name == "svc-1"
 
@@ -140,6 +148,6 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
 def test_query_requests_custom_field_data_not_shortcut_fields():
     # host_system/network_interface have no registered CustomField definition
     # on the live schema, so cf_* shortcuts don't exist for them; the raw JSON
-    # blob is the only way to read all six allowlisted fields in one place.
+    # blob is the only way to read all eight allowlisted fields in one place.
     assert "_custom_field_data" in ACTUAL_QUERY
     assert "cf_host_system" not in ACTUAL_QUERY

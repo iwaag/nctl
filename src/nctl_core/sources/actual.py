@@ -11,7 +11,7 @@ Deviation from the ORM version, confirmed by introspecting the live schema
 `CustomField` definition, so Nautobot's GraphQL layer does not expose
 `cf_host_system` / `cf_network_interface` shortcut fields (only
 `cf_primary_mac_address`, `cf_primary_ip_address`, `cf_last_seen`, and
-`cf_inventory_source` exist as shortcuts). All six allowlisted fields are
+`cf_inventory_source` exist as shortcuts). All eight allowlisted fields are
 therefore read from the raw `_custom_field_data` JSON instead, exactly as
 nintent's `_device_custom_fields` did — `read_actual_facts` already expects a
 plain mapping, so this needs no change to the ported function itself.
@@ -80,6 +80,8 @@ ACTUAL_FACT_FIELDS = {
     "network_interface": "network_interface",
     "collected_at": "last_seen",
     "inventory_source": "inventory_source",
+    "observed_services": "observed_services",
+    "service_inventory_updated_at": "service_inventory_updated_at",
 }
 
 # Per-consumer required actual facts.  A fact is required only when a concrete
@@ -107,6 +109,8 @@ class ActualFacts:
     network_interface: str | None
     collected_at: str | None
     inventory_source: str | None
+    observed_services: dict[str, dict[str, Any]] | None = None
+    service_inventory_updated_at: str | None = None
 
 
 def read_actual_facts(custom_fields: Mapping[str, Any] | None) -> ActualFacts:
@@ -132,7 +136,19 @@ def read_actual_facts(custom_fields: Mapping[str, Any] | None) -> ActualFacts:
         network_interface=field("network_interface"),
         collected_at=field("collected_at"),
         inventory_source=field("inventory_source"),
+        observed_services=_observed_services(data.get(ACTUAL_FACT_FIELDS["observed_services"])),
+        service_inventory_updated_at=field("service_inventory_updated_at"),
     )
+
+
+def _observed_services(value: Any) -> dict[str, dict[str, Any]] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        str(name): dict(entry)
+        for name, entry in value.items()
+        if name not in (None, "") and isinstance(entry, Mapping)
+    }
 
 
 def actual_type_problem(realized_type: str | None) -> str | None:

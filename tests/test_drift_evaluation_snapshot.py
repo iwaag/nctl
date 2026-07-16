@@ -8,15 +8,17 @@ from nctl_core.sources.desired import (
     DesiredDependency,
     DesiredEndpoint,
     DesiredNode,
+    DesiredNodeOperationalConfig,
     DesiredService,
+    DesiredServicePlacement,
     DesiredSnapshot,
 )
 from nctl_core.sources.snapshot import SourceSnapshot
 
 
-def make_snapshot(*, nodes=(), endpoints=(), services=(), dependencies=(), devices=(), interfaces=(), ip_addresses=()) -> SourceSnapshot:
+def make_snapshot(*, nodes=(), endpoints=(), services=(), dependencies=(), placements=(), operational_configs=(), devices=(), interfaces=(), ip_addresses=()) -> SourceSnapshot:
     return SourceSnapshot(
-        desired=DesiredSnapshot(nodes=list(nodes), endpoints=list(endpoints), services=list(services), dependencies=list(dependencies)),
+        desired=DesiredSnapshot(nodes=list(nodes), endpoints=list(endpoints), services=list(services), dependencies=list(dependencies), placements=list(placements), operational_configs=list(operational_configs)),
         actual=ActualSnapshot(devices=list(devices), interfaces=list(interfaces), ip_addresses=list(ip_addresses)),
         fetched_at=datetime.now(timezone.utc),
     )
@@ -90,3 +92,41 @@ def test_evaluate_all_services_resolves_dependency_by_source_service_id():
 
     assert result.status == "partial"
     assert result.deterministic_summary["dependency_counts"]["unresolved"] == 1
+
+
+def test_evaluate_all_services_uses_placement_device_observation() -> None:
+    service = DesiredService(
+        id="s1", slug="nomad", name="nomad", display_name="Nomad", service_type="service",
+        lifecycle="active", catalog_namespace="default", catalog_metadata_name="nomad",
+    )
+    node = DesiredNode(
+        id="n1", slug="agnomad", name="agnomad", lifecycle="active", node_type="device",
+        realized_device_id="dev-1",
+    )
+    placement = DesiredServicePlacement(
+        id="p1", service_id="s1", node_id="n1", instance_name="nomad",
+        deployment_profile="nomad_server", config_schema_version="v1",
+    )
+    operational = DesiredNodeOperationalConfig(
+        id="oc1", node_id="n1", actual_state_policy="observed", expected_host_os="linux",
+        connection_path="local",
+    )
+    device = ActualDevice(
+        id="dev-1", name="agnomad",
+        facts={
+            "host_system": "Linux",
+            "service_inventory_updated_at": "2026-07-16T00:30:00+00:00",
+            "observed_services": {"nomad": {"state": "running", "source": "systemd", "checked_at": "2026-07-16T00:30:00+00:00"}},
+        },
+    )
+    snapshot = make_snapshot(
+        nodes=[node], services=[service], placements=[placement], operational_configs=[operational], devices=[device]
+    )
+
+    result = evaluate_all_services(
+        snapshot, generated_at="2026-07-16T01:00:00+00:00", stale_after_hours=24
+    )["s1"]
+
+    assert result.status == "satisfied"
+    assert result.gap_summary == {"gaps": []}
+    assert result.observed_facts["placement_observations"]["placements"][0]["observed_state"] == "running"

@@ -57,7 +57,14 @@ SERVICE_TARGET_TYPE = "desired_service"
 # reliable actual/observed data to compare against at all (as opposed to a
 # real disagreement) -- Step 3's `drift.status.UNKNOWN_CODES` extends this
 # set so `nctl drift` resolves the same target to `unknown`, not `drifting`.
-NO_DATA_GAP_CODES = frozenset({"missing_actual_node", "missing_service_lifecycle", "service_observed_facts_unknown"})
+NO_DATA_GAP_CODES = frozenset(
+    {
+        "missing_actual_node",
+        "missing_service_lifecycle",
+        "service_observation_missing",
+        "service_observation_stale",
+    }
+)
 
 
 @dataclass(frozen=True)

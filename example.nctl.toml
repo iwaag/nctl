@@ -31,6 +31,7 @@ remote_report_path = "/var/lib/nodeutils/inventory.json"
 max_report_bytes = 2097152
 max_report_age_hours = 72
 ingest_policy_file = "seed/nodeutils_ingest.yaml"
+service_observation_max_age_hours = 24
 lock_path = "~/.local/state/nctl/reconcile.lock"
 
 [dashboard]

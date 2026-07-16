@@ -20,3 +20,4 @@ class DriftContext:
     generated_at: str
     profiles: dict[str, Any] = field(default_factory=dict)
     events_dir: Path | None = None
+    service_observation_max_age_hours: int = 24

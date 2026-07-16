@@ -143,12 +143,10 @@ def test_build_drift_reports_per_node_and_service_status(tmp_path):
     kinds_and_status = {(t.target.slug or t.target.name): t.status.value for t in envelope.data.targets}
     assert kinds_and_status["agok"] == "converged"
     assert kinds_and_status["agmissing"] == "unknown"
-    # "web" has no observed_facts source wired up yet (Step 4's
-    # `evaluate_service_intent` always sees `observed_facts=None` from the
-    # snapshot adapter), so `service_observed_facts_unknown` always fires --
-    # correctly `unknown`, not a false `converged`.
-    assert kinds_and_status["web"] == "unknown"
-    assert envelope.data.summary == {"converged": 1, "unknown": 2}
+    # A service with no active placement is a visible manual-review warning,
+    # not an invented observation error.
+    assert kinds_and_status["web"] == "converged"
+    assert envelope.data.summary == {"converged": 2, "unknown": 1}
 
 
 @respx.mock
@@ -170,7 +168,7 @@ def test_build_drift_service_filter_scopes_targets(tmp_path):
     envelope = build_drift(cfg, service="web")
 
     assert [t.target.name for t in envelope.data.targets] == ["web"]
-    assert envelope.data.summary == {"unknown": 1}
+    assert envelope.data.summary == {"converged": 1}
 
 
 @respx.mock
@@ -252,9 +250,9 @@ def test_render_drift_text_lists_targets_diffs_and_summary(tmp_path):
     assert "agmissing  unknown  2 diff(s)" in text
     assert "[error] agmissing: missing_actual_node" in text
     assert "[error] agmissing: references realized_device 'dev-gone', which no longer exists in Nautobot" in text
-    assert "web  unknown  1 diff(s)" in text
-    assert "[error] web: service_observed_facts_unknown" in text
-    assert "summary: converged=1 unknown=2" in text
+    assert "web  converged  1 diff(s)" in text
+    assert "[warning] web: service_has_no_active_placement" in text
+    assert "summary: converged=2 unknown=1" in text
 
 
 @respx.mock

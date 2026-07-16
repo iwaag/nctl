@@ -17,11 +17,14 @@ interface-candidate fallback reads a stored node evaluation's
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
+from datetime import datetime, timezone
 
 from nctl_core.sources.actual import ActualInterface
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .evaluation import EvaluationResult, evaluate_endpoint_intent, evaluate_node_intent, evaluate_service_intent
+from .service_placement import evaluate_placement_drift
 
 
 def evaluate_all_nodes(snapshot: SourceSnapshot) -> dict[str, EvaluationResult]:
@@ -68,20 +71,137 @@ def evaluate_all_endpoints(
     return results
 
 
-def evaluate_all_services(snapshot: SourceSnapshot) -> dict[str, EvaluationResult]:
+def evaluate_all_services(
+    snapshot: SourceSnapshot,
+    *,
+    generated_at: str | None = None,
+    stale_after_hours: int = 24,
+) -> dict[str, EvaluationResult]:
     services_by_id = {service.id: service for service in snapshot.desired.services}
     dependencies_by_service: dict[str, list] = defaultdict(list)
     for dependency in snapshot.desired.dependencies:
         dependencies_by_service[dependency.source_service_id].append(dependency)
 
+    nodes_by_id = {node.id: node for node in snapshot.desired.nodes}
+    operational_by_node = {row.node_id: row for row in snapshot.desired.operational_configs}
+    devices_by_id = {device.id: device for device in snapshot.actual.devices}
+    placement_rows = []
+    for placement in snapshot.desired.placements:
+        if placement.desired_state != "active":
+            continue
+        node = nodes_by_id.get(placement.node_id)
+        operational = operational_by_node.get(placement.node_id)
+        placement_rows.append(
+            {
+                "placement_id": placement.id,
+                "service_id": placement.service_id,
+                "node_id": placement.node_id,
+                "node_slug": node.slug if node else None,
+                "instance_name": placement.instance_name,
+                "deployment_profile": placement.deployment_profile,
+                "realized_device_id": node.realized_device_id if node else None,
+                "actual_state_policy": operational.actual_state_policy if operational else None,
+                "expected_host_os": operational.expected_host_os if operational else None,
+            }
+        )
+    device_facts = {
+        device.id: {
+            "observed_system": device.actual_facts().observed_system,
+            "observed_services": device.actual_facts().observed_services,
+            "service_inventory_updated_at": device.actual_facts().service_inventory_updated_at,
+        }
+        for device in snapshot.actual.devices
+    }
+    placement_report = evaluate_placement_drift(
+        [{"id": service.id, "name": service.name} for service in snapshot.desired.services],
+        placement_rows,
+        device_facts,
+        {device.id: node.id for node in snapshot.desired.nodes for device in [devices_by_id.get(node.realized_device_id or "")] if device},
+        now=_parse_now(generated_at),
+        stale_after_hours=stale_after_hours,
+    )
+
     results = {}
     for service in snapshot.desired.services:
-        results[service.id] = evaluate_service_intent(
+        base = evaluate_service_intent(
             service,
             dependencies=dependencies_by_service.get(service.id, ()),
             resolved_services_by_id=services_by_id,
+            observed_facts={},
+        )
+        observation = placement_report[service.id]
+        gaps = list(base.gap_summary.get("gaps", []))
+        if observation["status"] == "no_active_placement":
+            gaps.append({"code": "service_has_no_active_placement", "severity": "needs_review"})
+        for placement in observation["placements"]:
+            grouped: dict[str, list[dict]] = defaultdict(list)
+            for finding in placement["gaps"]:
+                grouped[finding["code"]].append(finding)
+            for code, findings in sorted(grouped.items()):
+                gaps.append(
+                    {
+                        "code": code,
+                        "severity": "unknown" if code == "service_observation_missing" else "missing",
+                        "expected": _placement_evidence(placement),
+                        "actual": {"findings": findings, **_observed_evidence(placement)},
+                    }
+                )
+        for unexpected in observation["unexpected_locations"]:
+            gaps.append(
+                {
+                    "code": unexpected["code"],
+                    "severity": "conflict",
+                    "expected": {"service_id": service.id, "observed_key": observation["observed_key"]},
+                    "actual": unexpected,
+                }
+            )
+        status = _status_from_gaps(gaps)
+        summary = dict(base.deterministic_summary)
+        summary.update(
+            status=status,
+            gap_codes=[gap["code"] for gap in gaps],
+            service_observation_status=observation["status"],
+            evaluation_scope="service_lifecycle_dependencies_and_placements",
+        )
+        results[service.id] = replace(
+            base,
+            status=status,
+            deterministic_summary=summary,
+            observed_facts={"service_observation_status": observation["status"], "placement_observations": observation},
+            gap_summary={"gaps": gaps},
         )
     return results
+
+
+def _parse_now(value: str | None) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else datetime.now(timezone.utc)
+    except ValueError:
+        parsed = datetime.now(timezone.utc)
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _placement_evidence(placement: dict) -> dict:
+    return {
+        key: placement.get(key)
+        for key in ("placement_id", "node_id", "node_slug", "deployment_profile", "realized_device_id", "observed_key")
+    }
+
+
+def _observed_evidence(placement: dict) -> dict:
+    return {
+        key: placement.get(key)
+        for key in ("observed_state", "observed_source", "observed_endpoint", "observed_checked_at", "observed_at")
+        if placement.get(key) is not None
+    }
+
+
+def _status_from_gaps(gaps: list[dict]) -> str:
+    severities = {gap.get("severity") for gap in gaps}
+    for severity in ("conflict", "missing", "partial", "needs_review", "unknown"):
+        if severity in severities:
+            return severity
+    return "satisfied"
 
 
 def _interfaces_by_device_id(interfaces: list[ActualInterface]) -> dict[str, list[ActualInterface]]:

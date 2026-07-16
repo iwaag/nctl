@@ -11,6 +11,7 @@ from nctl_core.sources.desired import (
     DesiredNode,
     DesiredNodeOperationalConfig,
     DesiredService,
+    DesiredServicePlacement,
     DesiredSnapshot,
 )
 from nctl_core.sources.observed import ObservedFacts
@@ -26,6 +27,7 @@ def make_snapshot(
     ip_ranges=(),
     services=(),
     dependencies=(),
+    placements=(),
     operational_configs=(),
     devices=(),
     vms=(),
@@ -40,6 +42,7 @@ def make_snapshot(
             ip_ranges=list(ip_ranges),
             services=list(services),
             dependencies=list(dependencies),
+            placements=list(placements),
             operational_configs=list(operational_configs),
         ),
         actual=ActualSnapshot(devices=list(devices), virtual_machines=list(vms), interfaces=list(interfaces), ip_addresses=list(ip_addresses)),
@@ -307,10 +310,50 @@ def test_service_intent_matching_flags_unresolved_dependency_as_warning():
 
     codes = {d.code for d in diffs}
     assert "unresolved_dependency" in codes
-    assert "service_observed_facts_unknown" in codes
+    assert "service_has_no_active_placement" in codes
     unresolved = next(d for d in diffs if d.code == "unresolved_dependency")
     assert unresolved.severity.value == "warning"
     assert unresolved.target.kind == "service"
     assert unresolved.target.slug == "api"
-    unknown_facts = next(d for d in diffs if d.code == "service_observed_facts_unknown")
-    assert unknown_facts.severity.value == "error"
+    no_placement = next(d for d in diffs if d.code == "service_has_no_active_placement")
+    assert no_placement.severity.value == "warning"
+
+
+def test_service_intent_matching_emits_placement_evidence_and_distinct_code():
+    service = DesiredService(
+        id="s1", slug="nomad", name="nomad", display_name="Nomad", service_type="service",
+        lifecycle="active", catalog_namespace="default", catalog_metadata_name="nomad",
+    )
+    node = DesiredNode(
+        id="n1", slug="node-a", name="node-a", lifecycle="active", node_type="device",
+        realized_device_id="d1",
+    )
+    placement = DesiredServicePlacement(
+        id="p1", service_id="s1", node_id="n1", instance_name="main",
+        deployment_profile="nomad_server", config_schema_version="v1",
+    )
+    operational = DesiredNodeOperationalConfig(
+        id="oc1", node_id="n1", actual_state_policy="observed", expected_host_os="linux",
+        connection_path="local",
+    )
+    device = ActualDevice(
+        id="d1", name="node-a",
+        facts={
+            "host_system": "Linux",
+            "service_inventory_updated_at": "2026-07-15T11:30:00+00:00",
+            "observed_services": {"nomad": {"state": "failed", "source": "systemd"}},
+        },
+    )
+    snapshot = make_snapshot(
+        nodes=[node], services=[service], placements=[placement],
+        operational_configs=[operational], devices=[device],
+    )
+
+    diffs = list(comparators.service_intent_matching(snapshot, CONTEXT))
+
+    stopped = next(diff for diff in diffs if diff.code == "service_not_running")
+    assert stopped.severity.value == "error"
+    assert stopped.desired["expected"]["placement_id"] == "p1"
+    assert stopped.desired["expected"]["deployment_profile"] == "nomad_server"
+    assert stopped.actual["actual"]["observed_state"] == "failed"
+    assert stopped.actual["actual"]["observed_source"] == "systemd"

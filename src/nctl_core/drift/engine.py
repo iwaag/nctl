@@ -92,6 +92,19 @@ def _group_by_target(
 def _observed_at_for(
     target: Target, snapshot: SourceSnapshot, devices_by_id: dict[str, Any]
 ) -> datetime | None:
+    if target.kind == "service":
+        node_by_id = {node.id: node for node in snapshot.desired.nodes}
+        timestamps = []
+        for placement in snapshot.desired.placements:
+            if placement.service_id != target.id or placement.desired_state != "active":
+                continue
+            node = node_by_id.get(placement.node_id)
+            device = devices_by_id.get(node.realized_device_id) if node and node.realized_device_id else None
+            value = device.actual_facts().service_inventory_updated_at if device else None
+            parsed = _parse_timestamp(value)
+            if parsed is not None:
+                timestamps.append(parsed)
+        return max(timestamps) if timestamps else None
     if target.kind != "node":
         return None
     node = next((n for n in snapshot.desired.nodes if n.id == target.id), None)
@@ -103,8 +116,12 @@ def _observed_at_for(
     collected_at = device.actual_facts().collected_at
     if not collected_at:
         return None
+    return _parse_timestamp(collected_at)
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
     try:
-        return datetime.fromisoformat(collected_at)
+        return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
     except ValueError:
         return None
 

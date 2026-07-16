@@ -99,6 +99,7 @@ class ReconcileConfig(StrictModel):
     max_report_bytes: int = Field(default=2_097_152, ge=1, le=100_000_000)
     max_report_age_hours: int = Field(default=72, gt=0, le=8760)
     ingest_policy_file: Path = Path("seed/nodeutils_ingest.yaml")
+    service_observation_max_age_hours: int = Field(default=24, gt=0, le=8760)
     lock_path: Path = Path("~/.local/state/nctl/reconcile.lock")
 
     @field_validator("remote_report_path")
