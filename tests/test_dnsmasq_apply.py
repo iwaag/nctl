@@ -135,6 +135,19 @@ def test_empty_dnsmasq_group_is_a_pointed_failure(tmp_path, monkeypatch):
     assert envelope.data.ansible is None
 
 
+def test_missing_inventory_points_to_nctl_production_render(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    cfg.ansible.resolved_inventory(cfg.source_path.parent).unlink()
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+
+    envelope = build_dnsmasq_apply(cfg)
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "ansible_inventory_missing"
+    assert "nctl render production --out" in envelope.errors[0].message
+    assert "export_nintent_production.yml" not in envelope.errors[0].message
+
+
 def test_ansible_failure_is_returned_with_exit_code_and_recap(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))

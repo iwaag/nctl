@@ -22,6 +22,8 @@ export NAUTOBOT_TOKEN=...           # or set nautobot.token_file
 uv run nctl status
 uv run nctl status --json
 uv run nctl render dnsmasq
+uv run nctl render hosts-intent
+uv run nctl render hosts-intent --out ../ansible_agdev/inventories/generated
 uv run nctl render production
 uv run nctl render production --out ../ansible_agdev/inventories/generated
 uv run nctl drift
@@ -40,6 +42,13 @@ Nautobot still yields dump and submodule info, with `ok: false` and an entry in 
 `render dnsmasq` fetches desired endpoints, IP ranges, and actual node/interface state through GraphQL and
 prints a deterministic dnsmasq configuration. Use `--out PATH` to write the configuration or
 `--json` to inspect the complete render payload.
+
+`render hosts-intent` fetches desired nodes through GraphQL and emits the minimal mDNS bootstrap
+inventory used before actual facts are collected. Without `--out`, YAML goes to stdout. With
+`--out DIR`, nctl validates a staged copy using `ansible-inventory --list`, atomically replaces
+`DIR/hosts_intent.yml`, and writes `DIR/hosts-intent-export.json`. The JSON envelope schema is
+`nctl.render.hosts_intent.v1`. The command name is deliberately `hosts-intent`, rather than the
+ambiguous `inventory`, because `render production` creates the canonical operational inventory.
 
 `render production` reads `ansible_agdev/vars/deployment_profiles.yml` directly, joins desired
 placements and operational policy with Nautobot actual facts, and emits the schema 1.0 production

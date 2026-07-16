@@ -163,7 +163,7 @@ def _validate_paths(cfg: Config, data: DnsmasqApplyData) -> EnvelopeError | None
             code="ansible_inventory_missing",
             message=(
                 f"ansible.inventory does not exist: {inventory}; generate the inventory first "
-                "(currently via export_nintent_production.yml)"
+                "with `nctl render production --out <inventory-directory>`"
             ),
         )
     if shutil.which("ansible-inventory") is None or shutil.which("ansible-playbook") is None:
