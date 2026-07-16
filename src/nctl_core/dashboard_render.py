@@ -60,6 +60,22 @@ def build_dashboard(
     else:
         drift_envelope = build_drift(cfg)
 
+    return render_dashboard_from_drift(cfg, drift_envelope, out_dir=out_dir, push=push)
+
+
+def render_dashboard_from_drift(
+    cfg: Config, drift_envelope: Envelope[DriftData], *, out_dir: Path | None = None, push: bool = True
+) -> Envelope[DashboardData]:
+    """Regenerate the dashboard from an already-computed drift envelope.
+
+    `nctl reconcile` (Phase 4 Step 7) calls this directly with its own final
+    full-cluster drift payload so the dashboard and the reconcile result can
+    never disagree by re-reading drift a second time (`build_dashboard`
+    itself is just this function fed a freshly computed or `--from`-loaded
+    envelope).
+    """
+
+    data = DashboardData(dashboard_url=cfg.dashboard.url)
     data.generated_at = drift_envelope.data.generated_at or drift_envelope.generated_at.isoformat()
     data.summary = drift_envelope.data.summary
     data.severity_summary = drift_envelope.data.severity_summary

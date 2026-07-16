@@ -30,6 +30,7 @@ from nctl_core.production_render import (
     render_production_summary_text,
     write_production_artifacts,
 )
+from nctl_core.reconcile.executor import render_reconcile_text, run_reconcile
 from nctl_core.status import build_status, render_status_text
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
@@ -246,6 +247,43 @@ def apply_dnsmasq(config: ConfigOption = None, yes: YesOption = False, json_outp
     cfg = _load_config(config)
     envelope = build_dnsmasq_apply(cfg, apply_changes=yes)
     emit(envelope, json_output, render_dnsmasq_apply_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+HostArgument = Annotated[
+    Optional[str],
+    typer.Argument(help="Desired-node slug to scope reconciliation to. Omit for the whole cluster."),
+]
+ReconcileYesOption = Annotated[
+    bool, typer.Option("--yes", help="Execute the plan instead of stopping after a dry plan.")
+]
+MaxRoundsOption = Annotated[
+    Optional[int],
+    typer.Option("--max-rounds", min=1, max=10, help="Override [reconcile].max_rounds for this run."),
+]
+ReconcileJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.reconcile.v1 envelope as JSON.")]
+
+
+@app.command()
+def reconcile(
+    host: HostArgument = None,
+    config: ConfigOption = None,
+    yes: ReconcileYesOption = False,
+    max_rounds: MaxRoundsOption = None,
+    json_output: ReconcileJsonOption = False,
+) -> None:
+    """Drift -> plan -> (with --yes) execute -> re-observe -> converge, as one bounded operation.
+
+    Without `--yes`, builds and persists a dry plan without touching the ledger, Ansible, or
+    Nautobot Jobs. With `--yes`, executes the plan's actions in dependency order across up to
+    `--max-rounds` bounded re-plan rounds, regenerates the full production inventory every round,
+    and regenerates the dashboard from the same final drift payload it used to decide the result.
+    """
+    cfg = _load_config(config)
+    envelope = run_reconcile(cfg, host=host, apply_changes=yes, max_rounds=max_rounds)
+    emit(envelope, json_output, render_reconcile_text)
+    if any(error.code in ("unknown_host",) for error in envelope.errors):
+        raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 

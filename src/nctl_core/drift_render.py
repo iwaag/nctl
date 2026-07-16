@@ -23,18 +23,17 @@ every comparator except `production_policy`.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 from pydantic import BaseModel
 
 from nctl_core.config import Config, ConfigError
 from nctl_core.drift.context import DriftContext
-from nctl_core.drift.engine import TargetStatus, compute_drift
+from nctl_core.drift.engine import DriftResult, TargetStatus, compute_drift
 from nctl_core.drift.model import Severity
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
-from nctl_core.sources.snapshot import build_source_snapshot
+from nctl_core.sources.snapshot import SourceSnapshot, build_source_snapshot
 
 DRIFT_SCHEMA = "nctl.drift.v1"
 
@@ -54,12 +53,60 @@ class DriftData(BaseModel):
 
 
 def build_drift(cfg: Config, *, host: str | None = None, service: str | None = None) -> Envelope[DriftData]:
+    fetched = fetch_and_compute_drift(cfg)
+    if isinstance(fetched, EnvelopeError):
+        return _failed(fetched)
+    snapshot, result, generated_at = fetched
+    data = render_drift_data(result, generated_at, snapshot, host=host, service=service)
+    return Envelope.build(DRIFT_SCHEMA, data, [])
+
+
+def render_drift_data(
+    result: DriftResult,
+    generated_at: str,
+    snapshot: SourceSnapshot,
+    *,
+    host: str | None = None,
+    service: str | None = None,
+) -> DriftData:
+    """Render a `DriftResult` (already computed by `fetch_and_compute_drift`) as `DriftData`.
+
+    Shared with `nctl reconcile` (Phase 4 Step 7), which computes its own
+    full-cluster drift each round and must render it identically to `nctl
+    drift`/`nctl dashboard` rather than reimplementing this shape.
+    """
+
+    targets = _filter_targets(result.targets, host=host, service=service)
+    return DriftData(
+        generated_at=generated_at,
+        summary=_status_summary(targets),
+        severity_summary=_severity_summary(targets),
+        targets=targets,
+        sources=DriftSourcesData(
+            fetched_at=snapshot.fetched_at.isoformat(),
+            observed_dump_count=len(snapshot.observed),
+            observed_errors=snapshot.observed_errors,
+        ),
+    )
+
+
+def fetch_and_compute_drift(
+    cfg: Config,
+) -> tuple[SourceSnapshot, DriftResult, str] | EnvelopeError:
+    """Fetch the full-cluster snapshot and compute drift over it, unfiltered.
+
+    Shared by `build_drift` (which then filters/renders `nctl.drift.v1`) and
+    `nctl reconcile` (Phase 4 Step 7), which needs the raw `SourceSnapshot`
+    itself to build a plan, not just the rendered per-target diff list.
+    Returns `(snapshot, DriftResult, generated_at)` on success.
+    """
+
     generated_at = datetime.now(timezone.utc).isoformat()
 
     try:
         token = cfg.nautobot.resolve_token()
     except ConfigError as exc:
-        return _failed(EnvelopeError(code="nautobot_token_error", message=str(exc)))
+        return EnvelopeError(code="nautobot_token_error", message=str(exc))
 
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     try:
@@ -71,7 +118,7 @@ def build_drift(cfg: Config, *, host: str | None = None, service: str | None = N
     try:
         snapshot = build_source_snapshot(cfg, client)
     except NautobotError as exc:
-        return _failed(EnvelopeError(code="nautobot_fetch_failed", message=str(exc)))
+        return EnvelopeError(code="nautobot_fetch_failed", message=str(exc))
     finally:
         client.close()
 
@@ -82,20 +129,7 @@ def build_drift(cfg: Config, *, host: str | None = None, service: str | None = N
         service_observation_max_age_hours=cfg.reconcile.service_observation_max_age_hours,
     )
     result = compute_drift(snapshot, context)
-    targets = _filter_targets(result.targets, host=host, service=service)
-
-    data = DriftData(
-        generated_at=generated_at,
-        summary=_status_summary(targets),
-        severity_summary=_severity_summary(targets),
-        targets=targets,
-        sources=DriftSourcesData(
-            fetched_at=snapshot.fetched_at.isoformat(),
-            observed_dump_count=len(snapshot.observed),
-            observed_errors=snapshot.observed_errors,
-        ),
-    )
-    return Envelope.build(DRIFT_SCHEMA, data, [])
+    return snapshot, result, generated_at
 
 
 def _filter_targets(targets: list[TargetStatus], *, host: str | None, service: str | None) -> list[TargetStatus]:
