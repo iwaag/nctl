@@ -64,3 +64,69 @@ The apply envelope cross-references `data.operation_id`, `data.event_log_path`, 
 summary, execution mode (`dry-run` or `apply`), and the Ansible command's exit code, stdout,
 stderr, and parsed per-host recap. A dry-run that reports changed hosts is still successful when
 Ansible exits zero; the diff is the deliverable.
+
+## `nctl.drift.v1`
+
+```json
+{
+  "generated_at": "2026-07-16T11:10:48.075090+00:00",
+  "summary": {"converged": 3, "unknown": 2},
+  "severity_summary": {"error": 2, "warning": 9, "info": 0},
+  "targets": [
+    {
+      "target": {"kind": "node", "slug": "agdnsmasq", "name": "agdnsmasq", "id": "27818c12-..."},
+      "status": "unknown",
+      "diffs": [
+        {
+          "target": {"kind": "node", "slug": "agdnsmasq", "name": "agdnsmasq", "id": "27818c12-..."},
+          "code": "missing_actual_node",
+          "severity": "error",
+          "message": "agdnsmasq: missing_actual_node",
+          "desired": {},
+          "actual": {},
+          "sources": ["desired", "actual"]
+        }
+      ]
+    }
+  ],
+  "sources": {"fetched_at": "2026-07-16T11:10:48.315936+00:00", "observed_dump_count": 1, "observed_errors": []}
+}
+```
+
+`summary` counts targets by `status` (`converged`/`drifting`/`converging`/`unknown`, derived per
+target from its diffs, never persisted); `severity_summary` counts diffs across all targets by
+`severity` (`error`/`warning`/`info`). `targets` is sorted by `(target.kind, target identity,
+diff code)` regardless of comparator registration order (see `src/nctl_core/drift/registry.py`).
+A target with zero diffs is still present (as `converged`) — every desired node/service is seeded
+up front so silence in the payload always means "nothing wrong", never "we forgot to check".
+`target.kind` is an open string set, not a closed enum: most targets are `"node"`/`"service"`,
+but a comparator may also emit a `"device"`-scoped or `"global"`-scoped diagnostic that isn't
+owned by one desired node or service (e.g. a production-composition contract error). Additions to
+this shape are cheap; renames are expensive — treat it as the stable Phase 3/4 interface it is
+(the dashboard's only input, and Phase 4's reconcile input).
+
+## `nctl.dashboard.v1`
+
+```json
+{
+  "data": {
+    "html_path": "/Users/x/.local/state/nctl/dashboard/index.html",
+    "drift_json_path": "/Users/x/.local/state/nctl/dashboard/drift.json",
+    "generated_at": "2026-07-16T11:10:48.075090+00:00",
+    "summary": {"converged": 3, "unknown": 2},
+    "severity_summary": {"error": 2, "warning": 9, "info": 0},
+    "status_push": {"pushed": true, "attempted": 5, "updated": 5, "skipped_no_row": 0, "failed": 0, "errors": []},
+    "dashboard_url": null
+  }
+}
+```
+
+`data.summary`/`data.severity_summary`/`data.generated_at` mirror the drift run that produced the
+page (or the `--from` payload's own fields, when given). `status_push` is only attempted for a
+successful drift payload with `push` enabled (the CLI default; `--no-push` skips it): `attempted`
+counts node/service targets considered, `updated` successful PATCHes, `skipped_no_row` targets
+with no matching ledger row, `failed` PATCH failures — each with a `"<kind> <slug-or-id>: <error>"`
+string in `errors`. Push failures never affect `ok`; only a drift-run failure or a file-write
+failure does (both surface in the top-level `errors` list, and — for a drift-run failure — inside
+the rendered page itself, since the page embeds this same envelope's drift data). `dashboard_url`
+echoes `[dashboard].url` from `nctl.toml` (`null` if unset) — informational only, never fetched.
