@@ -45,22 +45,26 @@ def load_dump(path: Path) -> NodeDump:
     except OSError as exc:
         raise DumpError(f"cannot read {path}: {exc}") from exc
 
+    return parse_dump_text(text, source=str(path), suffix=path.suffix)
+
+
+def parse_dump_text(text: str, *, source: str = "report", suffix: str = ".json") -> NodeDump:
     try:
-        if path.suffix == ".json":
+        if suffix == ".json":
             raw = json.loads(text)
         else:
             raw = yaml.safe_load(text)
     except (json.JSONDecodeError, yaml.YAMLError) as exc:
-        raise DumpError(f"cannot parse {path}: {exc}") from exc
+        raise DumpError(f"cannot parse {source}: {exc}") from exc
 
     try:
         dump = NodeDump.model_validate(raw)
     except ValidationError as exc:
-        raise DumpError(f"invalid dump {path}: {exc}") from exc
+        raise DumpError(f"invalid dump {source}: {exc}") from exc
 
     if dump.schema_version != EXPECTED_SCHEMA_VERSION:
         raise DumpError(
-            f"{path}: unsupported schema_version {dump.schema_version!r} "
+            f"{source}: unsupported schema_version {dump.schema_version!r} "
             f"(expected {EXPECTED_SCHEMA_VERSION!r})"
         )
     return dump

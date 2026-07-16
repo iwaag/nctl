@@ -55,6 +55,15 @@ class OperationArtifacts:
     def write_json(self, relative: str | Path, payload: Any) -> Path:
         return self.write_text(relative, json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=True) + "\n")
 
+    def directory(self, relative: str | Path) -> Path:
+        destination = self.path(relative)
+        try:
+            destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(destination, 0o700)
+        except OSError as exc:
+            raise ArtifactError(f"cannot create operation artifact directory {destination}: {exc}") from exc
+        return destination
+
     def _atomic_write(self, destination: Path, content: bytes) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(destination.parent, 0o700)
@@ -76,3 +85,13 @@ class OperationArtifacts:
             temporary.unlink(missing_ok=True)
             raise
 
+
+def atomic_write_private(destination: Path, content: bytes) -> Path:
+    """Atomically replace an arbitrary private file, including fsync and mode hardening."""
+
+    destination = destination.expanduser().resolve()
+    try:
+        OperationArtifacts(destination.parent)._atomic_write(destination, content)
+    except OSError as exc:
+        raise ArtifactError(f"cannot atomically write private file {destination}: {exc}") from exc
+    return destination

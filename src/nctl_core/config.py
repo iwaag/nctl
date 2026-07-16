@@ -96,6 +96,9 @@ class ReconcileConfig(StrictModel):
     job_timeout_seconds: float = Field(default=300.0, gt=0, le=86400)
     ansible_timeout_seconds: float = Field(default=1800.0, gt=0, le=86400)
     remote_report_path: Path = Path("/var/lib/nodeutils/inventory.json")
+    max_report_bytes: int = Field(default=2_097_152, ge=1, le=100_000_000)
+    max_report_age_hours: int = Field(default=72, gt=0, le=8760)
+    ingest_policy_file: Path = Path("seed/nodeutils_ingest.yaml")
     lock_path: Path = Path("~/.local/state/nctl/reconcile.lock")
 
     @field_validator("remote_report_path")

@@ -93,6 +93,9 @@ def test_load_valid(tmp_path):
     assert cfg.repo_root() == tmp_path.resolve()
     assert cfg.reconcile.max_rounds == 3
     assert cfg.reconcile.remote_report_path == Path("/var/lib/nodeutils/inventory.json")
+    assert cfg.reconcile.max_report_bytes == 2_097_152
+    assert cfg.reconcile.max_report_age_hours == 72
+    assert cfg.reconcile.ingest_policy_file == Path("seed/nodeutils_ingest.yaml")
     assert cfg.reconcile.resolved_lock_path().is_absolute()
 
 

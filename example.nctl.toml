@@ -28,6 +28,9 @@ job_poll_interval_seconds = 2
 job_timeout_seconds = 300
 ansible_timeout_seconds = 1800
 remote_report_path = "/var/lib/nodeutils/inventory.json"
+max_report_bytes = 2097152
+max_report_age_hours = 72
+ingest_policy_file = "seed/nodeutils_ingest.yaml"
 lock_path = "~/.local/state/nctl/reconcile.lock"
 
 [dashboard]
