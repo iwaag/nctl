@@ -33,6 +33,10 @@ uv run nctl apply dnsmasq --yes
 uv run nctl dashboard
 uv run nctl dashboard --no-push
 uv run nctl dashboard --from ~/.local/state/nctl/dashboard/drift.json --out /tmp/preview
+uv run nctl reconcile
+uv run nctl reconcile agstudio
+uv run nctl reconcile agstudio --yes
+uv run nctl reconcile --yes --max-rounds 1 --json
 ```
 
 `status` checks Nautobot connectivity/auth/intent-catalog presence, nodeutils dump freshness, and
@@ -119,6 +123,80 @@ entry in `status_push`; it never flips the command's `ok` or blocks the HTML/JSO
 fields are a **derived cache of the last nctl run**, not a second source of truth — `nctl drift`
 remains authoritative; `reconciliation_checked_at` is what makes a stale cache visible in
 nintent's UI.
+
+### `reconcile`
+
+`nctl reconcile [HOST] [--yes] [--max-rounds N] [--json]` is the routine, single-command path from
+drift to a freshly verified converged state — the AI-exception-handler model from the roadmap
+depends on this being the normal way anything (human, cron, or AI) drives convergence, reading
+drift/event artifacts only when it stops short of `converged`.
+
+- **Plan mode** (no `--yes`, the default): builds one full-cluster drift, projects the requested
+  scope (a desired-node slug, or the whole cluster with no argument), and persists a plan without
+  touching the ledger, Ansible, or Nautobot Jobs. Exit 0 whenever planning itself succeeds
+  (`state: planned`), even if the plan describes real drift — a dry plan is not expected to be
+  clean.
+- **Apply mode** (`--yes`): executes the plan's actions in dependency order, across up to
+  `--max-rounds` bounded re-plan rounds (overrides `[reconcile].max_rounds`, clamped to `1..10` by
+  the CLI itself as a usage error). Each round re-fetches one fresh full-cluster drift, runs
+  bootstrap/ledger actions (nodeutils collection + Nautobot ingest, unique actual-node linking,
+  scoped IPAM), atomically regenerates the **full** production inventory (even for a host-scoped
+  run, so a partial document never replaces the canonical one), then service/dnsmasq playbook
+  actions, then re-observes any host that needed it. A round with an empty plan and no remaining
+  automatic maintenance action is `already_converged`/`converged`; an unchanged drift fingerprint
+  between rounds is `non_converged` (`no_progress`); exhausting `--max-rounds` without converging
+  is also `non_converged` (`max_rounds_reached`); any manual/unsupported plan finding stops the run
+  **before any mutation** (`manual_intervention_required`); a controller-local lock held by another
+  reconcile fails immediately (`reconcile_lock_contention`) before the first drift fetch. Exit 0
+  only for `already_converged`/`converged`; every other apply-mode state exits 1.
+- **Scope**: an independent target's failure never blocks other independent targets in the same
+  scope — the run still reports the overall result as non-`converged` if any selected target never
+  reaches a fresh `converged` status, but reachable/healthy targets still make progress. A host
+  argument must resolve to exactly one desired-node slug; zero or multiple matches are a usage
+  error (exit 2), not a run failure.
+- **Dashboard reuse**: every apply terminal path that has a valid full-cluster drift payload
+  refreshes the same dashboard/status cache from that exact payload — `build_drift` is never called
+  a second time, so the dashboard and the reconcile result can't disagree. A dashboard write-back
+  failure degrades to a warning in `data.dashboard` and never changes the reconcile terminal
+  `state`.
+- **Audit trail**: before `--yes` mutates anything, nctl verifies the operation directory and event
+  log are writable and refuses to proceed if they aren't (`artifact_write_failed`) — a mutating run
+  never proceeds without a place to record what it did.
+
+The `nctl.reconcile.v1` envelope's `data` carries `operation_id`, `mode`, `scope`, terminal `state`
+(`planned | already_converged | converged | manual_intervention_required | non_converged | failed`),
+`event_log_path`, `artifact_dir`, `plan_path`, initial/final drift paths, per-round action results
+(`rounds`), `manual_review`/`unsupported` records (target + diff code + evidence), scope/global
+status summaries, and the `dashboard` result. The plan itself
+(`<events.log_dir>/<operation_id>/plan.json`, schema `nctl.reconcile.plan.v1`) is both embedded in
+plan-mode output and persisted standalone; it never contains a Nautobot token, raw report content,
+or arbitrary shell text — actions carry typed parameters and claimed diff codes, not prose. Neither
+`plan.json` nor `result.json` are deleted on failure: a non-`converged` run leaves its full operation
+directory (`round-NN/drift-*.json`, `round-NN/ansible/*.std{out,err}`, `round-NN/jobs/*.json`,
+`round-NN/reports/*.json`, `round-NN/probe-config/*.yaml`) behind for AI or human diagnosis, per the
+roadmap's "AI reads these to diagnose" model. Report/config/job artifacts are written mode `0600`;
+directories `0700`.
+
+```toml
+[reconcile]
+max_rounds = 3                                  # 1..10, overridable per run with --max-rounds
+job_poll_interval_seconds = 2.0
+job_timeout_seconds = 300.0
+ansible_timeout_seconds = 1800.0
+remote_report_path = "/var/lib/nodeutils/inventory.json"  # must be absolute
+max_report_bytes = 2097152
+max_report_age_hours = 72
+ingest_policy_file = "seed/nodeutils_ingest.yaml"
+service_observation_max_age_hours = 24
+lock_path = "~/.local/state/nctl/reconcile.lock"
+```
+
+`nctl reconcile --yes` is the routine entry point that replaces the old
+`bootstrap-inventory` → `collect_nodeutils_and_ingest_nautobot.yml` → `production-inventory`
+Ansible/Makefile sequence; `ansible_agdev/Makefile`'s `pipeline` target now runs exactly this
+command. `make bootstrap-inventory`/`make production-inventory` remain as standalone diagnostics —
+`reconcile` renders its own operation-scoped bootstrap inventory and regenerates the full production
+inventory itself, so it never shells out to either.
 
 ## Ansible configuration
 
