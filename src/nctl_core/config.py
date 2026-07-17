@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import tomllib
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 CONFIG_FILENAME = "nctl.toml"
 CONFIG_ENV_VAR = "NCTL_CONFIG"
@@ -113,6 +115,41 @@ class ReconcileConfig(StrictModel):
         return self.lock_path.expanduser()
 
 
+class ServeConfig(StrictModel):
+    host: str = "127.0.0.1"
+    port: int = Field(default=8300, ge=1, le=65535)
+    token_env: str = "NCTL_SERVE_TOKEN"
+    token_file: Path | None = None
+    auth: Literal["token", "none"] = "token"
+    cors_origins: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unauthenticated_bind_must_be_loopback(self) -> "ServeConfig":
+        if self.auth == "none" and not _is_loopback_host(self.host):
+            raise ValueError('auth="none" requires a loopback host')
+        return self
+
+    def resolve_token(self) -> str | None:
+        """Resolve the bearer token without ever accepting it inline in TOML."""
+        if self.token_file is not None:
+            path = self.token_file.expanduser()
+            if not path.is_file():
+                raise ConfigInvalidError(f"serve.token_file does not exist: {path}")
+            token = path.read_text().strip()
+        else:
+            token = os.environ.get(self.token_env, "").strip()
+        return token or None
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 class Config(StrictModel):
     nautobot: NautobotConfig
     inventory: InventoryConfig
@@ -121,6 +158,7 @@ class Config(StrictModel):
     repo: RepoConfig = RepoConfig()
     dashboard: DashboardConfig = DashboardConfig()
     reconcile: ReconcileConfig = ReconcileConfig()
+    serve: ServeConfig = ServeConfig()
 
     # Where the config file was loaded from; relative paths resolve against its parent.
     source_path: Path

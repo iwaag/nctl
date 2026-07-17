@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
+from pydantic import ValidationError
 
-from nctl_core.config import Config, ConfigError
+from nctl_core.config import Config, ConfigError, ConfigInvalidError, ServeConfig
 from nctl_core.dashboard_render import build_dashboard, render_dashboard_text
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
 from nctl_core.dnsmasq_render import build_dnsmasq_render, render_dnsmasq_conf_text, render_dnsmasq_summary_text
@@ -33,6 +34,7 @@ from nctl_core.production_render import (
 )
 from nctl_core.reconcile.executor import render_reconcile_text, run_reconcile
 from nctl_core.status import build_status, render_status_text
+from nctl_core.serve.runtime import build_serve_startup, render_serve_text, run_server
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
 render_app = typer.Typer(help="Deterministic renders of desired state into consumer formats.")
@@ -60,7 +62,7 @@ ConfigOption = Annotated[
 def _load_config(config_path: Path | None) -> Config:
     try:
         return Config.load(config_path)
-    except ConfigError as exc:
+    except (ConfigError, ValidationError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(EXIT_USAGE)
 
@@ -326,6 +328,41 @@ def reconcile(
     if any(error.code in ("unknown_host",) for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+ServeHostOption = Annotated[Optional[str], typer.Option("--host", help="Override [serve].host for this run.")]
+ServePortOption = Annotated[Optional[int], typer.Option("--port", min=1, max=65535, help="Override [serve].port.")]
+ServeJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.serve.v1 startup envelope as JSON.")]
+
+
+@app.command()
+def serve(
+    config: ConfigOption = None,
+    host: ServeHostOption = None,
+    port: ServePortOption = None,
+    json_output: ServeJsonOption = False,
+) -> None:
+    """Run the foreground HTTP subscriber API."""
+    cfg = _load_config(config)
+    try:
+        serve_values = cfg.serve.model_dump()
+        if host is not None:
+            serve_values["host"] = host
+        if port is not None:
+            serve_values["port"] = port
+        cfg = cfg.model_copy(update={"serve": ServeConfig.model_validate(serve_values)})
+        # Resolve now so startup fails before claiming that the server is listening.
+        if cfg.serve.auth == "token" and cfg.serve.resolve_token() is None:
+            raise ConfigInvalidError(
+                f"serve auth is enabled but no token was found in ${cfg.serve.token_env} or serve.token_file"
+            )
+    except (ConfigError, ValidationError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(EXIT_USAGE)
+
+    envelope = build_serve_startup(cfg)
+    emit(envelope, json_output, render_serve_text)
+    run_server(cfg)
 
 
 def main() -> None:

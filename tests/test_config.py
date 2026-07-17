@@ -98,6 +98,11 @@ def test_load_valid(tmp_path):
     assert cfg.reconcile.ingest_policy_file == Path("seed/nodeutils_ingest.yaml")
     assert cfg.reconcile.service_observation_max_age_hours == 24
     assert cfg.reconcile.resolved_lock_path().is_absolute()
+    assert cfg.serve.host == "127.0.0.1"
+    assert cfg.serve.port == 8300
+    assert cfg.serve.auth == "token"
+    assert cfg.serve.token_env == "NCTL_SERVE_TOKEN"
+    assert cfg.serve.cors_origins == []
 
 
 def test_load_rejects_inline_token(tmp_path):
@@ -141,6 +146,41 @@ def test_reconcile_config_is_strict_and_bounded(tmp_path):
 
     with pytest.raises(ConfigInvalidError, match="unknown"):
         Config.load(write_config(tmp_path, VALID + "\n[reconcile]\nunknown = true\n"))
+
+
+def test_serve_config_is_strict_and_bounded(tmp_path):
+    cfg = Config.load(
+        write_config(
+            tmp_path,
+            VALID
+            + '\n[serve]\nhost = "localhost"\nport = 9000\nauth = "none"\n'
+            + 'cors_origins = ["http://ui.test"]\n',
+        )
+    )
+    assert cfg.serve.host == "localhost"
+    assert cfg.serve.port == 9000
+    assert cfg.serve.auth == "none"
+    assert cfg.serve.cors_origins == ["http://ui.test"]
+
+    with pytest.raises(ConfigInvalidError, match="loopback"):
+        Config.load(write_config(tmp_path, VALID + '\n[serve]\nhost = "0.0.0.0"\nauth = "none"\n'))
+    with pytest.raises(ConfigInvalidError, match="port"):
+        Config.load(write_config(tmp_path, VALID + "\n[serve]\nport = 70000\n"))
+    with pytest.raises(ConfigInvalidError, match="unknown"):
+        Config.load(write_config(tmp_path, VALID + "\n[serve]\nunknown = true\n"))
+    with pytest.raises(ConfigInvalidError, match="token"):
+        Config.load(write_config(tmp_path, VALID + '\n[serve]\ntoken = "plaintext"\n'))
+
+
+def test_serve_resolve_token_from_env_or_file(tmp_path, monkeypatch):
+    cfg = Config.load(write_config(tmp_path))
+    monkeypatch.setenv("NCTL_SERVE_TOKEN", "serve-env")
+    assert cfg.serve.resolve_token() == "serve-env"
+
+    token_file = tmp_path / "serve-token"
+    token_file.write_text("serve-file\n")
+    serve = cfg.serve.model_copy(update={"token_file": token_file})
+    assert serve.resolve_token() == "serve-file"
 
 
 def test_resolve_token_from_env(tmp_path, monkeypatch):
