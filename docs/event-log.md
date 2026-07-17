@@ -95,3 +95,14 @@ op.finish(ok=True)
 
 A failure to write the log file (permissions, missing parent that can't be created, etc.) prints
 one warning to stderr and is otherwise swallowed — it must never crash the command it instruments.
+
+## In-process subscriber bus (Phase 5)
+
+`nctl_core.events.subscribe(callback, max_pending=1024)` registers a process-wide subscriber
+and returns an idempotent unsubscribe callable. Each successfully appended record is also
+delivered to every subscriber, in emit order, on a per-subscriber worker thread. The same
+isolation contract as the file write applies: a raising callback is warned about once on
+stderr and muted; a slow subscriber loses oldest-first from its bounded queue instead of
+blocking `emit`. Records that fail to reach the file are not published. The JSONL file is
+the source of truth — the bus is a latency optimization, and a consumer that needs
+losslessness replays the file by `seq` (see `nctl_core.operations_index.read_events`).

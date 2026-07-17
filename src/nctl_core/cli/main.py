@@ -23,6 +23,7 @@ from nctl_core.hosts_intent_render import (
     render_hosts_intent_summary_text,
     write_hosts_intent_artifacts,
 )
+from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
 from nctl_core.production_render import (
     build_production_render,
@@ -36,8 +37,10 @@ from nctl_core.status import build_status, render_status_text
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
 render_app = typer.Typer(help="Deterministic renders of desired state into consumer formats.")
 apply_app = typer.Typer(help="Apply rendered desired state through deployment automation.")
+ops_app = typer.Typer(help="Inspect past and running operations from the event-log directory.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
+app.add_typer(ops_app, name="ops")
 
 
 @app.callback()
@@ -234,6 +237,44 @@ def render_hosts_intent(
     else:
         print(render_hosts_intent_inventory_text(envelope))
 
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+OpsListJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.ops.list.v1 envelope as JSON.")]
+OpsLimitOption = Annotated[
+    Optional[int], typer.Option("--limit", min=1, help="Show at most this many operations (newest first).")
+]
+
+
+@ops_app.command("list")
+def ops_list(config: ConfigOption = None, limit: OpsLimitOption = None, json_output: OpsListJsonOption = False) -> None:
+    """List operations found in the event-log directory, newest first."""
+    cfg = _load_config(config)
+    envelope = build_ops_list(cfg, limit=limit)
+    emit(envelope, json_output, render_ops_list_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+OperationIdArgument = Annotated[str, typer.Argument(help="Operation ID (ULID) to inspect.")]
+OpsShowJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.ops.show.v1 envelope as JSON.")]
+AfterSeqOption = Annotated[
+    int, typer.Option("--after-seq", help="Only include events with seq greater than this cursor.")
+]
+
+
+@ops_app.command("show")
+def ops_show(
+    operation_id: OperationIdArgument,
+    config: ConfigOption = None,
+    after_seq: AfterSeqOption = -1,
+    json_output: OpsShowJsonOption = False,
+) -> None:
+    """Show one operation's record, artifact files, and event tail."""
+    cfg = _load_config(config)
+    envelope = build_ops_show(cfg, operation_id, after_seq=after_seq)
+    emit(envelope, json_output, render_ops_show_text)
+    if any(error.code in ("malformed_operation_id", "unknown_operation") for error in envelope.errors):
+        raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
