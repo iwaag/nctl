@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, Query, Request
+from fastapi import Depends, FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.openapi.utils import get_openapi
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.websockets import WebSocketState
 
 from nctl_core.config import Config, ConfigInvalidError
+from nctl_core.events import EventRecord, subscribe
 from nctl_core.operations_index import OperationIndexError, OperationRecord, list_operations, load_operation, read_events
 from nctl_core.output import EnvelopeError
 from nctl_core.serve.artifacts import list_public_artifacts, resolve_public_artifact
@@ -22,6 +25,17 @@ from nctl_core.serve.snapshots import latest_snapshot, read_result
 from nctl_core.status import build_status
 
 _RUNNER_ERROR_STATUS = {"operation_conflict": 409}
+
+# Close codes are in the 4000-4999 application-defined range (RFC 6455 7.4.2).
+_WS_UNAUTHORIZED = 4401
+_WS_BAD_SUBSCRIBE = 4400
+_WS_SLOW_CONSUMER = 4408
+_WS_SUBSCRIBE_TIMEOUT = 30.0
+_WS_QUEUE_SIZE = 256
+
+
+class _InvalidSubscribe(Exception):
+    pass
 
 
 class ApiError(Exception):
@@ -170,10 +184,142 @@ def create_app(cfg: Config) -> FastAPI:
                 "op": handle.op,
                 "mutating": handle.mutating,
                 "events_url": f"/api/v1/operations/{handle.operation_id}/events",
+                "ws_url": "/api/v1/ws",
             },
         )
 
+    @app.websocket("/api/v1/ws")
+    async def ws_stream(websocket: WebSocket) -> None:
+        if not _ws_authorized(websocket, cfg, token):
+            await websocket.close(code=_WS_UNAUTHORIZED)
+            return
+        await websocket.accept()
+        try:
+            raw = await asyncio.wait_for(websocket.receive_json(), timeout=_WS_SUBSCRIBE_TIMEOUT)
+            operation_id, after_seq = _parse_subscribe(raw)
+        except (TimeoutError, WebSocketDisconnect, ValueError, _InvalidSubscribe):
+            await _safe_close(websocket, _WS_BAD_SUBSCRIBE)
+            return
+
+        loop = asyncio.get_running_loop()
+        # One extra slot beyond _WS_QUEUE_SIZE is reserved for the `_OVERFLOW` sentinel, so it
+        # can always be enqueued the moment the queue would otherwise be full.
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=_WS_QUEUE_SIZE + 1)
+        overflowed = False
+
+        def on_event(record: EventRecord) -> None:
+            if operation_id is not None and record.operation_id != operation_id:
+                return
+            loop.call_soon_threadsafe(_offer, queue, record)
+
+        unsubscribe = subscribe(on_event)
+        try:
+            seen: set[tuple[str, int]] = set()
+            if operation_id is not None:
+                records, _corrupt = read_events(cfg.events.resolved_log_dir(), operation_id, after_seq=after_seq)
+                for record in records:
+                    seen.add((record.operation_id, record.seq))
+                    await websocket.send_json(record.model_dump(mode="json"))
+
+            reader = asyncio.ensure_future(_drain_incoming(websocket))
+            writer = asyncio.ensure_future(_write_events(websocket, queue, seen))
+            done, pending = await asyncio.wait({reader, writer}, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                exc = task.exception()
+                if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                    raise exc
+                if task is writer and exc is None and task.result():
+                    overflowed = True
+            if overflowed:
+                await _safe_close(
+                    websocket, _WS_SLOW_CONSUMER, "slow consumer; reconnect and replay via after_seq"
+                )
+        except WebSocketDisconnect:
+            pass
+        finally:
+            # unsubscribe() joins the subscriber's worker thread; run off the event loop so a
+            # slow-to-stop subscriber can't stall other connections.
+            await asyncio.to_thread(unsubscribe)
+
     return app
+
+
+_OVERFLOW = object()
+
+
+def _offer(queue: "asyncio.Queue[Any]", record: EventRecord) -> None:
+    """Runs on the event loop thread only (via `call_soon_threadsafe`), so the check-then-act
+    below is not racy despite `subscribe()`'s callback originating on another OS thread."""
+
+    if queue.full():
+        return  # the `_OVERFLOW` sentinel (or another drop) already occupies the last slot
+    if queue.qsize() >= _WS_QUEUE_SIZE:
+        queue.put_nowait(_OVERFLOW)
+        return
+    queue.put_nowait(record)
+
+
+async def _drain_incoming(websocket: WebSocket) -> None:
+    """Detect client disconnect while the writer side is only sending."""
+
+    while True:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            raise WebSocketDisconnect(message.get("code", 1000))
+
+
+async def _write_events(websocket: WebSocket, queue: "asyncio.Queue[Any]", seen: set[tuple[str, int]]) -> bool:
+    """Drains `queue` and sends each record; returns True if stopped by the overflow sentinel."""
+
+    while True:
+        item = await queue.get()
+        if item is _OVERFLOW:
+            return True
+        record: EventRecord = item
+        key = (record.operation_id, record.seq)
+        if key in seen:
+            continue
+        seen.add(key)
+        await websocket.send_json(record.model_dump(mode="json"))
+
+
+async def _safe_close(websocket: WebSocket, code: int, reason: str = "") -> None:
+    if websocket.application_state != WebSocketState.DISCONNECTED:
+        await websocket.close(code=code, reason=reason)
+
+
+def _parse_subscribe(raw: Any) -> tuple[str | None, int]:
+    if not isinstance(raw, dict):
+        raise _InvalidSubscribe("subscribe message must be a JSON object")
+    after_seq = raw.get("after_seq", -1)
+    if not isinstance(after_seq, int) or isinstance(after_seq, bool):
+        raise _InvalidSubscribe('"after_seq" must be an integer')
+    subscribe_target = raw.get("subscribe")
+    if subscribe_target == "all":
+        return None, after_seq
+    if isinstance(subscribe_target, dict) and isinstance(subscribe_target.get("operation_id"), str):
+        operation_id = subscribe_target["operation_id"]
+        if operation_id:
+            return operation_id, after_seq
+    raise _InvalidSubscribe('"subscribe" must be "all" or {"operation_id": "..."}')
+
+
+def _ws_authorized(websocket: WebSocket, cfg: Config, token: str | None) -> bool:
+    if cfg.serve.auth == "none":
+        return True
+    if token is None:
+        return False
+    header = websocket.headers.get("authorization")
+    scheme, separator, supplied = (header or "").partition(" ")
+    if separator == " " and scheme.lower() == "bearer" and supplied and secrets.compare_digest(supplied, token):
+        return True
+    query_token = websocket.query_params.get("token")
+    if query_token and secrets.compare_digest(query_token, token):
+        return True
+    return False
 
 
 def _operation_or_404(cfg: Config, operation_id: str) -> OperationRecord:
