@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.openapi.utils import get_openapi
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.websockets import WebSocketState
@@ -20,6 +20,7 @@ from nctl_core.events import EventRecord, subscribe
 from nctl_core.operations_index import OperationIndexError, OperationRecord, list_operations, load_operation, read_events
 from nctl_core.output import EnvelopeError
 from nctl_core.serve.artifacts import list_public_artifacts, resolve_public_artifact
+from nctl_core.serve.dashboard import render_live_dashboard_html
 from nctl_core.serve.runner import OperationRunner, RunnerError
 from nctl_core.serve.snapshots import latest_snapshot, read_result
 from nctl_core.status import build_status
@@ -90,6 +91,12 @@ def create_app(cfg: Config) -> FastAPI:
     @app.get("/api/v1/health", tags=["system"])
     async def health() -> dict[str, str]:
         return {"status": "ok", "version": _package_version()}
+
+    @app.get("/", tags=["system"], response_class=HTMLResponse)
+    async def live_dashboard() -> str:
+        # Unauthenticated like /health: the page embeds no data and no token (Decision 8);
+        # the token is entered client-side and only ever sent to the /api/v1/* endpoints.
+        return render_live_dashboard_html()
 
     @app.get("/openapi.json", tags=["system"])
     async def openapi(_auth: None = Depends(authorize)) -> JSONResponse:
