@@ -1,5 +1,9 @@
 # Event log format
 
+> From Phase 5 onward, external subscribers (not just the CLI) read this format over HTTP/WS.
+> The record shape and the event vocabulary listed below are frozen per
+> [compatibility.md](compatibility.md) — additions are fine, renames/removals are not.
+
 Long-running operations (and `status`, to exercise the convention end to end even though it's
 short) emit one JSON Lines file per run via `nctl_core.events.OperationLog`:
 

@@ -1,5 +1,9 @@
 # JSON output envelope
 
+> From Phase 5 onward, external subscribers (not just the CLI) consume these envelopes over
+> HTTP. The wrapper shape and each command's `data` field set below are frozen per
+> [compatibility.md](compatibility.md) — additions are fine, renames/removals are not.
+
 Every command's `--json` output is a single JSON document on stdout, matching this shape
 (`nctl_core.output.Envelope`):
 
