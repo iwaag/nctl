@@ -101,10 +101,12 @@ def run_reconcile(
     max_rounds: int | None = None,
     now: Callable[[], datetime] | None = None,
     command_runner: CommandRunner | None = None,
+    operation_id: str | None = None,
 ) -> Envelope[ReconcileData]:
     now = now or (lambda: datetime.now(timezone.utc))
     scope = PlanScope(kind="host", host_slug=host) if host else PlanScope(kind="cluster")
-    op = OperationLog.start("reconcile", cfg.events.resolved_log_dir())
+    op = OperationLog("reconcile", cfg.events.resolved_log_dir(), operation_id=operation_id)
+    op.emit("started", "reconcile started")
     data = ReconcileData(
         operation_id=op.operation_id,
         mode="apply" if apply_changes else "plan",
@@ -649,8 +651,31 @@ def _finish(op: OperationLog, data: ReconcileData, state: str, errors: list[Enve
         op.emit("drift_resolved", "reconcile converged", state=state)
     elif state in ("manual_intervention_required", "non_converged"):
         op.emit("non_converged", "reconcile stopped without full convergence", level="warning", state=state)
+    envelope = Envelope(schema=RECONCILE_SCHEMA, generated_at=datetime.now(timezone.utc), ok=ok, data=data, errors=errors)
+    # `result.json` must exist before the `finished` event is visible: callers (`nctl ops
+    # show`, the Phase 5 server) treat that event as the signal that the terminal envelope is
+    # ready to read, so persisting after `op.finish()` would leave a real, observed window
+    # where the operation shows "finished" but has no result yet.
+    _persist_terminal_result(data.artifact_dir, envelope)
     op.finish(ok=ok, message=state)
-    return Envelope(schema=RECONCILE_SCHEMA, generated_at=datetime.now(timezone.utc), ok=ok, data=data, errors=errors)
+    return envelope
+
+
+def _persist_terminal_result(artifact_dir: str, envelope: Envelope[ReconcileData]) -> None:
+    """Write the terminal envelope as a public `result.json`, matching the exit criterion that
+    the artifact layout on disk is identical regardless of whether the CLI or the Phase 5 server
+    triggered the run. Never fatal: a `result.json` write failure must not turn a completed
+    reconcile into a reported failure.
+    """
+
+    if not artifact_dir:
+        return
+    try:
+        artifacts = OperationArtifacts(Path(artifact_dir))
+        path = artifacts.write_json("result.json", envelope.model_dump(mode="json", by_alias=True))
+        path.chmod(0o644)
+    except (ArtifactError, OSError):
+        pass
 
 
 def render_reconcile_text(envelope: Envelope[ReconcileData]) -> str:

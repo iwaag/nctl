@@ -17,8 +17,11 @@ from nctl_core.config import Config, ConfigInvalidError
 from nctl_core.operations_index import OperationIndexError, OperationRecord, list_operations, load_operation, read_events
 from nctl_core.output import EnvelopeError
 from nctl_core.serve.artifacts import list_public_artifacts, resolve_public_artifact
+from nctl_core.serve.runner import OperationRunner, RunnerError
 from nctl_core.serve.snapshots import latest_snapshot, read_result
 from nctl_core.status import build_status
+
+_RUNNER_ERROR_STATUS = {"operation_conflict": 409}
 
 
 class ApiError(Exception):
@@ -31,6 +34,8 @@ def create_app(cfg: Config) -> FastAPI:
     token = _resolved_serve_token(cfg)
     app = FastAPI(title="nctl subscriber API", version=_package_version(), openapi_url=None)
     app.state.nctl_config = cfg
+    runner = OperationRunner(cfg)
+    app.state.nctl_runner = runner
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
@@ -142,6 +147,31 @@ def create_app(cfg: Config) -> FastAPI:
         except OSError:
             raise ApiError(404, "unknown_artifact", f"artifact is not publicly available: {name}")
         return Response(content=content, media_type="application/json")
+
+    @app.post("/api/v1/operations", tags=["operations"])
+    async def create_operation(request: Request, _auth: None = Depends(authorize)) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            raise ApiError(422, "validation_error", "request body must be JSON")
+        if not isinstance(body, dict) or not isinstance(body.get("op"), str):
+            raise ApiError(422, "validation_error", 'request body must include a string "op" field')
+        params = body.get("params", {})
+        if not isinstance(params, dict):
+            raise ApiError(422, "validation_error", '"params" must be an object')
+        try:
+            handle = runner.submit(body["op"], params)
+        except RunnerError as exc:
+            raise ApiError(_RUNNER_ERROR_STATUS.get(exc.code, 422), exc.code, exc.message, exc.detail)
+        return JSONResponse(
+            status_code=202,
+            content={
+                "operation_id": handle.operation_id,
+                "op": handle.op,
+                "mutating": handle.mutating,
+                "events_url": f"/api/v1/operations/{handle.operation_id}/events",
+            },
+        )
 
     return app
 

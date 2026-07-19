@@ -121,6 +121,37 @@ def test_plan_mode_never_mutates_and_reports_planned(tmp_path, monkeypatch):
     assert (tmp_path / "events" / envelope.data.operation_id / "plan.json").is_file()
 
 
+def test_terminal_result_json_is_persisted_publicly_and_matches_the_envelope(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="actual_node_not_linked", severity=Severity.ERROR, message="x")
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
+    monkeypatch.setattr(executor_module, "execute_link_actual_node", lambda *a, **k: None)
+
+    envelope = run_reconcile(cfg, apply_changes=False)
+
+    result_path = tmp_path / "events" / envelope.data.operation_id / "result.json"
+    assert result_path.is_file()
+    assert result_path.stat().st_mode & 0o777 == 0o644
+    payload = json.loads(result_path.read_text())
+    assert payload["schema"] == "nctl.reconcile.v1"
+    assert payload["ok"] == envelope.ok
+    assert payload["data"]["state"] == envelope.data.state
+
+
+def test_operation_id_can_be_pre_assigned_by_a_caller(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    _sequence(monkeypatch, [_drift([])])
+    _stub_dashboard(monkeypatch)
+
+    envelope = run_reconcile(cfg, apply_changes=True, operation_id="01ARZ3NDEKTSV4RRFFQ69G5FAV")
+
+    assert envelope.data.operation_id == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    assert (tmp_path / "events" / "01ARZ3NDEKTSV4RRFFQ69G5FAV.jsonl").is_file()
+
+
 # --- already converged -------------------------------------------------------
 
 
