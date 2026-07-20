@@ -57,6 +57,7 @@ def test_primary_endpoint_with_mdns_exports_ssh_host() -> None:
     assert export.summary["groups"] == ["ssh_hosts"]
     assert export.skipped == []
     ssh_hosts = export.inventory["all"]["children"]["ssh_hosts"]["hosts"]
+    assert ssh_hosts["agnomad"]["ansible_host"] == "agnomad.local"
     assert ssh_hosts["agnomad"]["mdns_hostname"] == "agnomad.local"
     assert ssh_hosts["agnomad"]["nintent_inventory_stage"] == "reserved_name"
     assert ssh_hosts["agnomad"]["name_reserved_only"] is True

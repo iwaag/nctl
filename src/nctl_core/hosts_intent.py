@@ -176,6 +176,7 @@ def _select_mdns_endpoint(endpoints: list[DesiredEndpoint]) -> DesiredEndpoint |
 
 def _host_vars(node: DesiredNode, endpoint: DesiredEndpoint) -> dict[str, Any]:
     return {
+        "ansible_host": _text(endpoint.mdns_name),
         "mdns_hostname": _text(endpoint.mdns_name),
         "nintent_inventory_stage": "reserved_name",
         "nintent_desired_node": _text(node.name),
