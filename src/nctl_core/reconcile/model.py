@@ -85,3 +85,18 @@ class ReconcilePlan(BaseModel):
 
     def has_blocking_findings(self) -> bool:
         return bool(self.manual_review) or bool(self.unsupported)
+
+    def has_global_blocking_findings(self) -> bool:
+        """A global finding blocks every action in the plan (Decision 5)."""
+
+        return any(record.target.kind == "global" for record in self.manual_review) or any(
+            record.target.kind == "global" for record in self.unsupported
+        )
+
+    def has_local_blocking_findings(self) -> bool:
+        """A target-local (non-global) finding blocks only its own target's
+        production actuation, not unrelated healthy targets (Decision 5)."""
+
+        return any(record.target.kind != "global" for record in self.manual_review) or any(
+            record.target.kind != "global" for record in self.unsupported
+        )

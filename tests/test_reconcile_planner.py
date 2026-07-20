@@ -420,3 +420,104 @@ def test_build_plan_ignores_unclassified_non_error_diagnostic():
     assert plan.actions == []
     assert plan.manual_review == []
     assert plan.unsupported == []
+
+
+# --- Phase 1 (better_usability p1): production-blocked host filtering ------
+
+
+def test_service_action_excludes_a_production_blocked_host():
+    healthy = _node("n1", "aghealthy")
+    blocked = _node("n2", "agblocked")
+    svc = _service("s1", "web")
+    p1 = _placement("p1", service_id="s1", node_id="n1", deployment_profile="web")
+    p2 = _placement("p2", service_id="s1", node_id="n2", deployment_profile="web")
+    snapshot = _snapshot(nodes=[healthy, blocked], services=[svc], placements=[p1, p2])
+    diffs = [
+        _service_diff(svc, "service_not_running"),
+        DiffRecord(
+            target=Target(kind="node", slug="agblocked", name="agblocked", id="n2"),
+            code="unknown_profile",
+            severity=Severity.ERROR,
+            message="agblocked: unknown_profile",
+            desired={"placement": {"id": "p2", "instance_name": "web-n2", "config": {}}},
+        ),
+    ]
+    reconciliation = {"web": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/web.yml"))}
+
+    plan = _build(snapshot, diffs, profile_reconciliation=reconciliation)
+
+    [action] = plan.actions
+    assert action.parameters["host_slugs"] == ["aghealthy"]
+    manual_codes = {(r.target.slug, r.code) for r in plan.manual_review}
+    assert ("agblocked", "unknown_profile") in manual_codes
+    # The blocked node's manual-review record still carries the placement
+    # evidence -- the reason is never silently erased by the filtering.
+    blocked_record = next(r for r in plan.manual_review if r.target.slug == "agblocked")
+    assert blocked_record.evidence["desired"]["placement"]["id"] == "p2"
+
+
+def test_service_action_omitted_when_every_host_is_blocked():
+    blocked = _node("n1", "agblocked")
+    svc = _service("s1", "web")
+    p1 = _placement("p1", service_id="s1", node_id="n1", deployment_profile="web")
+    snapshot = _snapshot(nodes=[blocked], services=[svc], placements=[p1])
+    diffs = [
+        _service_diff(svc, "service_not_running"),
+        DiffRecord(
+            target=Target(kind="node", slug="agblocked", name="agblocked", id="n1"),
+            code="missing_operational_config",
+            severity=Severity.ERROR,
+            message="agblocked: missing_operational_config",
+        ),
+    ]
+    reconciliation = {"web": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/web.yml"))}
+
+    plan = _build(snapshot, diffs, profile_reconciliation=reconciliation)
+
+    assert plan.actions == []
+    assert plan.unsupported == []
+    codes = {r.code for r in plan.manual_review}
+    assert "missing_operational_config" in codes
+
+
+def test_unrelated_automatic_action_survives_alongside_a_blocked_node():
+    healthy = _node("n1", "aghealthy", realized_device_id="dev-1")
+    blocked = _node("n2", "agblocked")
+    device = ActualDevice(id="dev-1", name="aghealthy.local")
+    snapshot = _snapshot(nodes=[healthy, blocked], devices=[device])
+    diffs = [
+        _node_diff(healthy, "actual_node_not_linked"),
+        DiffRecord(
+            target=Target(kind="node", slug="agblocked", name="agblocked", id="n2"),
+            code="invalid_platform_power",
+            severity=Severity.ERROR,
+            message="agblocked: invalid_platform_power",
+        ),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    assert plan.has_local_blocking_findings() is True
+    assert plan.has_global_blocking_findings() is False
+    reconciler_ids = {a.reconciler_id for a in plan.actions}
+    assert "link_actual_node" in reconciler_ids
+
+
+def test_host_scoped_reconcile_selects_only_that_host_blocker():
+    healthy = _node("n1", "aghealthy")
+    blocked = _node("n2", "agblocked")
+    snapshot = _snapshot(nodes=[healthy, blocked])
+    diffs = [
+        DiffRecord(
+            target=Target(kind="node", slug="agblocked", name="agblocked", id="n2"),
+            code="unresolved_connection_path",
+            severity=Severity.ERROR,
+            message="agblocked: unresolved_connection_path",
+        ),
+    ]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="aghealthy"))
+    assert plan.manual_review == []
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agblocked"))
+    assert [r.code for r in plan.manual_review] == ["unresolved_connection_path"]

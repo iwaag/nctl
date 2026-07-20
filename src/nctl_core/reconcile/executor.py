@@ -175,6 +175,7 @@ def _run_apply(
     final_drift_result: DriftResult | None = None
     final_generated_at = ""
     final_snapshot: SourceSnapshot | None = None
+    plan: ReconcilePlan | None = None
     state = "failed"
     errors: list[EnvelopeError] = []
 
@@ -214,7 +215,15 @@ def _run_apply(
         if not plan.actions and not plan.has_blocking_findings():
             state = "already_converged" if round_index == 0 else "converged"
             break
-        if plan.has_blocking_findings():
+        # Decision 5 (better_usability p1): a global finding stops every
+        # action immediately. A target-local finding blocks only its own
+        # target -- if independent actions remain for other, healthy
+        # targets, they still execute this round; only once no executable
+        # action remains does a local finding also terminate the run.
+        if plan.has_global_blocking_findings():
+            state = "manual_intervention_required"
+            break
+        if not plan.actions and plan.has_local_blocking_findings():
             state = "manual_intervention_required"
             break
         if previous_fingerprint is not None and plan.drift_fingerprint == previous_fingerprint:
@@ -238,8 +247,15 @@ def _run_apply(
             break
         data.rounds.append(round_summary)
     else:
-        state = "non_converged"
-        errors = [EnvelopeError(code="max_rounds_reached", message=f"stopped after {rounds_limit} round(s)")]
+        if plan is not None and plan.has_local_blocking_findings() and not plan.has_global_blocking_findings():
+            # The round limit landed exactly when a known local blocker was
+            # the only thing left (independent progress just ran out on the
+            # final permitted round) -- report the true, actionable reason
+            # rather than the misleading "ran out of rounds".
+            state = "manual_intervention_required"
+        else:
+            state = "non_converged"
+            errors = [EnvelopeError(code="max_rounds_reached", message=f"stopped after {rounds_limit} round(s)")]
 
     if final_drift_result is not None:
         final_data = render_drift_data(final_drift_result, final_generated_at, final_snapshot)

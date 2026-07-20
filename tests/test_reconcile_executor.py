@@ -530,3 +530,183 @@ def test_unknown_host_reports_failed_with_code(tmp_path, monkeypatch):
 
     assert envelope.data.state == "failed"
     assert any(e.code == "unknown_host" for e in envelope.errors)
+
+
+# --- Phase 1 (better_usability p1): local-blocker orchestration matrix -------
+#
+# Decision 5: a global finding stops every action; a target-local finding
+# blocks only its own target. Independent healthy-target actions still run,
+# and once independent progress is exhausted a still-present local blocker
+# reports the true manual_intervention_required reason (never a misleading
+# max_rounds_reached).
+
+
+def test_local_blocker_allows_independent_action_then_reports_manual_intervention(tmp_path, monkeypatch):
+    from nctl_core.sources.actual import ActualDevice
+
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    healthy = _node("aghealthy")
+    blocked = DesiredNode(
+        id="22222222-2222-2222-2222-222222222222", slug="agblocked", name="agblocked",
+        lifecycle="active", node_type="device", accepted_actual_types=["device"],
+    )
+    link_diff = DiffRecord(
+        target=Target(kind="node", slug=healthy.slug, name=healthy.name, id=healthy.id),
+        code="actual_node_not_linked", severity=Severity.ERROR, message="x",
+    )
+    local_diff = DiffRecord(
+        target=Target(kind="node", slug=blocked.slug, name=blocked.name, id=blocked.id),
+        code="unresolved_connection_path", severity=Severity.ERROR, message="agblocked: unresolved_connection_path",
+    )
+
+    def snapshot_with_candidate():
+        snapshot = _snapshot(nodes=[healthy, blocked])
+        snapshot.actual = ActualSnapshot(devices=[ActualDevice(id="dev-1", name=healthy.name)])
+        return snapshot
+
+    def make_drift(link_status, link_diffs):
+        targets = [
+            _target_status(link_diff.target, link_status, link_diffs),
+            _target_status(local_diff.target, Status.DRIFTING, [local_diff]),
+        ]
+        summary: dict[str, int] = {}
+        for t in targets:
+            summary[t.status.value] = summary.get(t.status.value, 0) + 1
+        return snapshot_with_candidate(), DriftResult(summary=summary, targets=targets), "2026-07-17T00:00:00+00:00"
+
+    round0 = make_drift(Status.DRIFTING, [link_diff])
+    round1 = make_drift(Status.CONVERGED, [])
+    _sequence(monkeypatch, [round0, round1])
+    _stub_dashboard(monkeypatch)
+
+    link_calls = []
+    monkeypatch.setattr(
+        executor_module,
+        "execute_link_actual_node",
+        lambda client, action: link_calls.append(action.id) or LinkActualNodeResult(
+            node_id=healthy.id, node_slug=healthy.slug, field="realized_device", candidate_id="dev-1"
+        ),
+    )
+
+    envelope = run_reconcile(cfg, apply_changes=True, max_rounds=5)
+
+    assert len(link_calls) == 1  # the healthy node's independent action still executed
+    assert envelope.data.state == "manual_intervention_required"
+    assert not envelope.ok
+    assert len(envelope.data.rounds) == 1
+    assert envelope.data.progress_made is True
+    assert any(r["code"] == "unresolved_connection_path" for r in envelope.data.manual_review)
+
+
+def test_local_blocker_with_no_actions_terminates_without_mutation(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node("agblocked")
+    diff = DiffRecord(
+        target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
+        code="missing_operational_config", severity=Severity.ERROR, message="x",
+    )
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
+    _stub_dashboard(monkeypatch)
+    calls = {"n": 0}
+    monkeypatch.setattr(executor_module, "AnsibleRunner", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert envelope.data.state == "manual_intervention_required"
+    assert not envelope.ok
+    assert envelope.data.rounds == []
+    assert envelope.data.progress_made is False
+    assert calls["n"] == 0
+
+
+def test_global_blocker_stops_before_any_action_even_with_actionable_drift(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    link_diff = DiffRecord(
+        target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
+        code="actual_node_not_linked", severity=Severity.ERROR, message="x",
+    )
+    global_diff = DiffRecord(
+        target=Target(kind="global"), code="unknown_profile", severity=Severity.ERROR, message="broken profile map",
+    )
+    _sequence(
+        monkeypatch,
+        [
+            _drift(
+                [
+                    _target_status(link_diff.target, Status.DRIFTING, [link_diff]),
+                    _target_status(Target(kind="global"), Status.DRIFTING, [global_diff]),
+                ]
+            )
+        ],
+    )
+    _stub_dashboard(monkeypatch)
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        executor_module, "execute_link_actual_node", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1)
+    )
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert envelope.data.state == "manual_intervention_required"
+    assert envelope.data.rounds == []
+    assert calls["n"] == 0
+
+
+def test_max_rounds_reached_with_a_known_local_blocker_reports_manual_intervention(tmp_path, monkeypatch):
+    # Independent progress runs out exactly on the last permitted round: the
+    # terminal reason must be the true manual_intervention_required, not a
+    # misleading max_rounds_reached (plan Step 1.5's round-limit edge case).
+    from nctl_core.sources.actual import ActualDevice
+
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    healthy = _node("aghealthy")
+    blocked = DesiredNode(
+        id="33333333-3333-3333-3333-333333333333", slug="agblocked", name="agblocked",
+        lifecycle="active", node_type="device", accepted_actual_types=["device"],
+    )
+    link_diff = DiffRecord(
+        target=Target(kind="node", slug=healthy.slug, name=healthy.name, id=healthy.id),
+        code="actual_node_not_linked", severity=Severity.ERROR, message="x",
+    )
+    local_diff = DiffRecord(
+        target=Target(kind="node", slug=blocked.slug, name=blocked.name, id=blocked.id),
+        code="invalid_platform_power", severity=Severity.ERROR, message="agblocked: invalid_platform_power",
+    )
+
+    def snapshot_with_candidate():
+        snapshot = _snapshot(nodes=[healthy, blocked])
+        snapshot.actual = ActualSnapshot(devices=[ActualDevice(id="dev-1", name=healthy.name)])
+        return snapshot
+
+    def make_drift(link_status, link_diffs):
+        targets = [
+            _target_status(link_diff.target, link_status, link_diffs),
+            _target_status(local_diff.target, Status.DRIFTING, [local_diff]),
+        ]
+        summary: dict[str, int] = {}
+        for t in targets:
+            summary[t.status.value] = summary.get(t.status.value, 0) + 1
+        return snapshot_with_candidate(), DriftResult(summary=summary, targets=targets), "2026-07-17T00:00:00+00:00"
+
+    round0 = make_drift(Status.DRIFTING, [link_diff])
+    _sequence(monkeypatch, [round0])  # max_rounds=1: only one round is ever fetched
+    _stub_dashboard(monkeypatch)
+    monkeypatch.setattr(
+        executor_module,
+        "execute_link_actual_node",
+        lambda client, action: LinkActualNodeResult(
+            node_id=healthy.id, node_slug=healthy.slug, field="realized_device", candidate_id="dev-1"
+        ),
+    )
+
+    envelope = run_reconcile(cfg, apply_changes=True, max_rounds=1)
+
+    assert envelope.data.state == "manual_intervention_required"
+    assert not any(e.code == "max_rounds_reached" for e in envelope.errors)
+    assert len(envelope.data.rounds) == 1
+    assert envelope.data.progress_made is True

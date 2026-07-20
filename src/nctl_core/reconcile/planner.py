@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from nctl_core.drift.model import DiffRecord, Severity, Target
+from nctl_core.production.composer import PHASE1_LOCAL_CODES
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .classify import CODE_CLASSIFICATION, Classification, classify
@@ -157,6 +158,20 @@ def build_plan(
         else:  # pragma: no cover - classify() never returns UNSUPPORTED statically today
             unsupported.append(_unsupported_record(diff, "no reconciler is registered for this code"))
 
+    # Phase 1 (better_usability): every node-targeted Phase 1 local code is a
+    # production-actuation blocker for its owning node, derived from this
+    # scope's own manual_review records (already target-local by construction
+    # -- `nctl reconcile HOST` naturally selects only that host's blocker,
+    # cluster scope sees the complete set). A blocked node's manual-review
+    # record stays in `manual_review` regardless; this set only prunes
+    # service/dnsmasq action host lists below so unrelated healthy hosts are
+    # never suppressed by one node's local finding (Decision 5).
+    blocked_node_slugs = {
+        record.target.slug
+        for record in manual_review
+        if record.target.kind == "node" and record.code in PHASE1_LOCAL_CODES and record.target.slug
+    }
+
     actions: list[ReconcileAction] = []
     node_targets_by_slug: dict[str, str] = {}  # slug -> link_actual_node action id, for dependency wiring
 
@@ -186,6 +201,13 @@ def build_plan(
             _apply_fallback(inputs, group_diffs, manual_review, unsupported)
             continue
         deployment_profile, host_slugs = inputs
+        host_slugs = [slug for slug in host_slugs if slug not in blocked_node_slugs]
+        if not host_slugs:
+            # Every host this service is placed on is production-blocked by a
+            # Phase 1 local finding; the reason isn't lost, it's already the
+            # owning node's manual_review record above (Decision 5.4: never
+            # create an empty-host action).
+            continue
         outcome = plan_service_profile(
             target,
             codes,
