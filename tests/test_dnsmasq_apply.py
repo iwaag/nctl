@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 from nctl_core.config import Config
 from nctl_core.dnsmasq_apply import (
@@ -217,6 +218,35 @@ def test_inventory_override_replaces_configured_inventory(tmp_path, monkeypatch)
     configured_inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
     for call_args in calls:
         assert str(configured_inventory) not in call_args
+
+
+def test_inventory_override_relative_path_resolves_against_cwd_not_playbook_dir(tmp_path, monkeypatch):
+    # Regression test: the override must not be interpreted relative to `playbook_dir`, which is
+    # the ansible-playbook subprocess's cwd (nctl_core.ansible.AnsibleRunner always runs with
+    # cwd=playbook_dir) and is generally a different directory than wherever the user ran `nctl
+    # apply dnsmasq --inventory <relative path>` from.
+    cfg = _config(tmp_path)
+    override_inventory = tmp_path / "bootstrap" / "hosts_intent.yml"
+    override_inventory.parent.mkdir(parents=True)
+    override_inventory.write_text("all: {}\n")
+    monkeypatch.chdir(tmp_path)
+    relative_inventory = Path("bootstrap/hosts_intent.yml")
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(args)
+        if args[0] == "ansible-inventory":
+            return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload()), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, inventory=relative_inventory)
+
+    assert envelope.ok is True
+    assert envelope.data.inventory_path == str(override_inventory.resolve())
 
 
 def test_inventory_override_missing_file_is_a_pointed_failure(tmp_path, monkeypatch):

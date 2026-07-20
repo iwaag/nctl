@@ -87,7 +87,11 @@ def build_dnsmasq_apply(
     data.render_summary = render.data.summary
     op.emit("rendered", "dnsmasq configuration rendered", artifact_path=str(artifact_path))
 
-    resolved_inventory = inventory if inventory is not None else cfg.ansible.resolved_inventory(cfg.source_path.parent)
+    resolved_inventory = (
+        inventory.expanduser().resolve()
+        if inventory is not None
+        else cfg.ansible.resolved_inventory(cfg.source_path.parent)
+    )
 
     validation_error = _validate_paths(cfg, data, resolved_inventory)
     if validation_error is not None:
