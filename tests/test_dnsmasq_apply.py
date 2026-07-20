@@ -191,6 +191,46 @@ def test_ansible_failure_is_returned_with_exit_code_and_recap(tmp_path, monkeypa
     assert envelope.data.ansible.recap["agdnsmasq"]["unreachable"] == 1
 
 
+def test_inventory_override_replaces_configured_inventory(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    override_inventory = tmp_path / "bootstrap" / "hosts_intent.yml"
+    override_inventory.parent.mkdir(parents=True)
+    override_inventory.write_text("all: {}\n")
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(args)
+        if args[0] == "ansible-inventory":
+            return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload()), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, inventory=override_inventory)
+
+    assert envelope.ok is True
+    assert envelope.data.inventory_path == str(override_inventory)
+    for call_args in calls:
+        assert str(override_inventory) in call_args
+    configured_inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
+    for call_args in calls:
+        assert str(configured_inventory) not in call_args
+
+
+def test_inventory_override_missing_file_is_a_pointed_failure(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    missing_inventory = tmp_path / "does-not-exist.yml"
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    envelope = build_dnsmasq_apply(cfg, inventory=missing_inventory)
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "ansible_inventory_missing"
+
+
 def test_setup_failure_aborts_before_records_deploy(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))

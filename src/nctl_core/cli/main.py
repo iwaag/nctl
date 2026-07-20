@@ -282,13 +282,29 @@ def ops_show(
 
 ApplyJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.apply.dnsmasq.v1 envelope as JSON.")]
 YesOption = Annotated[bool, typer.Option("--yes", help="Apply changes instead of running the default check+diff dry-run.")]
+ApplyInventoryOption = Annotated[
+    Optional[Path],
+    typer.Option(
+        "--inventory",
+        help=(
+            "Override the configured ansible.inventory for this run (e.g. a freshly rendered "
+            "hosts_intent.yml for bootstrap-time actuation before any production inventory "
+            "exists). No silent fallback -- omit to use the configured production inventory."
+        ),
+    ),
+]
 
 
 @apply_app.command("dnsmasq")
-def apply_dnsmasq(config: ConfigOption = None, yes: YesOption = False, json_output: ApplyJsonOption = False) -> None:
+def apply_dnsmasq(
+    config: ConfigOption = None,
+    yes: YesOption = False,
+    json_output: ApplyJsonOption = False,
+    inventory: ApplyInventoryOption = None,
+) -> None:
     """Render and deploy dnsmasq configuration; dry-run with diff unless --yes is set."""
     cfg = _load_config(config)
-    envelope = build_dnsmasq_apply(cfg, apply_changes=yes)
+    envelope = build_dnsmasq_apply(cfg, apply_changes=yes, inventory=inventory)
     emit(envelope, json_output, render_dnsmasq_apply_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 

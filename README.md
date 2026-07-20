@@ -86,10 +86,29 @@ observation, and `converged` when only warning/info diffs or no diffs remain. Ea
 stable `code`, `severity`, small `desired`/`actual` evidence values, contributing `sources`, and a
 human-readable `message`.
 
-`apply dnsmasq` renders into an operation-specific artifact and invokes the deploy-only Ansible
-playbook in `--check --diff` mode by default. Review that output, then use `--yes` for the real
-apply. The configured inventory must resolve at least one host in `dnsmasq_server`; an existing
-inventory file with an empty or missing group is rejected instead of succeeding as a no-op.
+`apply dnsmasq` renders into an operation-specific artifact, then runs the daemon-install playbook
+(`playbooks/bootstrap/setup_dnsmasq.yml`) followed by the deploy-only Ansible playbook, both in
+`--check --diff` mode by default (a setup failure aborts before the records deploy runs). Review
+that output, then use `--yes` for the real apply. The configured inventory must resolve at least
+one host in `dnsmasq_server`; an existing inventory file with an empty or missing group is rejected
+instead of succeeding as a no-op.
+
+`apply dnsmasq --inventory PATH` overrides the configured `[ansible].inventory` for that one run —
+the bootstrap escape hatch for a freshly registered node that has no production inventory entry
+yet. No silent fallback: omit `--inventory` and it uses the configured production inventory as
+always; `reconcile` never passes an override, it always actuates against the production inventory
+it regenerates itself. Bootstrap sequence for a brand-new dnsmasq node (see
+[`add a basic service`](docs/add-a-basic-service.md) for declaring the placement first):
+
+```bash
+uv run nctl render hosts-intent --out ansible_agdev/inventories/generated
+uv run nctl apply dnsmasq --inventory ansible_agdev/inventories/generated/hosts_intent.yml
+uv run nctl apply dnsmasq --inventory ansible_agdev/inventories/generated/hosts_intent.yml --yes
+```
+
+Once nodeutils collection + ingest have run against the new host, `nctl render production` and
+subsequent `nctl apply dnsmasq`/`nctl reconcile` runs use the regenerated production inventory as
+usual — the override is only for the one-time bootstrap window before it exists.
 
 `dashboard` is the routine command for getting the drift picture in front of a human: it runs a
 fresh `nctl drift` internally, renders a single self-contained `index.html` (color-coded tiles,

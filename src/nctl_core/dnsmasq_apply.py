@@ -40,8 +40,17 @@ class DnsmasqApplyData(BaseModel):
     ansible: AnsibleRunResult | None = None
 
 
-def build_dnsmasq_apply(cfg: Config, apply_changes: bool = False) -> Envelope[DnsmasqApplyData]:
-    """Render an artifact, validate inventory targets, and invoke the deploy playbook."""
+def build_dnsmasq_apply(
+    cfg: Config, apply_changes: bool = False, inventory: Path | None = None
+) -> Envelope[DnsmasqApplyData]:
+    """Render an artifact, validate inventory targets, and invoke the deploy playbook.
+
+    ``inventory``, if given, overrides ``cfg.ansible.resolved_inventory(...)`` for this run only
+    -- the bootstrap-time escape hatch (`nctl apply dnsmasq --inventory PATH`) for actuating
+    against a freshly rendered `hosts_intent.yml` before any production inventory exists.
+    `reconcile` never passes this; it always actuates against the production inventory it
+    regenerates itself.
+    """
     op = OperationLog.start("apply dnsmasq", cfg.events.resolved_log_dir())
     mode = "apply" if apply_changes else "dry-run"
     data = DnsmasqApplyData(
@@ -78,11 +87,13 @@ def build_dnsmasq_apply(cfg: Config, apply_changes: bool = False) -> Envelope[Dn
     data.render_summary = render.data.summary
     op.emit("rendered", "dnsmasq configuration rendered", artifact_path=str(artifact_path))
 
-    validation_error = _validate_paths(cfg, data)
+    resolved_inventory = inventory if inventory is not None else cfg.ansible.resolved_inventory(cfg.source_path.parent)
+
+    validation_error = _validate_paths(cfg, data, resolved_inventory)
     if validation_error is not None:
         return _failure(op, data, [validation_error], validation_error.message)
 
-    inventory_result, inventory_error = _load_inventory(cfg)
+    inventory_result, inventory_error = _load_inventory(cfg, resolved_inventory)
     if inventory_error is not None:
         return _failure(op, data, [inventory_error], inventory_error.message)
 
@@ -99,7 +110,6 @@ def build_dnsmasq_apply(cfg: Config, apply_changes: bool = False) -> Envelope[Dn
         return _failure(op, data, [error], error.message)
 
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
-    resolved_inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
     runner = AnsibleRunner(
         playbook_dir,
         timeout_seconds=cfg.reconcile.ansible_timeout_seconds,
@@ -218,10 +228,8 @@ def render_dnsmasq_apply_text(envelope: Envelope[DnsmasqApplyData]) -> str:
     return "\n".join(lines)
 
 
-def _validate_paths(cfg: Config, data: DnsmasqApplyData) -> EnvelopeError | None:
-    config_dir = cfg.source_path.parent
-    playbook_dir = cfg.ansible.resolved_playbook_dir(config_dir)
-    inventory = cfg.ansible.resolved_inventory(config_dir)
+def _validate_paths(cfg: Config, data: DnsmasqApplyData, inventory: Path) -> EnvelopeError | None:
+    playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     data.inventory_path = str(inventory)
 
     if not playbook_dir.is_dir():
@@ -251,9 +259,8 @@ def _validate_paths(cfg: Config, data: DnsmasqApplyData) -> EnvelopeError | None
     return None
 
 
-def _load_inventory(cfg: Config) -> tuple[dict[str, Any], EnvelopeError | None]:
+def _load_inventory(cfg: Config, inventory: Path) -> tuple[dict[str, Any], EnvelopeError | None]:
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
-    inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
     payload, error = load_inventory(
         inventory,
         playbook_dir,
