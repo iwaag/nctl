@@ -16,7 +16,12 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
   `variables` map (this is how a placement's `config` becomes Ansible
   variables — see `production/composer.py::map_placement_config`).
 - The target `DesiredNode` (and, if you want mDNS bootstrap connectivity, a
-  `DesiredEndpoint` with `mdns_name` on it) already exists.
+  `DesiredEndpoint` with `mdns_name` on it) already exists. A newly created
+  node is `active` by default (Better Usability Phase 3) — no lifecycle
+  promotion step and no operational-config row are required before it's
+  eligible for production composition; see `nctl lifecycle` in
+  `nctl/README.md` only if you deliberately want to stage it as `planned`
+  first.
 
 ## Steps
 
