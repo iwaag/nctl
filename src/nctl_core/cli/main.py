@@ -24,6 +24,7 @@ from nctl_core.hosts_intent_render import (
     render_hosts_intent_summary_text,
     write_hosts_intent_artifacts,
 )
+from nctl_core.lifecycle import LIFECYCLE_STATES, build_lifecycle, render_lifecycle_text
 from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
 from nctl_core.production_render import (
@@ -342,6 +343,34 @@ def reconcile(
     envelope = run_reconcile(cfg, host=host, apply_changes=yes, max_rounds=max_rounds)
     emit(envelope, json_output, render_reconcile_text)
     if any(error.code in ("unknown_host",) for error in envelope.errors):
+        raise typer.Exit(EXIT_USAGE)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+LifecycleNodeArgument = Annotated[str, typer.Argument(help="Exact DesiredNode slug.")]
+LifecycleStateArgument = Annotated[
+    str, typer.Argument(help=f"Target lifecycle state: one of {', '.join(LIFECYCLE_STATES)}.")
+]
+LifecycleJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.lifecycle.v1 envelope as JSON.")]
+
+
+@app.command()
+def lifecycle(
+    node: LifecycleNodeArgument,
+    state: LifecycleStateArgument,
+    config: ConfigOption = None,
+    json_output: LifecycleJsonOption = False,
+) -> None:
+    """Set a desired node's lifecycle directly (planned/approved/active/deprecated/retired).
+
+    A direct setter, not an approval engine and not part of `reconcile --yes`: it PATCHes only the
+    `lifecycle` field, confirms the write through a GraphQL refetch, and is idempotent (no PATCH is
+    sent if the node is already in the requested state).
+    """
+    cfg = _load_config(config)
+    envelope = build_lifecycle(cfg, node, state)
+    emit(envelope, json_output, render_lifecycle_text)
+    if any(error.code in ("invalid_lifecycle", "unknown_node") for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 

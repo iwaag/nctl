@@ -223,6 +223,25 @@ command. `make bootstrap-inventory`/`make production-inventory` remain as standa
 `reconcile` renders its own operation-scoped bootstrap inventory and regenerates the full production
 inventory itself, so it never shells out to either.
 
+### `lifecycle`
+
+`nctl lifecycle NODE STATE [--json]` is a direct, idempotent setter for one `DesiredNode`'s
+`lifecycle` (`planned`, `approved`, `active`, `deprecated`, `retired`) — it is **not** an approval
+engine and is not part of `reconcile --yes`; nothing in `reconcile` changes lifecycle automatically.
+Nodes are created `active` by default (Better Usability Phase 3), so this command exists for
+deliberate staging/promotion/demotion, not routine registration.
+
+`NODE` must be an exact desired-node slug. The command resolves it through the same GraphQL read
+path as every other command, no-ops (`changed: false`, no write) if the node is already in the
+requested state, otherwise PATCHes only `{"lifecycle": STATE}` to the intent-catalog `nodes`
+ViewSet, then refetches through GraphQL and fails closed (`lifecycle_confirmation_mismatch`) unless
+the write is confirmed. Text output is `NODE: before -> after` or `NODE: already STATE (no
+change)`; `--json` prints the closed `nctl.lifecycle.v1` envelope (`node_id`, `node_slug`,
+`previous_state`, `requested_state`, `current_state`, `changed`). `unknown_node` and
+`invalid_lifecycle` are usage exits (2); a rejected PATCH or confirmation mismatch is a failure exit
+(1) with no success claim. No new drift/reconcile classification code is introduced — promoting a
+node only makes it eligible for whatever findings already applied to `active`/`approved` nodes.
+
 ### `ops list` / `ops show`
 
 `nctl ops list [--limit N] [--json]` and `nctl ops show OPERATION_ID [--after-seq N] [--json]` are

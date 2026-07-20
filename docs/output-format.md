@@ -109,6 +109,32 @@ owned by one desired node or service (e.g. a production-composition contract err
 this shape are cheap; renames are expensive — treat it as the stable Phase 3/4 interface it is
 (the dashboard's only input, and Phase 4's reconcile input).
 
+## `nctl.lifecycle.v1`
+
+```json
+{
+  "schema": "nctl.lifecycle.v1",
+  "generated_at": "2026-07-21T00:00:00+00:00",
+  "ok": true,
+  "data": {
+    "node_id": "27818c12-fe15-4c9f-83d0-7949523f6c33",
+    "node_slug": "agpc",
+    "previous_state": "planned",
+    "requested_state": "active",
+    "current_state": "active",
+    "changed": true
+  },
+  "errors": []
+}
+```
+
+`data` always reflects a confirmed state: `current_state` is read back through GraphQL after the
+PATCH, never assumed from the request. `changed: false` means the node was already in
+`requested_state` and no PATCH was sent (`previous_state == current_state ==
+requested_state`). Errors are command-scoped (`invalid_lifecycle`, `unknown_node`,
+`lifecycle_update_rejected`, `lifecycle_confirmation_mismatch`) and never enter
+`drift.registry` or `reconcile.classify.CODE_CLASSIFICATION`.
+
 ## `nctl.dashboard.v1`
 
 ```json
