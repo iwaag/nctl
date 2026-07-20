@@ -9,6 +9,7 @@ facts.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import ipaddress
 from typing import Any, Mapping
 
 from nctl_core.sources.actual import ActualFacts, actual_type_problem
@@ -35,16 +36,15 @@ class EndpointCandidate:
     mdns_name: str | None = None
 
     def usable_local(self) -> bool:
-        return any(_text(value) for value in (self.ip_address, self.dns_name, self.mdns_name))
+        return self.endpoint_type != "vpn" and bool(
+            _normalized_ip(self.ip_address) or _text(self.dns_name) or _text(self.mdns_name)
+        )
 
     def usable_vpn(self) -> bool:
-        return self.endpoint_type == "vpn" and bool(_text(self.ip_address))
+        return self.endpoint_type == "vpn" and bool(_normalized_ip(self.ip_address))
 
     def address(self) -> str | None:
-        return next(
-            (_text(value) for value in (self.ip_address, self.dns_name, self.mdns_name) if _text(value)),
-            None,
-        )
+        return _normalized_ip(self.ip_address) or _text(self.dns_name) or _text(self.mdns_name)
 
     def evidence(self) -> dict[str, Any]:
         return {
@@ -95,9 +95,22 @@ class EffectiveOperationalValues:
     ansible_port: ValueRecord
     power_control: ValueRecord
     is_laptop: ValueRecord
+    selected_endpoint: EndpointCandidate
 
     def as_dict(self) -> dict[str, dict[str, Any]]:
-        return {name: getattr(self, name).as_dict() for name in self.__dataclass_fields__}
+        return {
+            name: getattr(self, name).as_dict()
+            for name in (
+                "actual_state_policy",
+                "host_os",
+                "connection_path",
+                "connection_endpoint",
+                "connection_address",
+                "ansible_port",
+                "power_control",
+                "is_laptop",
+            )
+        }
 
 
 @dataclass(frozen=True)
@@ -205,7 +218,7 @@ def resolve_operational_values(
         )
         if forced_path not in (None, "local"):
             raise _failure(
-                "invalid_connection_path",
+                "unresolved_connection_path",
                 "connection_path",
                 "a forced local endpoint permits only the local path",
                 {"connection_path": forced_path},
@@ -217,19 +230,26 @@ def resolve_operational_values(
     else:
         if forced_path not in (None, "local"):
             raise _failure(
-                "invalid_connection_path",
+                "unresolved_connection_path",
                 "connection_path",
                 f"unsupported connection path {forced_path!r}",
                 {"connection_path": forced_path},
             )
         selected = _derive_local_endpoint(node_slug, endpoints)
+        if selected.node_slug != node_slug:
+            raise _failure(
+                "endpoint_node_mismatch",
+                "connection_endpoint",
+                f"endpoint belongs to {selected.node_slug!r}, not {node_slug!r}",
+                {"endpoint": selected.evidence()},
+            )
         endpoint_reference = {"kind": "desired_endpoint", **selected.evidence()}
         path = ValueRecord("local", "derived", endpoint_reference, False)
         endpoint_record = ValueRecord(selected.name, "derived", endpoint_reference, False)
 
     if path.value == "local" and policy.value == "required" and facts and _text(facts.local_ip):
         address = ValueRecord(
-            _text(facts.local_ip),
+            _normalized_ip(facts.local_ip) or _text(facts.local_ip),
             "derived",
             {
                 "kind": "nodeutils_observation",
@@ -274,6 +294,7 @@ def resolve_operational_values(
         is_laptop=_default_or_override_record(
             override, "is_laptop", override.is_laptop if override and override.is_laptop is not None else False, False
         ),
+        selected_endpoint=selected,
     )
 
 
@@ -378,3 +399,13 @@ def _text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalized_ip(value: Any) -> str | None:
+    text = _text(value)
+    if text is None:
+        return None
+    try:
+        return str(ipaddress.ip_interface(text).ip)
+    except ValueError:
+        return None

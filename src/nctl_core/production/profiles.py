@@ -9,7 +9,7 @@ profiles lived in ansible_agdev; now that composition runs in nctl, which can
 read the ansible_agdev checkout directly (see `[ansible] playbook_dir` in
 `nctl.toml`), the transport half of the contract has no reason to exist.
 
-`canonical_json_digest` is still computed locally so the schema 1.0
+`canonical_json_digest` is still computed locally so the production schema
 document/report's `deployment_profile_digest` field is unchanged — it is
 provenance (a fingerprint of which profile revision produced this inventory)
 rather than a verified handshake between two processes.

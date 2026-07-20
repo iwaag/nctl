@@ -4,7 +4,7 @@
 Ported unchanged: `PRODUCTION_INVENTORY_SCHEMA_VERSION`, `ContractError`,
 `canonical_json`/`canonical_json_digest`, `validate_deployment_profiles`,
 `map_placement_config`, `validate_endpoint_ownership`,
-`evaluate_platform_policy`, `actual_state_problem`,
+`actual_state_problem`,
 `resolve_connection_variables`, `merge_host_variables`,
 `validate_production_inventory_document`, `validate_production_report`, and
 their private helpers.
@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
-PRODUCTION_INVENTORY_SCHEMA_VERSION = "1.0"
+PRODUCTION_INVENTORY_SCHEMA_VERSION = "2.0"
 PRODUCTION_PROFILE_CONTRACT_VERSION = "1"
 ACTUAL_MAX_AGE_HOURS = 72
 
@@ -36,12 +36,6 @@ _SLUG_RE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$")
 _PROFILE_KEYS = {"group", "config_schema_version", "variables"}
 _VARIABLE_KEYS = {"ansible_variable", "type", "required", "items"}
 _JSON_TYPES = {"string", "integer", "number", "boolean", "list"}
-_POWER_BY_PLATFORM = {
-    "linux": {"none", "wol"},
-    "macos": {"none", "macos_sleep"},
-    "haos": {"none"},
-}
-_OBSERVED_SYSTEM_MAP = {"Linux": "linux", "Darwin": "macos"}
 _INVENTORY_METADATA_KEYS = {
     "nintent_inventory_schema_version",
     "nintent_generation_id",
@@ -62,7 +56,6 @@ _BASE_HOST_VARIABLES = {
     "power_control",
     "is_laptop",
     "nintent_desired_node_id",
-    "nintent_operational_config_id",
     "nautobot_device_id",
     "nintent_active_placement_ids",
 }
@@ -86,6 +79,27 @@ _REPORT_SUMMARY_KEYS = {
     "active_placements",
     "inactive_placements",
 }
+_REPORT_HOST_KEYS = {
+    "inventory_hostname",
+    "desired_node_id",
+    "host_os",
+    "connection_path",
+    "actual_state_policy",
+    "nautobot_device_id",
+    "active_placement_ids",
+    "operational_values",
+}
+_OPERATIONAL_VALUE_KEYS = {
+    "actual_state_policy",
+    "host_os",
+    "connection_path",
+    "connection_endpoint",
+    "connection_address",
+    "ansible_port",
+    "power_control",
+    "is_laptop",
+}
+_VALUE_RECORD_KEYS = {"value", "source", "source_reference", "override_won"}
 
 
 class ContractError(ValueError):
@@ -242,45 +256,6 @@ def validate_endpoint_ownership(desired_node_slug: str, endpoint_node_slug: str)
         )
 
 
-def evaluate_platform_policy(
-    *,
-    actual_state_policy: str,
-    power_control: str,
-    expected_host_os: str | None = None,
-    declared_host_os: str | None = None,
-    observed_system: str | None = None,
-) -> tuple[str, list[dict[str, str]]]:
-    """Return exported host_os and drift under schema 1.0 platform policy."""
-
-    drift: list[dict[str, str]] = []
-    if actual_state_policy == "required":
-        if expected_host_os not in {"linux", "macos"} or declared_host_os is not None:
-            raise ContractError("invalid_actual_state_policy", "required policy needs only expected_host_os=linux|macos")
-        if observed_system not in _OBSERVED_SYSTEM_MAP:
-            raise ContractError("unsupported_observed_host_os", f"unsupported observed system {observed_system!r}")
-        host_os = _OBSERVED_SYSTEM_MAP[observed_system]
-        if host_os != expected_host_os:
-            drift.append(
-                {
-                    "code": "desired_actual_os_mismatch",
-                    "expected_host_os": expected_host_os,
-                    "observed_host_os": host_os,
-                }
-            )
-    elif actual_state_policy == "declared":
-        if declared_host_os != "haos" or expected_host_os is not None:
-            raise ContractError("invalid_actual_state_policy", "declared policy supports only declared_host_os=haos")
-        host_os = declared_host_os
-    else:
-        raise ContractError("invalid_actual_state_policy", f"unsupported policy {actual_state_policy!r}")
-    if power_control not in _POWER_BY_PLATFORM[host_os]:
-        raise ContractError(
-            "invalid_platform_power",
-            f"power_control {power_control!r} is unsafe for {host_os!r}",
-        )
-    return host_os, drift
-
-
 def actual_state_problem(
     collected_at: str | None,
     generated_at: str,
@@ -310,7 +285,7 @@ def resolve_connection_variables(
     local_endpoint: Mapping[str, Any] | None = None,
     tailscale_endpoint: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resolve only the desired/actual connection variables allowed by schema 1.0."""
+    """Resolve only the desired/actual connection variables allowed by schema 2.0."""
 
     variables: dict[str, Any] = {"connection_path": connection_path}
     local_endpoint = local_endpoint or {}
@@ -338,7 +313,7 @@ def resolve_connection_variables(
             raise ContractError("unresolved_connection_path", "tailscale path requires a usable tailscale endpoint")
         variables["ansible_host"] = variables["tailscale_ip"]
     else:
-        raise ContractError("invalid_connection_path", f"unsupported connection path {connection_path!r}")
+        raise ContractError("unresolved_connection_path", f"unsupported connection path {connection_path!r}")
     return variables
 
 
@@ -363,7 +338,7 @@ def validate_production_inventory_document(
     value: Any,
     profiles: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Validate the closed Ansible inventory envelope for production schema 1.0."""
+    """Validate the closed Ansible inventory envelope for production schema 2.0."""
 
     validated_profiles = validate_deployment_profiles(dict(profiles))
     if not isinstance(value, dict) or set(value) != {"all"} or not isinstance(value["all"], dict):
@@ -436,7 +411,7 @@ def validate_production_inventory_document(
 
 
 def validate_production_report(value: Any) -> dict[str, Any]:
-    """Validate the closed companion-report envelope for schema 1.0."""
+    """Validate the closed companion-report envelope for schema 2.0."""
 
     if not isinstance(value, dict):
         raise ContractError("invalid_report_schema", "report must be an object")
@@ -457,7 +432,71 @@ def validate_production_report(value: Any) -> dict[str, Any]:
     for key in ("hosts", "skipped", "drift", "errors"):
         if not isinstance(value[key], list):
             raise ContractError("invalid_report_schema", f"{key} must be an array")
+    for index, host in enumerate(value["hosts"]):
+        path = f"report.hosts[{index}]"
+        if not isinstance(host, dict):
+            raise ContractError("invalid_report_schema", "host must be an object", path=path)
+        _require_exact_keys(host, _REPORT_HOST_KEYS, path)
+        operational_values = host["operational_values"]
+        if not isinstance(operational_values, dict):
+            raise ContractError("invalid_report_schema", "operational_values must be an object", path=path)
+        _require_exact_keys(operational_values, _OPERATIONAL_VALUE_KEYS, f"{path}.operational_values")
+        for field_name, record in operational_values.items():
+            _validate_value_record(record, f"{path}.operational_values.{field_name}")
     return value
+
+
+def _validate_value_record(record: Any, path: str) -> None:
+    if not isinstance(record, dict):
+        raise ContractError("invalid_report_schema", "value record must be an object", path=path)
+    _require_exact_keys(record, _VALUE_RECORD_KEYS, path)
+    if record["source"] not in {"derived", "default", "override"}:
+        raise ContractError("invalid_report_schema", "invalid operational source", path=f"{path}.source")
+    if not isinstance(record["override_won"], bool):
+        raise ContractError("invalid_report_schema", "override_won must be boolean", path=path)
+    reference = record["source_reference"]
+    if not isinstance(reference, dict) or not isinstance(reference.get("kind"), str):
+        raise ContractError("invalid_report_schema", "source_reference must have a kind", path=path)
+    allowed = {
+        "override_presence": {"kind", "field"},
+        "override_absence": {"kind", "field"},
+        "nodeutils_observation": {"kind", "observed_system", "field", "collected_at"},
+        "desired_endpoint": {
+            "kind", "id", "name", "endpoint_type", "ip_address", "dns_name", "mdns_name", "address_field"
+        },
+        "operational_override": {"kind", "id", "field", "endpoint", "address_field"},
+        "ansible_default": {"kind"},
+        "safe_default": {"kind", "field"},
+    }.get(reference["kind"])
+    if allowed is None:
+        raise ContractError("invalid_report_schema", "unknown source_reference kind", path=path)
+    unknown = set(reference) - allowed
+    if unknown:
+        _raise_key_error(unknown, set(), f"{path}.source_reference")
+    if reference["kind"] in {"override_presence", "override_absence", "safe_default"} and "field" not in reference:
+        _raise_key_error(set(), {"field"}, f"{path}.source_reference")
+    if reference["kind"] == "operational_override":
+        _require_exact_subset(reference, {"kind", "id", "field"}, f"{path}.source_reference")
+        endpoint = reference.get("endpoint")
+        if endpoint is not None:
+            _validate_endpoint_reference(endpoint, f"{path}.source_reference.endpoint")
+    if reference["kind"] == "desired_endpoint":
+        _validate_endpoint_reference(reference, f"{path}.source_reference", extra={"kind", "address_field"})
+
+
+def _require_exact_subset(value: Mapping[str, Any], required: set[str], path: str) -> None:
+    missing = required - set(value)
+    if missing:
+        _raise_key_error(set(), missing, path)
+
+
+def _validate_endpoint_reference(value: Mapping[str, Any], path: str, *, extra: set[str] = frozenset()) -> None:
+    required = {"id", "name", "endpoint_type", "ip_address", "dns_name", "mdns_name"}
+    allowed = required | set(extra)
+    unknown = set(value) - allowed
+    missing = required - set(value)
+    if unknown or missing:
+        _raise_key_error(unknown, missing, path)
 
 
 def _require_exact_keys(value: Mapping[str, Any], expected: set[str], path: str) -> None:

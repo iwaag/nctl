@@ -29,22 +29,26 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
-from nctl_core.sources.actual import ActualFacts, actual_type_problem, missing_required_facts
+from nctl_core.sources.actual import ActualFacts
 
 from .contract import (
     PRODUCTION_INVENTORY_SCHEMA_VERSION,
     ContractError,
     actual_state_problem,
-    evaluate_platform_policy,
     map_placement_config,
     merge_host_variables,
     resolve_connection_variables,
     validate_deployment_profiles,
-    validate_endpoint_ownership,
     validate_production_inventory_document,
     validate_production_report,
 )
-from .derivation import EndpointCandidate, OperationalOverride
+from .derivation import (
+    DerivationFailure,
+    EffectiveOperationalValues,
+    EndpointCandidate,
+    OperationalOverride,
+    resolve_operational_values,
+)
 
 # Production-eligible desired node types.  Containers never enter the production
 # inventory; the actual-backed/declared distinction is made by the operational
@@ -65,13 +69,10 @@ _OS_SELECTOR_GROUP = {"linux": "linux", "macos": "macos", "haos": "haos"}
 # apart on which codes are local.
 NODE_LOCAL_CODES = frozenset(
     {
-        "missing_operational_config",
-        "invalid_actual_state_policy",
         "unsupported_observed_host_os",
         "invalid_platform_power",
         "endpoint_node_mismatch",
         "unresolved_connection_path",
-        "invalid_connection_path",
         "invalid_connection_address",
     }
 )
@@ -125,41 +126,6 @@ class LocalCompositionError(Exception):
 
 
 @dataclass(frozen=True)
-class EndpointInput:
-    """A node-scoped desired endpoint selected by a placement or operational config."""
-
-    name: str
-    endpoint_type: str
-    node_slug: str
-    ip_address: str | None = None
-    dns_name: str | None = None
-    mdns_name: str | None = None
-
-    def as_connection_mapping(self) -> dict[str, Any]:
-        return {
-            "ip_address": self.ip_address,
-            "dns_name": self.dns_name,
-            "mdns_name": self.mdns_name,
-        }
-
-
-@dataclass(frozen=True)
-class OperationalConfigInput:
-    """Typed non-service execution policy for one desired node."""
-
-    id: str
-    actual_state_policy: str
-    connection_path: str
-    power_control: str = "none"
-    is_laptop: bool = False
-    expected_host_os: str | None = None
-    declared_host_os: str | None = None
-    local_endpoint: EndpointInput | None = None
-    tailscale_endpoint: EndpointInput | None = None
-    ansible_port: int | None = None
-
-
-@dataclass(frozen=True)
 class PlacementInput:
     """Desired binding of one service instance to one node."""
 
@@ -191,7 +157,6 @@ class NodeInput:
     node_type: str
     endpoints: tuple[EndpointCandidate, ...] = ()
     operational_override: OperationalOverride | None = None
-    operational_config: OperationalConfigInput | None = None
     placements: tuple[PlacementInput, ...] = ()
     realized: RealizedState | None = None
 
@@ -257,7 +222,7 @@ def compose_production_inventory(
     generated_at: str,
     deployment_profile_digest: str,
 ) -> ProductionComposition:
-    """Compose a deterministic schema 1.0 production inventory and report.
+    """Compose a deterministic schema 2.0 production inventory and report.
 
     Global contract violations raise :class:`ContractError` and abort the whole
     run (the caller preserves the previous inventory).  Host-specific actual
@@ -286,22 +251,29 @@ def compose_production_inventory(
 
     for node in eligible:
         total_placements += len(node.placements)
-        operational_config = node.operational_config
-        if operational_config is None:
-            # A missing operational config is owned by this one node: skip
-            # only this host, matching every other Group C failure below.
+        try:
+            effective = resolve_operational_values(
+                node_id=node.id,
+                node_slug=node.slug,
+                endpoints=node.endpoints,
+                override=node.operational_override,
+                realized_type=node.realized.realized_type if node.realized else None,
+                facts=node.realized.facts if node.realized else None,
+                generated_at=generated_at,
+            )
+        except DerivationFailure as exc:
             local_error = LocalCompositionError(
-                "missing_operational_config",
-                f"production-eligible node {node.slug!r} has no operational config",
-                stage="operational_config",
-                evidence={"node": {"slug": node.slug, "id": node.id, "lifecycle": node.lifecycle}},
+                exc.code,
+                str(exc),
+                stage="operational_derivation",
+                evidence={"field": exc.field, **dict(exc.evidence)},
             )
             skipped.append(_local_skip_entry(node, local_error))
             errors.append(_local_error_entry(node, local_error))
             inactive_placements += len(node.placements)
             continue
 
-        skip_reasons = _host_actual_skip_reasons(node, operational_config, generated_at)
+        skip_reasons = _host_actual_skip_reasons(node, effective)
         if skip_reasons:
             skipped.append(
                 {
@@ -318,7 +290,7 @@ def compose_production_inventory(
             continue
 
         try:
-            host_vars, host_os, node_drift = _compose_host(node, operational_config, validated_profiles)
+            host_vars, host_os = _compose_host(node, effective, validated_profiles)
         except LocalCompositionError as local_error:
             skipped.append(_local_skip_entry(node, local_error))
             errors.append(_local_error_entry(node, local_error))
@@ -326,9 +298,8 @@ def compose_production_inventory(
             continue
         ssh_hosts[node.slug] = host_vars
         selector_members[_OS_SELECTOR_GROUP[host_os]].add(node.slug)
-        if operational_config.power_control != "none":
+        if effective.power_control.value != "none":
             selector_members["power_managed"].add(node.slug)
-        drift.extend(node_drift)
 
         node_active_ids = host_vars.get("nintent_active_placement_ids", [])
         for placement in node.placements:
@@ -343,10 +314,11 @@ def compose_production_inventory(
                 "inventory_hostname": node.slug,
                 "desired_node_id": node.id,
                 "host_os": host_os,
-                "connection_path": operational_config.connection_path,
-                "actual_state_policy": operational_config.actual_state_policy,
+                "connection_path": effective.connection_path.value,
+                "actual_state_policy": effective.actual_state_policy.value,
                 "nautobot_device_id": host_vars.get("nautobot_device_id"),
                 "active_placement_ids": list(node_active_ids),
+                "operational_values": effective.as_dict(),
             }
         )
 
@@ -388,114 +360,58 @@ def compose_production_inventory(
 
 def _host_actual_skip_reasons(
     node: NodeInput,
-    operational_config: OperationalConfigInput,
-    generated_at: str,
+    effective: EffectiveOperationalValues,
 ) -> list[str]:
-    """Return host-skip reasons for a node that cannot be actual-backed.
+    """Return consumer-specific fact gaps left after successful derivation."""
 
-    Declared nodes (such as HAOS) never require a realized object or nodeutils
-    data, so they are never skipped here.
-    """
-
-    if operational_config.actual_state_policy != "required":
+    if effective.actual_state_policy.value != "required":
         return []
-
-    realized = node.realized
-    realized_type = realized.realized_type if realized else None
-    type_problem = actual_type_problem(realized_type)
-    if type_problem:
-        return [type_problem]
-
-    facts = realized.facts
-    reasons: list[str] = []
-    freshness_problem = actual_state_problem(facts.collected_at, generated_at)
-    if freshness_problem:
-        reasons.append(freshness_problem)
-    consumers = {"host_os"}
-    if operational_config.power_control == "wol":
-        consumers.add("wol")
-    reasons.extend(missing_required_facts(facts, consumers))
-    return reasons
+    facts = node.realized.facts if node.realized else None
+    if effective.power_control.value == "wol" and (facts is None or not facts.mac_address):
+        return ["missing_mac_address"]
+    return []
 
 
 def _compose_host(
     node: NodeInput,
-    operational_config: OperationalConfigInput,
+    effective: EffectiveOperationalValues,
     profiles: Mapping[str, Any],
-) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], str]:
     """Build the ssh_hosts host variables for one included node."""
 
-    declared = operational_config.actual_state_policy == "declared"
+    declared = effective.actual_state_policy.value == "declared"
     realized = None if declared else node.realized
     facts: ActualFacts | None = realized.facts if realized else None
-    observed_system = facts.observed_system if facts else None
-
-    # One tested place normalizes the observed system into host_os and validates
-    # the platform/power combination; a node-owned unsafe combination is local.
-    try:
-        host_os, policy_drift = evaluate_platform_policy(
-            actual_state_policy=operational_config.actual_state_policy,
-            power_control=operational_config.power_control,
-            expected_host_os=operational_config.expected_host_os,
-            declared_host_os=operational_config.declared_host_os,
-            observed_system=observed_system,
-        )
-    except ContractError as exc:
-        _localize(
-            exc,
-            NODE_LOCAL_CODES,
-            stage="platform_policy",
-            evidence={
-                "operational_config": {
-                    "actual_state_policy": operational_config.actual_state_policy,
-                    "power_control": operational_config.power_control,
-                    "expected_host_os": operational_config.expected_host_os,
-                    "declared_host_os": operational_config.declared_host_os,
-                },
-                "observed_system": observed_system,
-            },
-        )
-
-    try:
-        local_endpoint = _validated_endpoint(node, operational_config.local_endpoint)
-        tailscale_endpoint = _validated_endpoint(node, operational_config.tailscale_endpoint)
-    except ContractError as exc:
-        _localize(
-            exc,
-            NODE_LOCAL_CODES,
-            stage="endpoint_ownership",
-            evidence={"node": {"slug": node.slug, "id": node.id}},
-        )
+    selected = effective.selected_endpoint
 
     try:
         connection = resolve_connection_variables(
             inventory_hostname=node.slug,
-            actual_state_policy=operational_config.actual_state_policy,
-            connection_path=operational_config.connection_path,
+            actual_state_policy=effective.actual_state_policy.value,
+            connection_path=effective.connection_path.value,
             actual_local_ip=facts.local_ip if facts else None,
-            local_endpoint=local_endpoint.as_connection_mapping() if local_endpoint else None,
-            tailscale_endpoint=tailscale_endpoint.as_connection_mapping() if tailscale_endpoint else None,
+            local_endpoint=selected.evidence() if effective.connection_path.value == "local" else None,
+            tailscale_endpoint=selected.evidence() if effective.connection_path.value == "tailscale" else None,
         )
     except ContractError as exc:
         _localize(
             exc,
             NODE_LOCAL_CODES,
             stage="connection",
-            evidence={"operational_config": {"connection_path": operational_config.connection_path}},
+            evidence={"operational_values": effective.as_dict()},
         )
     # ansible_host is resolved in generated group_vars/all, not exported per host.
     connection.pop("ansible_host", None)
 
     base_vars: dict[str, Any] = {
-        "host_os": host_os,
-        "power_control": operational_config.power_control,
-        "is_laptop": operational_config.is_laptop,
+        "host_os": effective.host_os.value,
+        "power_control": effective.power_control.value,
+        "is_laptop": effective.is_laptop.value,
         "nintent_desired_node_id": node.id,
-        "nintent_operational_config_id": operational_config.id,
     }
     base_vars.update(connection)
-    if operational_config.ansible_port is not None:
-        base_vars["ansible_port"] = operational_config.ansible_port
+    if effective.ansible_port.value is not None:
+        base_vars["ansible_port"] = effective.ansible_port.value
     if facts and facts.mac_address:
         base_vars["mac_address"] = facts.mac_address
     if facts and facts.network_interface:
@@ -539,15 +455,7 @@ def _compose_host(
         )
     host_vars["nintent_active_placement_ids"] = sorted(active_ids)
 
-    drift = [dict(entry, desired_node_slug=node.slug) for entry in policy_drift]
-    return host_vars, host_os, drift
-
-
-def _validated_endpoint(node: NodeInput, endpoint: EndpointInput | None) -> EndpointInput | None:
-    if endpoint is None:
-        return None
-    validate_endpoint_ownership(node.slug, endpoint.node_slug)
-    return endpoint
+    return host_vars, effective.host_os.value
 
 
 def _localize(exc: ContractError, allowlist: frozenset[str], *, stage: str, evidence: Mapping[str, Any]) -> None:

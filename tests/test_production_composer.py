@@ -17,9 +17,7 @@ from nctl_core.production.composer import (
     MERGE_LOCAL_CODES,
     NODE_LOCAL_CODES,
     PLACEMENT_LOCAL_CODES,
-    EndpointInput,
     NodeInput,
-    OperationalConfigInput,
     PlacementInput,
     ProductionComposition,
     RealizedState,
@@ -28,6 +26,7 @@ from nctl_core.production.composer import (
     render_production_report_json,
 )
 from nctl_core.production.contract import ContractError
+from nctl_core.production.derivation import EndpointCandidate, OperationalOverride
 from nctl_core.sources.actual import ActualFacts
 
 GENERATION_ID = "12345678-1234-5678-9234-567812345678"
@@ -70,14 +69,12 @@ def linux_facts(*, collected_at=FRESH, mac="aa:bb:cc:dd:ee:ff", iface="eth0", lo
     )
 
 
-def linux_node(slug, *, placements=(), power="none", expected="linux", facts=None, realized_type="device", device_id=None):
-    op = OperationalConfigInput(
-        id=f"op-{slug}",
-        actual_state_policy="required",
-        connection_path="local",
-        power_control=power,
-        expected_host_os=expected,
+def linux_node(slug, *, placements=(), power="none", facts=None, realized_type="device", device_id=None):
+    endpoint = EndpointCandidate(
+        id=f"endpoint-{slug}", name="primary", endpoint_type="primary", node_slug=slug,
+        ip_address="192.168.0.20/24", dns_name=f"{slug}.example.test",
     )
+    override = OperationalOverride(id=f"override-{slug}", power_control=power) if power != "none" else None
     realized = None
     if realized_type is not None:
         realized = RealizedState(
@@ -91,27 +88,28 @@ def linux_node(slug, *, placements=(), power="none", expected="linux", facts=Non
         name=slug,
         lifecycle="active",
         node_type="device",
-        operational_config=op,
+        endpoints=(endpoint,),
+        operational_override=override,
         placements=tuple(placements),
         realized=realized,
     )
 
 
 def haos_node(slug="aghaos", *, placements=()):
-    endpoint = EndpointInput(
+    endpoint = EndpointCandidate(
+        id="endpoint-haos",
         name="primary",
         endpoint_type="primary",
         node_slug=slug,
         ip_address="192.168.0.20/24",
         dns_name="aghaos.example.test",
     )
-    op = OperationalConfigInput(
-        id="op-haos",
-        actual_state_policy="declared",
+    override = OperationalOverride(
+        id="override-haos",
         connection_path="local",
         power_control="none",
         declared_host_os="haos",
-        local_endpoint=endpoint,
+        local_endpoint_id=endpoint.id,
         ansible_port=2222,
     )
     return NodeInput(
@@ -120,7 +118,8 @@ def haos_node(slug="aghaos", *, placements=()):
         name="HAOS",
         lifecycle="active",
         node_type="device",
-        operational_config=op,
+        endpoints=(endpoint,),
+        operational_override=override,
         placements=tuple(placements),
         realized=None,
     )
@@ -161,18 +160,30 @@ def test_linux_node_joins_actual_facts_and_service_group():
     assert "agweb" in group_hosts(result, "web_server")
     assert result.report["summary"]["active_placements"] == 1
     assert result.report["summary"]["included"] == 1
+    assert "nintent_operational_config_id" not in host
+    operational_values = result.report["hosts"][0]["operational_values"]
+    assert operational_values["host_os"] == {
+        "value": "linux",
+        "source": "derived",
+        "source_reference": {
+            "kind": "nodeutils_observation",
+            "observed_system": "Linux",
+            "collected_at": FRESH,
+        },
+        "override_won": False,
+    }
+    assert operational_values["ansible_port"]["value"] is None
+    assert operational_values["ansible_port"]["source"] == "default"
 
 
-def test_selector_groups_use_observed_system_not_expected():
-    # expected linux, observed Darwin -> exported macos with drift, in macos group.
-    node = linux_node("agmac", power="none", expected="linux", facts=linux_facts(system="Darwin"))
+def test_selector_groups_use_observed_system_directly():
+    node = linux_node("agmac", power="none", facts=linux_facts(system="Darwin"))
     result = compose([node])
 
     assert ssh_host(result, "agmac")["host_os"] == "macos"
     assert "agmac" in group_hosts(result, "macos")
     assert group_hosts(result, "linux") == set()
-    assert result.report["drift"][0]["code"] == "desired_actual_os_mismatch"
-    assert result.report["drift"][0]["desired_node_slug"] == "agmac"
+    assert result.report["drift"] == []
 
 
 def test_wol_power_marks_power_managed():
@@ -183,14 +194,17 @@ def test_wol_power_marks_power_managed():
 
 
 def test_tailscale_connection_exports_tailscale_ip():
-    op = OperationalConfigInput(
-        id="op-ts",
-        actual_state_policy="required",
+    endpoint = EndpointCandidate("endpoint-ts", "ts", "vpn", "agts", ip_address="100.64.0.10/32")
+    override = OperationalOverride(
+        id="override-ts",
         connection_path="tailscale",
-        expected_host_os="linux",
-        tailscale_endpoint=EndpointInput("ts", "vpn", "agts", ip_address="100.64.0.10/32"),
+        tailscale_endpoint_id=endpoint.id,
     )
-    node = NodeInput("node-ts", "agts", "agts", "active", "device", op, (), RealizedState("device", linux_facts(), "dev-ts"))
+    node = NodeInput(
+        "node-ts", "agts", "agts", "active", "device",
+        endpoints=(endpoint,), operational_override=override,
+        realized=RealizedState("device", linux_facts(), "dev-ts"),
+    )
     result = compose([node])
 
     host = ssh_host(result, "agts")
@@ -231,7 +245,6 @@ def test_linux_macos_and_declared_haos_compose_together():
         ),
         linux_node(
             "agmac",
-            expected="macos",
             facts=linux_facts(
                 system="Darwin",
                 local_ip="192.168.0.11",
@@ -297,13 +310,16 @@ def test_skipped_host_placement_does_not_create_dangling_group():
     assert result.report["summary"]["active_placements"] == 0
 
 
-def test_missing_operational_config_skips_only_that_node():
-    node = NodeInput("node-x", "agx", "agx", "active", "device", None, (), None)
+def test_missing_connection_endpoint_skips_only_that_node():
+    node = NodeInput(
+        id="node-x", slug="agx", name="agx", lifecycle="active", node_type="device",
+        realized=RealizedState("device", linux_facts(), "dev-x"),
+    )
     result = compose([node])
 
-    assert result.report["skipped"][0]["reasons"] == ["missing_operational_config"]
-    assert result.report["errors"][0]["code"] == "missing_operational_config"
-    assert result.report["errors"][0]["stage"] == "operational_config"
+    assert result.report["skipped"][0]["reasons"] == ["missing_connection_endpoint"]
+    assert result.report["errors"][0]["code"] == "missing_connection_endpoint"
+    assert result.report["errors"][0]["stage"] == "operational_derivation"
     assert "agx" not in result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
 
 
@@ -313,7 +329,8 @@ def test_invalid_platform_power_skips_only_that_node():
     assert result.report["skipped"][0]["reasons"] == ["invalid_platform_power"]
     error = result.report["errors"][0]
     assert error["code"] == "invalid_platform_power"
-    assert error["stage"] == "platform_policy"
+    assert error["stage"] == "operational_derivation"
+    assert error["evidence"]["field"] == "power_control"
 
 
 def test_conflicting_placement_variables_skip_only_that_node():
@@ -416,17 +433,34 @@ def test_output_is_byte_stable():
     assert render_production_report_json(first) == render_production_report_json(second)
 
 
+def test_ambiguous_neighbor_does_not_change_healthy_output() -> None:
+    healthy = linux_node("aggood")
+    ambiguous = _custom_node(
+        "agbad",
+        endpoints=(
+            EndpointCandidate("endpoint-z", "z", "management", "agbad", ip_address="192.0.2.2"),
+            EndpointCandidate("endpoint-a", "a", "management", "agbad", ip_address="192.0.2.3"),
+        ),
+    )
+    alone = compose([healthy])
+    mixed = compose([healthy, ambiguous])
+
+    assert ssh_host(mixed, "aggood") == ssh_host(alone, "aggood")
+    assert mixed.report["errors"][0]["code"] == "ambiguous_connection_endpoints"
+    assert mixed.report["errors"][0]["evidence"]["field"] == "connection_endpoint"
+
+
 def test_renderers_are_schema_versioned_and_parseable():
     result = compose([linux_node("agweb")])
 
     rendered_yaml = render_production_inventory_yml(result)
-    assert "# schema_version: 1.0\n" in rendered_yaml
+    assert "# schema_version: 2.0\n" in rendered_yaml
     loaded = yaml.safe_load(rendered_yaml)
-    assert loaded["all"]["vars"]["nintent_inventory_schema_version"] == "1.0"
+    assert loaded["all"]["vars"]["nintent_inventory_schema_version"] == "2.0"
 
     rendered_json = render_production_report_json(result)
     assert rendered_json.endswith("\n")
-    assert json.loads(rendered_json)["schema_version"] == "1.0"
+    assert json.loads(rendered_json)["schema_version"] == "2.0"
 
 
 # --- Step 1.6: full Group C isolation matrix -------------------------------
@@ -447,35 +481,28 @@ _REQUIRED_PROFILE = {
 }
 
 
-def _custom_node(slug, *, op_kwargs, placements=(), realized_type="device", facts=None):
-    op = OperationalConfigInput(id=f"op-{slug}", **op_kwargs)
+def _custom_node(slug, *, override_kwargs=None, endpoints=None, placements=(), realized_type="device", facts=None):
+    if endpoints is None:
+        endpoints = (
+            EndpointCandidate(
+                id=f"endpoint-{slug}", name="primary", endpoint_type="primary", node_slug=slug,
+                ip_address="192.168.9.9/24",
+            ),
+        )
+    override = OperationalOverride(id=f"override-{slug}", **(override_kwargs or {})) if override_kwargs else None
     realized = None
     if realized_type is not None:
         realized = RealizedState(realized_type=realized_type, facts=facts or linux_facts(), nautobot_device_id=f"dev-{slug}")
     return NodeInput(
         id=f"node-{slug}", slug=slug, name=slug, lifecycle="active", node_type="device",
-        operational_config=op, placements=tuple(placements), realized=realized,
-    )
-
-
-def _bad_missing_operational_config():
-    return NodeInput("node-bad", "agbad", "agbad", "active", "device", None, (), None)
-
-
-def _bad_invalid_actual_state_policy():
-    return _custom_node(
-        "agbad",
-        op_kwargs=dict(
-            actual_state_policy="required", connection_path="local",
-            expected_host_os="linux", declared_host_os="haos",
-        ),
+        endpoints=tuple(endpoints), operational_override=override,
+        placements=tuple(placements), realized=realized,
     )
 
 
 def _bad_unsupported_observed_host_os():
     return _custom_node(
         "agbad",
-        op_kwargs=dict(actual_state_policy="required", connection_path="local", expected_host_os="linux"),
         facts=linux_facts(system="FreeBSD"),
     )
 
@@ -483,46 +510,36 @@ def _bad_unsupported_observed_host_os():
 def _bad_invalid_platform_power():
     return _custom_node(
         "agbad",
-        op_kwargs=dict(
-            actual_state_policy="required", connection_path="local",
-            expected_host_os="linux", power_control="macos_sleep",
-        ),
+        override_kwargs=dict(power_control="macos_sleep"),
     )
 
 
 def _bad_endpoint_node_mismatch():
-    endpoint = EndpointInput(name="primary", endpoint_type="primary", node_slug="someone-else", ip_address="192.168.9.9/24")
+    endpoint = EndpointCandidate(
+        id="endpoint-bad", name="primary", endpoint_type="primary",
+        node_slug="someone-else", ip_address="192.168.9.9/24",
+    )
     return _custom_node(
         "agbad",
-        op_kwargs=dict(
-            actual_state_policy="required", connection_path="local",
-            expected_host_os="linux", local_endpoint=endpoint,
-        ),
+        endpoints=(endpoint,),
     )
 
 
 def _bad_unresolved_connection_path():
     return _custom_node(
         "agbad",
-        op_kwargs=dict(actual_state_policy="required", connection_path="tailscale", expected_host_os="linux"),
-    )
-
-
-def _bad_invalid_connection_path():
-    return _custom_node(
-        "agbad",
-        op_kwargs=dict(actual_state_policy="required", connection_path="bogus", expected_host_os="linux"),
+        override_kwargs=dict(connection_path="tailscale"),
     )
 
 
 def _bad_invalid_connection_address():
-    endpoint = EndpointInput(name="ts", endpoint_type="vpn", node_slug="agbad", ip_address="not-an-ip")
+    endpoint = EndpointCandidate(
+        id="endpoint-ts", name="ts", endpoint_type="vpn", node_slug="agbad", ip_address="not-an-ip"
+    )
     return _custom_node(
         "agbad",
-        op_kwargs=dict(
-            actual_state_policy="required", connection_path="tailscale",
-            expected_host_os="linux", tailscale_endpoint=endpoint,
-        ),
+        endpoints=(endpoint,),
+        override_kwargs=dict(connection_path="tailscale", tailscale_endpoint_id=endpoint.id),
     )
 
 
@@ -578,13 +595,10 @@ def _bad_conflicting_host_variable():
 
 
 _GROUP_C_CASES = {
-    "missing_operational_config": (_bad_missing_operational_config, PROFILES),
-    "invalid_actual_state_policy": (_bad_invalid_actual_state_policy, PROFILES),
     "unsupported_observed_host_os": (_bad_unsupported_observed_host_os, PROFILES),
     "invalid_platform_power": (_bad_invalid_platform_power, PROFILES),
     "endpoint_node_mismatch": (_bad_endpoint_node_mismatch, PROFILES),
     "unresolved_connection_path": (_bad_unresolved_connection_path, PROFILES),
-    "invalid_connection_path": (_bad_invalid_connection_path, PROFILES),
     "invalid_connection_address": (_bad_invalid_connection_address, PROFILES),
     "unknown_profile": (_bad_unknown_profile, PROFILES),
     "unsupported_config_schema": (_bad_unsupported_config_schema, PROFILES),
@@ -671,7 +685,7 @@ def test_invalid_connection_address_per_node_call_site_is_local_not_global():
         generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
     )
     assert result.report["errors"][0]["code"] == "invalid_connection_address"
-    assert result.report["errors"][0]["stage"] == "connection"
+    assert result.report["errors"][0]["stage"] == "operational_derivation"
 
 
 def test_group_a_shared_profile_error_still_aborts_globally():
@@ -700,12 +714,9 @@ def test_group_b_final_output_error_still_aborts_globally(monkeypatch):
 
 
 def _planned_node(slug, *, lifecycle="planned", placements=(), node_type="device"):
-    op = OperationalConfigInput(
-        id=f"op-{slug}", actual_state_policy="required", connection_path="local", expected_host_os="linux",
-    )
     return NodeInput(
         id=f"node-{slug}", slug=slug, name=slug, lifecycle=lifecycle, node_type=node_type,
-        operational_config=op, placements=tuple(placements), realized=None,
+        placements=tuple(placements), realized=None,
     )
 
 

@@ -18,7 +18,6 @@ from nctl_core.production.contract import (
     actual_state_problem,
     canonical_json,
     canonical_json_digest,
-    evaluate_platform_policy,
     map_placement_config,
     merge_host_variables,
     resolve_connection_variables,
@@ -124,47 +123,6 @@ def test_freshness_boundary_is_72_hours_inclusive():
     )
 
 
-def test_evaluate_platform_policy_scenarios():
-    host_os, drift = evaluate_platform_policy(
-        actual_state_policy="required",
-        expected_host_os="linux",
-        declared_host_os=None,
-        observed_system="Linux",
-        power_control="wol",
-    )
-    assert host_os == "linux"
-    assert drift == []
-
-    host_os, drift = evaluate_platform_policy(
-        actual_state_policy="declared",
-        expected_host_os=None,
-        declared_host_os="haos",
-        observed_system=None,
-        power_control="none",
-    )
-    assert host_os == "haos"
-
-    host_os, drift = evaluate_platform_policy(
-        actual_state_policy="required",
-        expected_host_os="linux",
-        declared_host_os=None,
-        observed_system="Darwin",
-        power_control="macos_sleep",
-    )
-    assert host_os == "macos"
-    assert drift[0]["code"] == "desired_actual_os_mismatch"
-
-    assert_contract_error(
-        "invalid_platform_power",
-        evaluate_platform_policy,
-        actual_state_policy="required",
-        expected_host_os="linux",
-        declared_host_os=None,
-        observed_system="Linux",
-        power_control="macos_sleep",
-    )
-
-
 def test_endpoint_ownership_mismatch():
     assert_contract_error("endpoint_node_mismatch", validate_endpoint_ownership, "node-a", "node-b")
 
@@ -183,7 +141,7 @@ def test_production_inventory_and_report_schema_are_closed():
     inventory = {
         "all": {
             "vars": {
-                "nintent_inventory_schema_version": "1.0",
+                "nintent_inventory_schema_version": "2.0",
                 "nintent_generation_id": generation_id,
                 "nintent_generated_at": "2026-06-27T12:00:00+00:00",
                 "nintent_report_path": f"production.reports/{generation_id}.json",
@@ -209,7 +167,7 @@ def test_production_inventory_and_report_schema_are_closed():
         }
     }
     report = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "generation_id": generation_id,
         "generated_at": "2026-06-27T12:00:00+00:00",
         "report_path": f"production.reports/{generation_id}.json",
@@ -222,7 +180,35 @@ def test_production_inventory_and_report_schema_are_closed():
             "active_placements": 1,
             "inactive_placements": 0,
         },
-        "hosts": [],
+        "hosts": [
+            {
+                "inventory_hostname": "node-a",
+                "desired_node_id": "node-id",
+                "host_os": "linux",
+                "connection_path": "local",
+                "actual_state_policy": "required",
+                "nautobot_device_id": "device-id",
+                "active_placement_ids": ["placement-id"],
+                "operational_values": {
+                    field: {
+                        "value": None,
+                        "source": "default",
+                        "source_reference": {"kind": "safe_default", "field": field},
+                        "override_won": False,
+                    }
+                    for field in (
+                        "actual_state_policy",
+                        "host_os",
+                        "connection_path",
+                        "connection_endpoint",
+                        "connection_address",
+                        "ansible_port",
+                        "power_control",
+                        "is_laptop",
+                    )
+                },
+            }
+        ],
         "skipped": [],
         "drift": [],
         "errors": [],
@@ -230,6 +216,34 @@ def test_production_inventory_and_report_schema_are_closed():
 
     assert validate_production_inventory_document(inventory, PROFILES) is inventory
     assert validate_production_report(report) is report
+
+    old_report = {**report, "schema_version": "1.0"}
+    assert_contract_error("unsupported_inventory_schema", validate_production_report, old_report)
+
+    old_inventory = {
+        **inventory,
+        "all": {
+            **inventory["all"],
+            "vars": {**inventory["all"]["vars"], "nintent_inventory_schema_version": "1.0"},
+        },
+    }
+    assert_contract_error(
+        "unsupported_inventory_schema", validate_production_inventory_document, old_inventory, PROFILES
+    )
+
+    inventory["all"]["children"]["ssh_hosts"]["hosts"]["node-a"][
+        "nintent_operational_config_id"
+    ] = "removed"
+    assert_contract_error(
+        "unknown_host_variable", validate_production_inventory_document, inventory, PROFILES
+    )
+    del inventory["all"]["children"]["ssh_hosts"]["hosts"]["node-a"][
+        "nintent_operational_config_id"
+    ]
+
+    report["hosts"][0]["operational_values"]["host_os"]["source"] = "intent"
+    assert_contract_error("invalid_report_schema", validate_production_report, report)
+    report["hosts"][0]["operational_values"]["host_os"]["source"] = "default"
 
     inventory["all"]["children"]["ssh_hosts"]["hosts"]["node-a"]["package_manager"] = "apt"
     assert_contract_error(
