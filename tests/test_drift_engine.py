@@ -6,16 +6,23 @@ from nctl_core.drift.context import DriftContext
 from nctl_core.drift.engine import compute_drift
 from nctl_core.drift.model import Status
 from nctl_core.sources.actual import ActualDevice, ActualSnapshot
-from nctl_core.sources.desired import DesiredNode, DesiredNodeOperationalConfig, DesiredServicePlacement, DesiredSnapshot
+from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredServicePlacement, DesiredSnapshot
 from nctl_core.sources.snapshot import SourceSnapshot
 
 
-def make_snapshot(*, nodes=(), operational_configs=(), placements=(), devices=(), observed=()) -> SourceSnapshot:
+def make_snapshot(*, nodes=(), endpoints=(), placements=(), devices=(), observed=()) -> SourceSnapshot:
     return SourceSnapshot(
-        desired=DesiredSnapshot(nodes=list(nodes), operational_configs=list(operational_configs), placements=list(placements)),
+        desired=DesiredSnapshot(nodes=list(nodes), endpoints=list(endpoints), placements=list(placements)),
         actual=ActualSnapshot(devices=list(devices)),
         observed=list(observed),
         fetched_at=datetime.now(timezone.utc),
+    )
+
+
+def primary_endpoint(node_id: str, node_slug: str) -> DesiredEndpoint:
+    return DesiredEndpoint(
+        id=f"endpoint-{node_id}", name="primary", endpoint_type="primary",
+        node_id=node_id, node_slug=node_slug, ip_address="192.0.2.10/32",
     )
 
 
@@ -34,7 +41,7 @@ def test_node_with_no_diffs_is_seeded_as_converged():
     [target_status] = result.targets
     assert target_status.target.slug == "agok"
     assert target_status.status == Status.CONVERGED
-    assert target_status.diffs == []
+    assert [diff.code for diff in target_status.diffs] == ["derived_value_provenance"]
     assert result.summary["converged"] == 1
 
 
@@ -71,15 +78,8 @@ def test_global_diff_from_production_policy_appears_as_its_own_target():
     # 1 -- every node/placement-owned Group C code (e.g. invalid_platform_power)
     # is node-local instead, per p0/field-classification.md Section 6.
     node = DesiredNode(id="n1", slug="agbad", name="agbad", lifecycle="active", node_type="device", realized_device_id="dev-1")
-    op_config = DesiredNodeOperationalConfig(
-        id="op1",
-        node_id="n1",
-        actual_state_policy="required",
-        connection_path="local",
-        expected_host_os="linux",
-    )
     device = ActualDevice(id="dev-1", name="agbad.local", facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"})
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], devices=[device])
+    snapshot = make_snapshot(nodes=[node], endpoints=[primary_endpoint("n1", "agbad")], devices=[device])
     profiles = {"web": {"group": "web_server", "config_schema_version": "1", "variables": "not-an-object"}}
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=profiles)
 
@@ -105,15 +105,6 @@ def test_mixed_snapshot_isolates_local_error_and_unapplied_intent_through_the_en
     bad = DesiredNode(id="n2", slug="agbad", name="agbad", lifecycle="active", node_type="device", realized_device_id="dev-2")
     planned = DesiredNode(id="n3", slug="agplanned", name="agplanned", lifecycle="planned", node_type="device", realized_device_id="dev-3")
 
-    healthy_op = DesiredNodeOperationalConfig(
-        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
-    )
-    bad_op = DesiredNodeOperationalConfig(
-        id="op2", node_id="n2", actual_state_policy="required", connection_path="local", expected_host_os="linux"
-    )
-    planned_op = DesiredNodeOperationalConfig(
-        id="op3", node_id="n3", actual_state_policy="required", connection_path="local", expected_host_os="linux"
-    )
     bad_placement = DesiredServicePlacement(
         id="p1", service_id="s1", node_id="n2", instance_name="primary",
         deployment_profile="missing-profile", config_schema_version="1", config={},
@@ -127,7 +118,11 @@ def test_mixed_snapshot_isolates_local_error_and_unapplied_intent_through_the_en
     device3 = ActualDevice(id="dev-3", name="agplanned.local", facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"})
     snapshot = make_snapshot(
         nodes=[healthy, bad, planned],
-        operational_configs=[healthy_op, bad_op, planned_op],
+        endpoints=[
+            primary_endpoint("n1", "aghealthy"),
+            primary_endpoint("n2", "agbad"),
+            primary_endpoint("n3", "agplanned"),
+        ],
         placements=[bad_placement, planned_placement],
         devices=[device1, device2, device3],
     )

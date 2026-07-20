@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from nctl_core.drift.model import DiffRecord, Severity, Target
-from nctl_core.production.composer import PHASE1_LOCAL_CODES
+from nctl_core.production.composer import PRODUCTION_BLOCKING_NODE_CODES
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .classify import CODE_CLASSIFICATION, Classification, classify
@@ -167,9 +167,11 @@ def build_plan(
     # service/dnsmasq action host lists below so unrelated healthy hosts are
     # never suppressed by one node's local finding (Decision 5).
     blocked_node_slugs = {
-        record.target.slug
-        for record in manual_review
-        if record.target.kind == "node" and record.code in PHASE1_LOCAL_CODES and record.target.slug
+        diff.target.slug
+        for diff in scoped_diffs
+        if diff.target.kind == "node"
+        and diff.code in PRODUCTION_BLOCKING_NODE_CODES
+        and diff.target.slug
     }
 
     actions: list[ReconcileAction] = []
@@ -201,6 +203,8 @@ def build_plan(
             _apply_fallback(inputs, group_diffs, manual_review, unsupported)
             continue
         deployment_profile, host_slugs = inputs
+        if scope.kind == "host":
+            host_slugs = [slug for slug in host_slugs if slug == scope.host_slug]
         host_slugs = [slug for slug in host_slugs if slug not in blocked_node_slugs]
         if not host_slugs:
             # Every host this service is placed on is production-blocked by a

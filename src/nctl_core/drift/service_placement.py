@@ -54,6 +54,7 @@ def evaluate_active_placement(
         "deployment_profile": placement.get("deployment_profile"),
         "realized_device_id": device_id,
         "actual_state_policy": policy,
+        "host_os": placement.get("host_os"),
         "observed_key": observed_key,
         "observed_state": None,
         "observed_at": None,
@@ -75,11 +76,8 @@ def evaluate_active_placement(
         report["gaps"].append({"code": "service_observation_stale", "age_hours": age})
 
     normalized_os = normalize_observed_os(facts.get("observed_system"))
-    expected_os = placement.get("expected_host_os")
     if normalized_os is None:
         report["gaps"].append({"code": "service_observation_missing", "reason": "observed_system_missing"})
-    elif expected_os and normalized_os != expected_os:
-        report["gaps"].append({"code": "service_placement_os_mismatch", "expected_host_os": expected_os, "observed_host_os": normalized_os})
 
     entry = observed_service_entry(facts, observed_key)
     if entry is None:

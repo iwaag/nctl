@@ -70,10 +70,13 @@ def test_link_actual_node_happy_path():
     respx.get(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
         side_effect=[
             httpx.Response(200, json={"id": NODE_ID, "realized_device": None, "realized_vm": None}),
-            httpx.Response(200, json={"id": NODE_ID, "realized_device": {"id": DEVICE_ID}, "realized_vm": None}),
+            httpx.Response(200, json={
+                "id": NODE_ID, "realized_device": {"id": DEVICE_ID},
+                "realized_device_source": "derived", "realized_vm": None,
+            }),
         ]
     )
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
+    patch_route = respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
         return_value=httpx.Response(200, json={"id": NODE_ID, "realized_device": DEVICE_ID})
     )
 
@@ -82,6 +85,10 @@ def test_link_actual_node_happy_path():
     assert result.field == "realized_device"
     assert result.candidate_id == DEVICE_ID
     assert result.node_slug == "agweb"
+    assert json.loads(patch_route.calls[0].request.content) == {
+        "realized_device": DEVICE_ID,
+        "realized_device_source": "derived",
+    }
 
 
 @respx.mock

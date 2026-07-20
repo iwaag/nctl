@@ -56,6 +56,7 @@ from nctl_core.production.composer import (
     compose_production_inventory,
     unapplied_placement_findings,
 )
+from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
 from nctl_core.sources.actual import ActualDevice
 from nctl_core.sources.snapshot import SourceSnapshot
 
@@ -82,13 +83,13 @@ _PLACEHOLDER_DIGEST = "0" * 64
 
 @register("node")
 def node_existence(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
-    operational_by_node = {oc.node_id: oc for oc in snapshot.desired.operational_configs}
+    override_by_node = {item.node_id: item for item in snapshot.desired.operational_overrides}
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
     vms_by_id = {vm.id: vm for vm in snapshot.actual.virtual_machines}
 
     for node in snapshot.desired.nodes:
         target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
-        operational_config = operational_by_node.get(node.id)
+        operational_override = override_by_node.get(node.id)
 
         if node.realized_device_id and node.realized_device_id not in devices_by_id:
             yield DiffRecord(
@@ -115,8 +116,7 @@ def node_existence(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[
                 sources=["desired", "actual"],
             )
         if (
-            operational_config is not None
-            and operational_config.actual_state_policy == "required"
+            (operational_override is None or operational_override.declared_host_os is None)
             and not node.realized_device_id
             and not node.realized_vm_id
         ):
@@ -124,7 +124,7 @@ def node_existence(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[
                 target=target,
                 code="no_realized_object",
                 severity=Severity.ERROR,
-                message=f"{node.slug}: actual_state_policy is 'required' but no realized device or VM is linked",
+                message=f"{node.slug}: observed operation is required but no realized device or VM is linked",
                 desired={"actual_state_policy": "required"},
                 sources=["desired"],
             )
@@ -184,6 +184,9 @@ def _ingest_lag_diff(target: Target, hostname: str, observed_at: datetime, devic
 @register("node")
 def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
     node_inputs = build_production_node_inputs(snapshot)
+
+    for node_input in node_inputs:
+        yield _derived_value_provenance_diff(node_input, snapshot, context.generated_at)
 
     if not context.profiles:
         # The composer itself cannot run without a profile map, but the
@@ -258,23 +261,80 @@ def _drift_entry_diff(drift_entry: dict) -> DiffRecord:
     """
 
     code = drift_entry["code"]
-    if code == "desired_actual_os_mismatch":
-        target = Target(kind="node", slug=drift_entry["desired_node_slug"])
-        return DiffRecord(
-            target=target,
-            code=code,
-            severity=Severity.WARNING,
-            message=(
-                f"{drift_entry['desired_node_slug']}: {code} "
-                f"(expected {drift_entry.get('expected_host_os')}, observed {drift_entry.get('observed_host_os')})"
-            ),
-            desired={"expected_host_os": drift_entry.get("expected_host_os")},
-            actual={"observed_host_os": drift_entry.get("observed_host_os")},
-            sources=["desired", "actual"],
-        )
     if code == ACTIVE_PLACEMENT_NOT_APPLIED:
         return _active_placement_not_applied_diff(drift_entry)
     raise AssertionError(f"production_policy: unhandled composer drift code {code!r}")
+
+
+def _derived_value_provenance_diff(node_input, snapshot: SourceSnapshot, generated_at: str) -> DiffRecord:
+    try:
+        effective = resolve_operational_values(
+            node_id=node_input.id,
+            node_slug=node_input.slug,
+            endpoints=node_input.endpoints,
+            override=node_input.operational_override,
+            realized_type=node_input.realized.realized_type if node_input.realized else None,
+            facts=node_input.realized.facts if node_input.realized else None,
+            generated_at=generated_at,
+        )
+        operational = {"values": effective.as_dict(), "finding": None}
+    except DerivationFailure as exc:
+        operational = {
+            "values": None,
+            "finding": {"code": exc.code, "field": exc.field, "evidence": dict(exc.evidence)},
+        }
+
+    node = next(item for item in snapshot.desired.nodes if item.id == node_input.id)
+    persisted = []
+    for field_name in ("realized_device", "realized_vm"):
+        value = getattr(node, f"{field_name}_id")
+        source = getattr(node, f"{field_name}_source")
+        if value is not None:
+            persisted.append(
+                _persisted_value_record(node.id, field_name, value, source, source == "override")
+            )
+    for endpoint in sorted(
+        (item for item in snapshot.desired.endpoints if item.node_id == node.id), key=lambda item: item.id
+    ):
+        for field_name in ("dns_name", "mdns_name"):
+            value = getattr(endpoint, field_name)
+            source = getattr(endpoint, f"{field_name}_source")
+            if value is not None:
+                persisted.append(
+                    _persisted_value_record(
+                        endpoint.id, field_name, value, source, source in {"intent", "override"}
+                    )
+                )
+        if endpoint.realized_ip_address_id is not None:
+            persisted.append(
+                _persisted_value_record(
+                    endpoint.id,
+                    "realized_ip_address",
+                    endpoint.realized_ip_address_id,
+                    endpoint.realized_ip_address_source,
+                    endpoint.realized_ip_address_source == "override",
+                )
+            )
+    return DiffRecord(
+        target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
+        code="derived_value_provenance",
+        severity=Severity.INFO,
+        message=f"{node.slug}: effective derived/default/override value provenance",
+        desired={"operational": operational, "persisted_values": persisted},
+        sources=["desired", "actual"],
+    )
+
+
+def _persisted_value_record(row_id: str, field_name: str, value, source: str | None, override_won: bool) -> dict:
+    return {
+        "field": field_name,
+        "record": {
+            "value": value,
+            "source": source,
+            "source_reference": {"kind": "desired_field", "id": row_id, "field": field_name},
+            "override_won": override_won,
+        },
+    }
 
 
 def _active_placement_not_applied_diff(entry: dict) -> DiffRecord:

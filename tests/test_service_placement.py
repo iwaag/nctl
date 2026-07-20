@@ -10,7 +10,7 @@ def placement(**updates):
     row = {
         "placement_id": "p1", "service_id": "s1", "node_id": "n1", "node_slug": "node-a",
         "instance_name": "main", "deployment_profile": "systemd", "realized_device_id": "d1",
-        "actual_state_policy": "observed", "expected_host_os": "linux",
+        "actual_state_policy": "required", "host_os": "linux",
     }
     row.update(updates)
     return row
@@ -42,11 +42,10 @@ def test_satisfied_running_placement_and_os_match():
     assert evaluate()["status"] == "satisfied"
 
 
-def test_missing_stopped_stale_and_os_mismatch_are_distinct():
+def test_missing_stopped_and_stale_are_distinct():
     assert gap_codes(evaluate(devices={"d1": device(observed_services={})})) == {"service_missing"}
     assert gap_codes(evaluate(devices={"d1": device(observed_services={"nomad": {"state": "failed"}})})) == {"service_not_running"}
     assert "service_observation_stale" in gap_codes(evaluate(devices={"d1": device(service_inventory_updated_at="2026-07-14T00:00:00+00:00")}))
-    assert "service_placement_os_mismatch" in gap_codes(evaluate(placements=[placement(expected_host_os="macos")]))
 
 
 def test_missing_device_and_missing_timestamp_are_insufficient_observation():

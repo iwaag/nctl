@@ -36,7 +36,7 @@ def test_no_error_diffs_is_converged():
 
 def test_warning_and_info_only_is_converged():
     status = derive_status(
-        [_diff("desired_actual_os_mismatch", Severity.WARNING), _diff("ingest_lag", Severity.INFO)],
+        [_diff("active_placement_not_applied", Severity.WARNING), _diff("derived_value_provenance", Severity.INFO)],
         target_slug="agweb",
         observed_at=None,
         events_dir=None,

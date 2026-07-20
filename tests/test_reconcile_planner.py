@@ -5,10 +5,10 @@ from datetime import datetime, timezone
 import pytest
 
 from nctl_core.drift.model import DiffRecord, Severity, Target
-from nctl_core.reconcile.classify import UnclassifiedDiffCodeError
+from nctl_core.reconcile.classify import UnclassifiedDiffCodeError, classify
 from nctl_core.reconcile.fingerprint import compute_drift_fingerprint
 from nctl_core.reconcile.planner import HostScopeError, build_plan, select_scoped_diffs
-from nctl_core.reconcile.model import PlanScope
+from nctl_core.reconcile.model import Classification, PlanScope
 from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
 from nctl_core.sources.actual import ActualDevice, ActualSnapshot
 from nctl_core.sources.desired import DesiredNode, DesiredService, DesiredServicePlacement, DesiredSnapshot
@@ -456,6 +456,61 @@ def test_service_action_excludes_a_production_blocked_host():
     assert blocked_record.evidence["desired"]["placement"]["id"] == "p2"
 
 
+def test_ambiguous_endpoint_blocks_only_its_host_in_cluster_and_host_scopes():
+    healthy = _node("n1", "aghealthy")
+    blocked = _node("n2", "agblocked")
+    svc = _service("s1", "web")
+    placements = [
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="web"),
+        _placement("p2", service_id="s1", node_id="n2", deployment_profile="web"),
+    ]
+    snapshot = _snapshot(nodes=[healthy, blocked], services=[svc], placements=placements)
+    diffs = [
+        _service_diff(svc, "service_not_running"),
+        DiffRecord(
+            target=Target(kind="node", slug="agblocked", name="agblocked", id="n2"),
+            code="ambiguous_connection_endpoints", severity=Severity.ERROR,
+            message="agblocked: multiple local endpoints have equal precedence",
+        ),
+    ]
+    reconciliation = {
+        "web": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/web.yml"))
+    }
+
+    cluster_plan = _build(snapshot, diffs, profile_reconciliation=reconciliation)
+    assert cluster_plan.actions[0].parameters["host_slugs"] == ["aghealthy"]
+    assert [record.code for record in cluster_plan.manual_review] == ["ambiguous_connection_endpoints"]
+
+    healthy_plan = _build(
+        snapshot, diffs, scope=PlanScope(kind="host", host_slug="aghealthy"),
+        profile_reconciliation=reconciliation,
+    )
+    assert healthy_plan.actions[0].parameters["host_slugs"] == ["aghealthy"]
+    assert healthy_plan.manual_review == []
+
+    blocked_plan = _build(
+        snapshot, diffs, scope=PlanScope(kind="host", host_slug="agblocked"),
+        profile_reconciliation=reconciliation,
+    )
+    assert blocked_plan.actions == []
+    assert [record.code for record in blocked_plan.manual_review] == ["ambiguous_connection_endpoints"]
+
+
+def test_derived_value_provenance_info_is_omitted_from_reconcile_plan():
+    node = _node("n1", "agweb")
+    diff = DiffRecord(
+        target=Target(kind="node", slug="agweb", name="agweb", id="n1"),
+        code="derived_value_provenance", severity=Severity.INFO,
+        message="agweb: effective derived/default/override value provenance",
+    )
+
+    plan = _build(_snapshot(nodes=[node]), [diff])
+
+    assert plan.actions == []
+    assert plan.manual_review == []
+    assert plan.unsupported == []
+
+
 def test_service_action_omitted_when_every_host_is_blocked():
     blocked = _node("n1", "agblocked")
     svc = _service("s1", "web")
@@ -465,9 +520,9 @@ def test_service_action_omitted_when_every_host_is_blocked():
         _service_diff(svc, "service_not_running"),
         DiffRecord(
             target=Target(kind="node", slug="agblocked", name="agblocked", id="n1"),
-            code="missing_operational_config",
+            code="unresolved_connection_path",
             severity=Severity.ERROR,
-            message="agblocked: missing_operational_config",
+            message="agblocked: unresolved_connection_path",
         ),
     ]
     reconciliation = {"web": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/web.yml"))}
@@ -477,7 +532,7 @@ def test_service_action_omitted_when_every_host_is_blocked():
     assert plan.actions == []
     assert plan.unsupported == []
     codes = {r.code for r in plan.manual_review}
-    assert "missing_operational_config" in codes
+    assert "unresolved_connection_path" in codes
 
 
 def test_unrelated_automatic_action_survives_alongside_a_blocked_node():
@@ -523,17 +578,22 @@ def test_host_scoped_reconcile_selects_only_that_host_blocker():
     assert [r.code for r in plan.manual_review] == ["unresolved_connection_path"]
 
 
-def test_every_phase1_local_code_reaches_planning_without_unclassified_error():
-    from nctl_core.production.composer import PHASE1_LOCAL_CODES
+def test_every_production_blocking_node_code_reaches_planning_without_unclassified_error():
+    from nctl_core.production.composer import PRODUCTION_BLOCKING_NODE_CODES
 
     node = _node("n1", "agx")
     snapshot = _snapshot(nodes=[node])
-    for code in sorted(PHASE1_LOCAL_CODES):
+    for code in sorted(PRODUCTION_BLOCKING_NODE_CODES):
         severity = Severity.WARNING if code == "active_placement_not_applied" else Severity.ERROR
         diff = DiffRecord(
             target=Target(kind="node", slug="agx", name="agx", id="n1"),
             code=code, severity=severity, message=f"agx: {code}",
         )
         plan = _build(snapshot, [diff])  # must not raise UnclassifiedDiffCodeError
-        assert [r.code for r in plan.manual_review] == [code]
-        assert plan.actions == []
+        classified = classify(code, target_kind="node")
+        if classified.classification == Classification.MANUAL_REVIEW:
+            assert [r.code for r in plan.manual_review] == [code]
+            assert plan.actions == []
+        else:
+            assert plan.manual_review == []
+            assert [action.reconciler_id for action in plan.actions] == ["observe_node"]

@@ -246,8 +246,9 @@ def test_render_drift_text_lists_targets_diffs_and_summary(tmp_path):
 
     text = render_drift_text(envelope)
 
-    assert "agok  converged  0 diff(s)" in text
-    assert "agmissing  unknown  2 diff(s)" in text
+    assert "agok  converged  1 diff(s)" in text
+    assert "[info] agok: effective derived/default/override value provenance" in text
+    assert "agmissing  unknown  3 diff(s)" in text
     assert "[error] agmissing: missing_actual_node" in text
     assert "[error] agmissing: references realized_device 'dev-gone', which no longer exists in Nautobot" in text
     assert "web  converged  1 diff(s)" in text

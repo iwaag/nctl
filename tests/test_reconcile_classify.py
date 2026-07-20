@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from nctl_core.production.composer import PHASE1_LOCAL_CODES
+from nctl_core.production.composer import PRODUCTION_BLOCKING_NODE_CODES
 from nctl_core.reconcile.classify import CODE_CLASSIFICATION, UnclassifiedDiffCodeError, classify
 from nctl_core.reconcile.model import Classification
 
@@ -58,17 +58,20 @@ def test_every_producible_diff_code_is_classified():
     assert unclassified == [], f"new diff code(s) with no reconcile classification: {unclassified}"
 
 
-def test_every_phase1_local_composer_code_is_classified():
+def test_every_production_blocking_node_code_is_classified():
     # better_usability p1: the source scan above targets comparator/evaluator
     # files, not production/composer.py, so this imports the composer's own
     # declared code set directly -- the composer, comparator, and classifier
     # are required to share one vocabulary rather than each declaring their
     # own copy (roadmap.md mandatory check 2).
-    assert len(PHASE1_LOCAL_CODES) == 18
-    for code in PHASE1_LOCAL_CODES:
+    assert PRODUCTION_BLOCKING_NODE_CODES
+    for code in PRODUCTION_BLOCKING_NODE_CODES:
         result = classify(code, target_kind="node")
-        assert result.classification == Classification.MANUAL_REVIEW, code
-        assert result.reconciler_id is None, code
+        assert result.classification in {Classification.MANUAL_REVIEW, Classification.OBSERVATION}, code
+        if result.classification == Classification.MANUAL_REVIEW:
+            assert result.reconciler_id is None, code
+        else:
+            assert result.reconciler_id == "observe_node", code
 
 
 def test_unknown_code_raises_instead_of_defaulting():
@@ -123,7 +126,6 @@ def test_observation_codes_route_to_observe_node(code):
         "uuid_mismatch",
         "platform_mismatch",
         "realized_actual_type_not_accepted",
-        "desired_actual_os_mismatch",
         # invalid/ambiguous IP ranges or interfaces
         "ambiguous_interface",
         "missing_interface_candidate",

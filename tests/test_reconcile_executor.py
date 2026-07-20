@@ -605,7 +605,7 @@ def test_local_blocker_with_no_actions_terminates_without_mutation(tmp_path, mon
     node = _node("agblocked")
     diff = DiffRecord(
         target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
-        code="missing_operational_config", severity=Severity.ERROR, message="x",
+        code="unresolved_connection_path", severity=Severity.ERROR, message="x",
     )
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
     _stub_dashboard(monkeypatch)
@@ -721,7 +721,7 @@ def test_dry_plan_succeeds_despite_a_local_composition_error(tmp_path, monkeypat
     node = _node("agblocked")
     diff = DiffRecord(
         target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
-        code="missing_operational_config", severity=Severity.ERROR, message="x",
+        code="unresolved_connection_path", severity=Severity.ERROR, message="x",
     )
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
 
@@ -730,4 +730,4 @@ def test_dry_plan_succeeds_despite_a_local_composition_error(tmp_path, monkeypat
     assert envelope.data.state == "planned"
     assert envelope.ok
     assert len(envelope.data.manual_review) == 1
-    assert envelope.data.manual_review[0]["code"] == "missing_operational_config"
+    assert envelope.data.manual_review[0]["code"] == "unresolved_connection_path"

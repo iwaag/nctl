@@ -21,6 +21,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from nctl_core.sources.actual import ActualInterface
+from nctl_core.production.adapter import build_production_node_inputs
+from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .evaluation import EvaluationResult, evaluate_endpoint_intent, evaluate_node_intent, evaluate_service_intent
@@ -83,14 +85,28 @@ def evaluate_all_services(
         dependencies_by_service[dependency.source_service_id].append(dependency)
 
     nodes_by_id = {node.id: node for node in snapshot.desired.nodes}
-    operational_by_node = {row.node_id: row for row in snapshot.desired.operational_configs}
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
+    effective_by_node = {}
+    operation_generated_at = generated_at or snapshot.fetched_at.isoformat()
+    for node_input in build_production_node_inputs(snapshot):
+        try:
+            effective_by_node[node_input.id] = resolve_operational_values(
+                node_id=node_input.id,
+                node_slug=node_input.slug,
+                endpoints=node_input.endpoints,
+                override=node_input.operational_override,
+                realized_type=node_input.realized.realized_type if node_input.realized else None,
+                facts=node_input.realized.facts if node_input.realized else None,
+                generated_at=operation_generated_at,
+            )
+        except DerivationFailure:
+            continue
     placement_rows = []
     for placement in snapshot.desired.placements:
         if placement.desired_state != "active":
             continue
         node = nodes_by_id.get(placement.node_id)
-        operational = operational_by_node.get(placement.node_id)
+        effective = effective_by_node.get(placement.node_id)
         placement_rows.append(
             {
                 "placement_id": placement.id,
@@ -100,8 +116,8 @@ def evaluate_all_services(
                 "instance_name": placement.instance_name,
                 "deployment_profile": placement.deployment_profile,
                 "realized_device_id": node.realized_device_id if node else None,
-                "actual_state_policy": operational.actual_state_policy if operational else None,
-                "expected_host_os": operational.expected_host_os if operational else None,
+                "actual_state_policy": effective.actual_state_policy.value if effective else None,
+                "host_os": effective.host_os.value if effective else None,
             }
         )
     device_facts = {

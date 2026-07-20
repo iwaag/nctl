@@ -177,3 +177,51 @@ def test_active_placement_not_applied_renders_with_warning_severity_and_evidence
     assert "not applied" in rendered_diff["message"]
     assert rendered_diff["desired"]["placement"]["config"] == {"enabled": True}
     assert "<\\/" not in rendered_diff["message"]  # nothing hostile to begin with, sanity check only
+
+
+def test_derived_value_provenance_renders_as_info_with_field_sources():
+    diff = DiffRecord(
+        target=Target(kind="node", slug="agweb", name="agweb", id="n5"),
+        code="derived_value_provenance",
+        severity=Severity.INFO,
+        message="agweb: effective derived/default/override value provenance",
+        desired={
+            "operational": {
+                "values": {
+                    "host_os": {
+                        "value": "linux",
+                        "source": "derived",
+                        "source_reference": {
+                            "kind": "nodeutils_observation",
+                            "observed_system": "</script><script>alert(2)</script>",
+                        },
+                        "override_won": False,
+                    }
+                }
+            }
+        },
+        actual={},
+        sources=["desired", "actual"],
+    )
+    envelope = Envelope.build(
+        "nctl.drift.v1",
+        DriftData(
+            generated_at="2026-07-16T12:00:00+00:00",
+            summary={"converged": 1},
+            severity_summary={"error": 0, "warning": 0, "info": 1},
+            targets=[TargetStatus(target=diff.target, status=Status.CONVERGED, diffs=[diff])],
+            sources=DriftSourcesData(
+                fetched_at="2026-07-16T12:00:00+00:00", observed_dump_count=0, observed_errors=[]
+            ),
+        ),
+        [],
+    )
+
+    raw = _extract_embedded(render_dashboard_html(envelope))
+    assert "</script" not in raw
+    assert "<\\/script>" in raw
+    embedded = json.loads(raw)
+    rendered = embedded["data"]["targets"][0]["diffs"][0]
+    assert rendered["code"] == "derived_value_provenance"
+    assert rendered["severity"] == "info"
+    assert rendered["desired"]["operational"]["values"]["host_os"]["source"] == "derived"

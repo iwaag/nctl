@@ -38,6 +38,8 @@ from nctl_core.jobs import NautobotJobError, NautobotJobRunner
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.observation import ObservationResult, run_observation
 from nctl_core.output import Envelope, EnvelopeError
+from nctl_core.production.adapter import build_production_node_inputs
+from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
 from nctl_core.production_render import build_production_render, write_production_artifacts
 from nctl_core.sources.snapshot import SourceSnapshot
@@ -469,7 +471,9 @@ def _run_playbook_action(
         )
 
     host_slugs = sorted(action.parameters.get("host_slugs") or target_slugs)
-    playbook_groups = _group_hosts_by_playbook(action, host_slugs, snapshot)
+    playbook_groups = _group_hosts_by_playbook(
+        action, host_slugs, snapshot, generated_at=snapshot.fetched_at.isoformat()
+    )
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     runner = AnsibleRunner(
         playbook_dir, timeout_seconds=cfg.reconcile.ansible_timeout_seconds, artifacts=artifacts, command_runner=command_runner
@@ -478,11 +482,7 @@ def _run_playbook_action(
 
     all_ok = True
     detail: dict[str, Any] = {"runs": []}
-    for rel_path, hosts in sorted(playbook_groups.items(), key=lambda item: item[0] or ""):
-        if rel_path is None:
-            all_ok = False
-            detail["runs"].append({"error": f"no playbook resolved for hosts {hosts}"})
-            continue
+    for rel_path, hosts in sorted(playbook_groups.items()):
         playbook_path = playbook_dir / rel_path
         result = runner.run(
             ["ansible-playbook", "-i", str(inventory), str(playbook_path), "--limit", ",".join(hosts)],
@@ -521,21 +521,41 @@ def _failed_action_result(
 
 
 def _group_hosts_by_playbook(
-    action: ReconcileAction, host_slugs: list[str], snapshot: SourceSnapshot
-) -> dict[str | None, list[str]]:
+    action: ReconcileAction,
+    host_slugs: list[str],
+    snapshot: SourceSnapshot,
+    *,
+    generated_at: str,
+) -> dict[str, list[str]]:
     single = action.parameters.get("playbook")
     if single:
         return {single: host_slugs}
 
     playbook_by_os = action.parameters.get("playbook_by_os") or {}
-    nodes_by_slug = {node.slug: node for node in snapshot.desired.nodes}
-    configs_by_node_id = {oc.node_id: oc for oc in snapshot.desired.operational_configs}
-    groups: dict[str | None, list[str]] = {}
+    inputs_by_slug = {node.slug: node for node in build_production_node_inputs(snapshot)}
+    groups: dict[str, list[str]] = {}
     for slug in host_slugs:
-        node = nodes_by_slug.get(slug)
-        config = configs_by_node_id.get(node.id) if node else None
-        os_name = (config.expected_host_os or config.declared_host_os) if config else None
-        rel_path = playbook_by_os.get(os_name) if os_name else None
+        node_input = inputs_by_slug.get(slug)
+        if node_input is None:
+            raise ValueError(f"planned host {slug!r} is absent from the fixed source snapshot")
+        try:
+            effective = resolve_operational_values(
+                node_id=node_input.id,
+                node_slug=node_input.slug,
+                endpoints=node_input.endpoints,
+                override=node_input.operational_override,
+                realized_type=node_input.realized.realized_type if node_input.realized else None,
+                facts=node_input.realized.facts if node_input.realized else None,
+                generated_at=generated_at,
+            )
+        except DerivationFailure as exc:
+            raise ValueError(
+                f"planner invariant violated: host {slug!r} reached execution with {exc.code!r}"
+            ) from exc
+        os_name = effective.host_os.value
+        rel_path = playbook_by_os.get(os_name)
+        if not rel_path:
+            raise ValueError(f"no playbook is configured for derived host OS {os_name!r} on {slug!r}")
         groups.setdefault(rel_path, []).append(slug)
     return groups
 

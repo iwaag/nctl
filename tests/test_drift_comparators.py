@@ -9,7 +9,7 @@ from nctl_core.sources.desired import (
     DesiredDependency,
     DesiredEndpoint,
     DesiredNode,
-    DesiredNodeOperationalConfig,
+    DesiredNodeOperationalOverride,
     DesiredService,
     DesiredServicePlacement,
     DesiredSnapshot,
@@ -28,7 +28,7 @@ def make_snapshot(
     services=(),
     dependencies=(),
     placements=(),
-    operational_configs=(),
+    operational_overrides=(),
     devices=(),
     vms=(),
     interfaces=(),
@@ -43,11 +43,18 @@ def make_snapshot(
             services=list(services),
             dependencies=list(dependencies),
             placements=list(placements),
-            operational_configs=list(operational_configs),
+            operational_overrides=list(operational_overrides),
         ),
         actual=ActualSnapshot(devices=list(devices), virtual_machines=list(vms), interfaces=list(interfaces), ip_addresses=list(ip_addresses)),
         observed=list(observed),
         fetched_at=datetime.now(timezone.utc),
+)
+
+
+def primary_endpoint(node_id: str, node_slug: str) -> DesiredEndpoint:
+    return DesiredEndpoint(
+        id=f"endpoint-{node_id}", name="primary", endpoint_type="primary",
+        node_id=node_id, node_slug=node_slug, ip_address="192.0.2.10/32",
     )
 
 
@@ -84,8 +91,7 @@ def test_node_existence_ok_when_realized_device_exists():
 
 def test_node_existence_flags_required_policy_with_no_realized_object():
     node = DesiredNode(id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device")
-    op_config = DesiredNodeOperationalConfig(id="op1", node_id="n1", actual_state_policy="required", connection_path="local")
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config])
+    snapshot = make_snapshot(nodes=[node])
 
     diffs = list(comparators.node_existence(snapshot, CONTEXT))
 
@@ -94,10 +100,10 @@ def test_node_existence_flags_required_policy_with_no_realized_object():
 
 def test_node_existence_allows_declared_policy_with_no_realized_object():
     node = DesiredNode(id="n1", slug="aghaos", name="aghaos", lifecycle="active", node_type="device")
-    op_config = DesiredNodeOperationalConfig(
-        id="op1", node_id="n1", actual_state_policy="declared", connection_path="local", declared_host_os="haos"
+    override = DesiredNodeOperationalOverride(
+        id="op1", node_id="n1", connection_path="local", declared_host_os="haos"
     )
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config])
+    snapshot = make_snapshot(nodes=[node], operational_overrides=[override])
 
     assert list(comparators.node_existence(snapshot, CONTEXT)) == []
 
@@ -165,42 +171,39 @@ def test_production_policy_skipped_when_no_profiles_configured():
     snapshot = make_snapshot(nodes=[node])
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles={})
 
-    assert list(comparators.production_policy(snapshot, context)) == []
+    diffs = list(comparators.production_policy(snapshot, context))
+    assert [diff.code for diff in diffs] == ["derived_value_provenance"]
+    assert diffs[0].severity.value == "info"
 
 
 def test_production_policy_reports_skip_reasons_from_composer():
     node = DesiredNode(id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device")
-    op_config = DesiredNodeOperationalConfig(
-        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
-    )
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config])
+    snapshot = make_snapshot(nodes=[node])
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=PROFILES)
 
     diffs = list(comparators.production_policy(snapshot, context))
 
-    assert [d.code for d in diffs] == ["no_realized_device"]
-    assert diffs[0].severity.value == "error"
-    assert diffs[0].target.slug == "agweb"
+    errors = [diff for diff in diffs if diff.severity.value == "error"]
+    assert [d.code for d in errors] == ["no_realized_device"]
+    assert errors[0].target.slug == "agweb"
 
 
-def test_production_policy_reports_os_mismatch_drift_as_warning():
+def test_production_policy_reports_observed_os_in_provenance_without_mismatch():
     node = DesiredNode(id="n1", slug="agmac", name="agmac", lifecycle="active", node_type="device", realized_device_id="dev-1")
-    op_config = DesiredNodeOperationalConfig(
-        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
-    )
     device = ActualDevice(
         id="dev-1",
         name="agmac.local",
         facts={"host_system": "Darwin", "last_seen": "2026-07-15T11:00:00+00:00"},
     )
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], devices=[device])
+    snapshot = make_snapshot(nodes=[node], endpoints=[primary_endpoint("n1", "agmac")], devices=[device])
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=PROFILES)
 
     diffs = list(comparators.production_policy(snapshot, context))
 
-    assert [d.code for d in diffs] == ["desired_actual_os_mismatch"]
-    assert diffs[0].severity.value == "warning"
-    assert diffs[0].actual == {"observed_host_os": "macos"}
+    assert [d.code for d in diffs] == ["derived_value_provenance"]
+    host_os = diffs[0].desired["operational"]["values"]["host_os"]
+    assert host_os["value"] == "macos"
+    assert host_os["source"] == "derived"
 
 
 def test_production_policy_global_contract_error_becomes_one_diff():
@@ -210,19 +213,17 @@ def test_production_policy_global_contract_error_becomes_one_diff():
     # such as invalid_platform_power, is now node-local -- see
     # test_production_policy_local_error_becomes_node_targeted_diff.)
     node = DesiredNode(id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device")
-    op_config = DesiredNodeOperationalConfig(
-        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
-    )
     device = ActualDevice(id="dev-1", name="agweb.local", facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"})
     node = DesiredNode(**{**node.model_dump(), "realized_device_id": "dev-1"})
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], devices=[device])
+    snapshot = make_snapshot(nodes=[node], endpoints=[primary_endpoint("n1", "agweb")], devices=[device])
     broken_profiles = {"web": {"group": "web_server", "config_schema_version": "1", "variables": "not-an-object"}}
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=broken_profiles)
 
     diffs = list(comparators.production_policy(snapshot, context))
 
-    assert [d.code for d in diffs] == ["invalid_profile_variables"]
-    assert diffs[0].target.kind == "global"
+    errors = [diff for diff in diffs if diff.severity.value == "error"]
+    assert [d.code for d in errors] == ["invalid_profile_variables"]
+    assert errors[0].target.kind == "global"
 
 
 def test_production_policy_local_error_becomes_node_targeted_diff():
@@ -231,19 +232,23 @@ def test_production_policy_local_error_becomes_node_targeted_diff():
     # generic skip-reason conversion already attributes it to that node
     # rather than a global target.
     node = DesiredNode(id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device")
-    op_config = DesiredNodeOperationalConfig(
-        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux", power_control="macos_sleep"
+    override = DesiredNodeOperationalOverride(
+        id="op1", node_id="n1", power_control="macos_sleep"
     )
     device = ActualDevice(id="dev-1", name="agweb.local", facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"})
     node = DesiredNode(**{**node.model_dump(), "realized_device_id": "dev-1"})
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], devices=[device])
+    snapshot = make_snapshot(
+        nodes=[node], endpoints=[primary_endpoint("n1", "agweb")],
+        operational_overrides=[override], devices=[device]
+    )
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=PROFILES)
 
     diffs = list(comparators.production_policy(snapshot, context))
 
-    assert [d.code for d in diffs] == ["invalid_platform_power"]
-    assert diffs[0].target.kind == "node"
-    assert diffs[0].target.slug == "agweb"
+    errors = [diff for diff in diffs if diff.severity.value == "error"]
+    assert [d.code for d in errors] == ["invalid_platform_power"]
+    assert errors[0].target.kind == "node"
+    assert errors[0].target.slug == "agweb"
 
 
 # --- node_intent_matching / endpoint_intent_matching / service_intent_matching --------
@@ -359,10 +364,6 @@ def test_service_intent_matching_emits_placement_evidence_and_distinct_code():
         id="p1", service_id="s1", node_id="n1", instance_name="main",
         deployment_profile="nomad_server", config_schema_version="v1",
     )
-    operational = DesiredNodeOperationalConfig(
-        id="oc1", node_id="n1", actual_state_policy="observed", expected_host_os="linux",
-        connection_path="local",
-    )
     device = ActualDevice(
         id="d1", name="node-a",
         facts={
@@ -372,8 +373,8 @@ def test_service_intent_matching_emits_placement_evidence_and_distinct_code():
         },
     )
     snapshot = make_snapshot(
-        nodes=[node], services=[service], placements=[placement],
-        operational_configs=[operational], devices=[device],
+        nodes=[node], endpoints=[primary_endpoint("n1", "node-a")],
+        services=[service], placements=[placement], devices=[device],
     )
 
     diffs = list(comparators.service_intent_matching(snapshot, CONTEXT))
@@ -392,18 +393,21 @@ def test_production_policy_local_error_yields_structured_error_not_generic_skip(
     # generic "production composition skipped this node" diff for the same
     # (node, code) pair.
     node = DesiredNode(id="n1", slug="agbad", name="agbad", lifecycle="active", node_type="device", realized_device_id="dev-1")
-    op_config = DesiredNodeOperationalConfig(
-        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
-    )
     device = ActualDevice(id="dev-1", name="agbad.local", facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"})
     placement = DesiredServicePlacement(
         id="p1", service_id="s1", node_id="n1", instance_name="primary",
         deployment_profile="missing-profile", config_schema_version="1", config={"x": 1},
     )
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], devices=[device], placements=[placement])
+    snapshot = make_snapshot(
+        nodes=[node], endpoints=[primary_endpoint("n1", "agbad")],
+        devices=[device], placements=[placement]
+    )
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=PROFILES)
 
-    diffs = [d for d in comparators.production_policy(snapshot, context) if d.target.slug == "agbad"]
+    diffs = [
+        d for d in comparators.production_policy(snapshot, context)
+        if d.target.slug == "agbad" and d.severity.value == "error"
+    ]
 
     assert [d.code for d in diffs] == ["unknown_profile"]
     assert diffs[0].severity.value == "error"
@@ -415,25 +419,22 @@ def test_production_policy_local_error_yields_structured_error_not_generic_skip(
 
 def test_production_policy_active_placement_not_applied_is_warning_and_converged_safe():
     node = DesiredNode(id="n1", slug="agplanned", name="agplanned", lifecycle="planned", node_type="device")
-    op_config = DesiredNodeOperationalConfig(
-        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
-    )
     placement = DesiredServicePlacement(
         id="p1", service_id="s1", node_id="n1", instance_name="primary",
         deployment_profile="web", config_schema_version="1", config={},
     )
-    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], placements=[placement])
+    snapshot = make_snapshot(nodes=[node], placements=[placement])
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=PROFILES)
 
     diffs = list(comparators.production_policy(snapshot, context))
 
-    assert [d.code for d in diffs] == ["active_placement_not_applied"]
-    assert diffs[0].severity.value == "warning"
-    assert diffs[0].target.kind == "node"
-    assert diffs[0].target.slug == "agplanned"
-    assert diffs[0].desired["placement"]["config"] == {}
-    assert diffs[0].actual["node_lifecycle"] == "planned"
-    assert diffs[0].actual["application_status"] == "not_applied"
+    warning = next(d for d in diffs if d.code == "active_placement_not_applied")
+    assert warning.severity.value == "warning"
+    assert warning.target.kind == "node"
+    assert warning.target.slug == "agplanned"
+    assert warning.desired["placement"]["config"] == {}
+    assert warning.actual["node_lifecycle"] == "planned"
+    assert warning.actual["application_status"] == "not_applied"
 
 
 def test_production_policy_active_placement_not_applied_survives_empty_profiles():
@@ -450,8 +451,8 @@ def test_production_policy_active_placement_not_applied_survives_empty_profiles(
 
     diffs = list(comparators.production_policy(snapshot, context))
 
-    assert [d.code for d in diffs] == ["active_placement_not_applied"]
-    assert diffs[0].severity.value == "warning"
+    assert {d.code for d in diffs} == {"derived_value_provenance", "active_placement_not_applied"}
+    assert next(d for d in diffs if d.code == "active_placement_not_applied").severity.value == "warning"
 
 
 def test_drift_entry_dispatch_rejects_unknown_composer_drift_code():

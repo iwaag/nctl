@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nctl_core.production.composer import PHASE1_LOCAL_CODES
+from nctl_core.production.composer import PRODUCTION_BLOCKING_NODE_CODES
 
 from .model import Classification
 
@@ -89,7 +89,6 @@ _MANUAL_REVIEW_CODES = frozenset(
         "uuid_mismatch",
         "platform_mismatch",
         "hostname_mismatch",
-        "desired_actual_os_mismatch",
         # Endpoint/IP ambiguity or policy conflicts.
         "ip_address_mismatch",
         "ambiguous_ip_address_candidates",
@@ -106,7 +105,6 @@ _MANUAL_REVIEW_CODES = frozenset(
         "service_lifecycle_inactive",
         "missing_service_lifecycle",
         "unresolved_dependency",
-        "service_placement_os_mismatch",
         "service_has_no_active_placement",
         "service_observed_on_wrong_node",
     }
@@ -140,7 +138,8 @@ _TABLE.update({code: CodeClassification(Classification.MANUAL_REVIEW) for code i
 # field they concern is no longer required). Imported from composer.py rather
 # than redeclared so composer, comparator, and classifier can never disagree
 # on this vocabulary (roadmap.md's mandatory check 2).
-_TABLE.update({code: CodeClassification(Classification.MANUAL_REVIEW) for code in PHASE1_LOCAL_CODES})
+for code in PRODUCTION_BLOCKING_NODE_CODES:
+    _TABLE.setdefault(code, CodeClassification(Classification.MANUAL_REVIEW))
 
 CODE_CLASSIFICATION: dict[str, CodeClassification] = dict(_TABLE)
 

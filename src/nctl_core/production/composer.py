@@ -102,13 +102,23 @@ LOCAL_COMPOSITION_CODES = NODE_LOCAL_CODES | PLACEMENT_LOCAL_CODES | MERGE_LOCAL
 # code is manual review" vocabulary with LOCAL_COMPOSITION_CODES.
 ACTIVE_PLACEMENT_NOT_APPLIED = "active_placement_not_applied"
 
-# The complete Phase 1 node-targeted code vocabulary (16 codes): every code
-# `reconcile/classify.py` must register as MANUAL_REVIEW with no reconciler,
-# and every code the planner must treat as a production-actuation blocker
-# for its owning node.
-PHASE1_LOCAL_CODES = LOCAL_COMPOSITION_CODES | OPERATIONAL_DERIVATION_CODES | {
-    ACTIVE_PLACEMENT_NOT_APPLIED
-}
+# Every node-scoped finding that means production actuation for that node is
+# unsafe. Classifier and planner import this one current vocabulary; observation
+# codes retain their observation classification while still blocking actuation.
+PRODUCTION_BLOCKING_NODE_CODES = (
+    LOCAL_COMPOSITION_CODES
+    | OPERATIONAL_DERIVATION_CODES
+    | {
+        ACTIVE_PLACEMENT_NOT_APPLIED,
+        "invalid_actual_timestamp",
+        "missing_actual_data",
+        "missing_mac_address",
+        "missing_observed_system",
+        "no_realized_device",
+        "stale_actual_data",
+        "unsupported_actual_type",
+    }
+)
 
 
 class LocalCompositionError(Exception):

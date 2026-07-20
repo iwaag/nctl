@@ -102,7 +102,11 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
             {"before": {"realized_device": before.get("realized_device"), "realized_vm": before.get("realized_vm")}},
         )
 
-    response = client.rest_patch(f"{INTENT_API_BASE}/nodes/{node_id}/", {field: candidate_id})
+    source_field = f"{field}_source"
+    response = client.rest_patch(
+        f"{INTENT_API_BASE}/nodes/{node_id}/",
+        {field: candidate_id, source_field: "derived"},
+    )
     if not response.is_success:
         raise LedgerActionError(
             "node_link_patch_failed",
@@ -117,6 +121,12 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
             "node_link_not_confirmed",
             f"expected DesiredNode {target.slug!r}.{field}={candidate_id!r}, refetch shows {linked_id!r}",
             {"after": after.get(field)},
+        )
+    if after.get(source_field) != "derived":
+        raise LedgerActionError(
+            "node_link_source_not_confirmed",
+            f"expected DesiredNode {target.slug!r}.{source_field}='derived'",
+            {"after": after.get(source_field)},
         )
 
     return LinkActualNodeResult(

@@ -3,7 +3,7 @@
 `nctl reconcile --yes` refetches and re-plans after each boundary; a fingerprint
 of the *remaining error diffs* lets the bounded executor (Step 7) detect a
 no-progress round and stop instead of looping. Only error-severity diffs
-count -- warning/info diagnostics (`ingest_lag`, `desired_actual_os_mismatch`,
+count -- warning/info diagnostics (`ingest_lag`, `derived_value_provenance`,
 ...) can fluctuate round to round without representing unresolved drift, and
 including them would make the fingerprint change even when nothing
 actionable is left.
