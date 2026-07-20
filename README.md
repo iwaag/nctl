@@ -305,8 +305,11 @@ client can disconnect at any point, reconnect with the last `seq` it saw, and pr
 nothing. Frames are exactly the `EventRecord` JSON already written to the JSONL file — no second
 wire schema. A client that falls behind (bounded per-connection queue) is disconnected with close
 code `4408` and is expected to reconnect and replay via `after_seq` rather than being buffered
-unboundedly; a bad/missing subscribe message within 30s closes with `4400`; failed auth closes with
-`4401`.
+unboundedly; a bad/missing subscribe message within 30s closes with `4400`. Failed auth is rejected
+before the handshake ever upgrades (`websocket.close()` is called ahead of `accept()`), so a real
+client sees the connection refused at the HTTP layer (`403`) rather than a WS close frame — the
+`4401` code is what an ASGI-level test harness (no real socket) observes for the same rejection;
+either way, no data is ever sent to an unauthenticated caller.
 
 ### Reference live dashboard
 
