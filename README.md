@@ -37,6 +37,12 @@ uv run nctl reconcile
 uv run nctl reconcile agstudio
 uv run nctl reconcile agstudio --yes
 uv run nctl reconcile --yes --max-rounds 1 --json
+uv run nctl ops list
+uv run nctl ops list --limit 5 --json
+uv run nctl ops show 01KXPYQRJ8GTNND0PC3KZSMPXC
+uv run nctl ops show 01KXPYQRJ8GTNND0PC3KZSMPXC --after-seq 3 --json
+uv run --extra serve nctl serve
+uv run --extra serve nctl serve --host 0.0.0.0 --port 8300
 ```
 
 `status` checks Nautobot connectivity/auth/intent-catalog presence, nodeutils dump freshness, and
@@ -197,6 +203,126 @@ Ansible/Makefile sequence; `ansible_agdev/Makefile`'s `pipeline` target now runs
 command. `make bootstrap-inventory`/`make production-inventory` remain as standalone diagnostics —
 `reconcile` renders its own operation-scoped bootstrap inventory and regenerates the full production
 inventory itself, so it never shells out to either.
+
+### `ops list` / `ops show`
+
+`nctl ops list [--limit N] [--json]` and `nctl ops show OPERATION_ID [--after-seq N] [--json]` are
+a read-only, filesystem-only view over `[events].log_dir` — no live process, Nautobot, or Ansible
+access required, so they work equally well against operations started by the CLI or by `nctl
+serve`. `ops list` enumerates every `<operation_id>.jsonl` file, newest first, parsing just enough
+of each to report `op`/`state`/`ok`/`result`/timestamps (schema `nctl.ops.list.v1`). `ops show`
+additionally returns the full event list (or only events with `seq > --after-seq`, the same cursor
+convention as the WebSocket replay below) plus the resolved `artifact_dir` and its artifact list,
+using the same corrupt-line-tolerant JSONL reader as the server (schema `nctl.ops.show.v1`; a
+truncated or partially written final line is reported via `corrupt_lines`, not raised as an error).
+This module (`nctl_core.operations_index`) is what both the CLI and `nctl serve`'s
+`/api/v1/operations*` endpoints are built on, so `nctl ops show` and the equivalent HTTP call
+return the same data.
+
+## Serve (realtime API)
+
+`nctl serve [--host] [--port] [--json]` wraps the same `nctl_core` functions the CLI calls behind
+an HTTP + WebSocket API (FastAPI/uvicorn), so an external process — a game-engine UI, a voice
+frontend, a script — can read state and trigger operations without shelling out to the CLI. It is
+an optional extra: `uv sync --extra serve` (or `uv run --extra serve nctl serve`) pulls in
+`fastapi`/`uvicorn`; a plain `uv sync` install has no ASGI dependencies and cannot run `serve`.
+Default bind is `127.0.0.1:8300`; printing the `nctl.serve.v1` startup envelope and then running
+uvicorn in the foreground until `Ctrl-C`.
+
+### Config and auth
+
+```toml
+[serve]
+host = "127.0.0.1"
+port = 8300
+token_env = "NCTL_SERVE_TOKEN"
+# token_file = "~/.config/nctl/serve_token"
+auth = "token"          # or "none"
+cors_origins = []        # e.g. ["http://192.168.1.50"] for a browser UI on another LAN host
+```
+
+Following the exact `[nautobot]` convention, the token is never accepted inline in `nctl.toml`
+(`extra="forbid"` plus no `token` field at all) — set `NCTL_SERVE_TOKEN` or `token_file`. Startup
+fails fast (before uvicorn binds) if `auth = "token"` and no token resolves from either source, so
+there is no accidental "auth off because nothing was configured" state. `auth = "none"` is an
+explicit opt-out for loopback-only experiments and is rejected by config validation if `host` is
+not a loopback address. Every HTTP request other than `GET /api/v1/health` and `GET /` requires
+`Authorization: Bearer <token>`; token comparison uses `secrets.compare_digest`. The WebSocket
+handshake accepts the same header, with a `?token=` query-string fallback only for clients that
+cannot set headers. The token never appears in logs, envelopes, events, or the OpenAPI document.
+
+### Endpoints (`/api/v1`)
+
+| Method & path | Meaning |
+|---|---|
+| `GET /api/v1/health` | liveness + version; unauthenticated |
+| `GET /api/v1/status?refresh=false` | last persisted `nctl.status.v1` snapshot; `refresh=true` computes a fresh one inline (the one synchronous exception — cheap enough to not need an operation) |
+| `GET /api/v1/drift` | latest persisted `nctl.drift.v1` payload, from whichever drift-producing operation (`drift`/`dashboard`/`reconcile`) wrote it most recently |
+| `GET /api/v1/operations?limit=N` | recent operations, newest first |
+| `GET /api/v1/operations/{id}` | one operation's record plus its terminal `result.json` if finished |
+| `GET /api/v1/operations/{id}/events?after_seq=N` | events after cursor `N` (`-1` for all), read straight from the JSONL file |
+| `GET /api/v1/operations/{id}/artifacts` / `.../artifacts/{name}` | list/fetch allowlisted artifacts (`plan.json`, drift rounds, `result.json`); anything mode `0600` (reports, probe configs, job payloads) is never served |
+| `POST /api/v1/operations` | body `{"op": "drift" \| "dashboard" \| "render.dnsmasq" \| "render.production" \| "render.hosts_intent" \| "reconcile", "params": {...}}` (params mirror the equivalent CLI flags) → `202 {operation_id, op, mutating, events_url, ws_url}` |
+| `WS /api/v1/ws` | event stream (protocol below) |
+| `GET /` | the reference live dashboard page (Decision 8; unauthenticated — the token is entered client-side and only ever sent to `/api/v1/*`) |
+| `GET /openapi.json` | generated OpenAPI document (authenticated) |
+
+Errors use HTTP status plus the same `EnvelopeError` shape (`{code, message, detail}`) every CLI
+command already returns: `401` unauthorized, `404` unknown ID/artifact, `409` single-flight
+conflict (`detail` names the running `operation_id`), `422` validation, `503` no persisted
+snapshot yet. The terminal envelope reachable via `GET /api/v1/operations/{id}` is byte-identical
+(modulo `operation_id`/timestamps) to what the CLI's `--json` prints for the same run, and the
+JSONL/artifact layout on disk is identical regardless of which path triggered the operation.
+
+### Single-flight execution
+
+Every `POST /api/v1/operations` runs on a worker thread, never on the request/event-loop thread —
+`nctl_core` is synchronous throughout and an applying reconcile can run for minutes. The server
+keeps one in-process gate: any mutating operation (`reconcile` with `yes=true`; `dashboard`, which
+always pushes statuses; `render.production`/`render.hosts_intent` with `write=true`) excludes every
+other mutating operation, and a concurrent mutating `POST` gets `409` with the running operation's
+ID instead of queueing. Non-mutating operations (`drift`, plan-mode `reconcile`, renders without
+`write`) can run concurrently with each other but are still serialized against a running mutating
+operation. Underneath, the executor still acquires the Phase 4 controller-local file lock
+(`[reconcile].lock_path`), so a server-triggered apply and a human running `nctl reconcile --yes`
+in a terminal exclude each other in both directions, not just server-side.
+
+### WebSocket protocol and replay
+
+Connect to `ws://HOST:PORT/api/v1/ws`, authenticate via header or `?token=`, then send one JSON
+subscribe message:
+
+```json
+{"subscribe": "all", "after_seq": -1}
+{"subscribe": {"operation_id": "01K..."}, "after_seq": 3}
+```
+
+`after_seq` is the last `seq` the client already has for that operation (`-1` for everything). The
+server first replays every newer record from the operation's JSONL file, then attaches to the
+in-process event bus for live records, de-duplicating by (`operation_id`, `seq`) across the
+replay/live boundary — because `seq` is monotonic per operation and the file is authoritative, a
+client can disconnect at any point, reconnect with the last `seq` it saw, and provably miss
+nothing. Frames are exactly the `EventRecord` JSON already written to the JSONL file — no second
+wire schema. A client that falls behind (bounded per-connection queue) is disconnected with close
+code `4408` and is expected to reconnect and replay via `after_seq` rather than being buffered
+unboundedly; a bad/missing subscribe message within 30s closes with `4400`; failed auth closes with
+`4401`.
+
+### Reference live dashboard
+
+`GET /` serves one build-toolchain-free HTML page in the same visual language as the static Phase 3
+dashboard: it fetches `/api/v1/drift` and `/api/v1/operations` on load, then subscribes over the
+WebSocket for live tile updates, plus an operations sidebar with recent/running operations and
+their event tail. It offers exactly two actions — refresh drift, plan-only reconcile — both just
+`POST /api/v1/operations`; applying reconcile stays CLI-only in this phase. The token is pasted
+once into the page and kept in `sessionStorage`, never embedded in the served HTML. This page uses
+only the documented API above, so it doubles as the proof that a future game-engine or voice UI can
+be built on top without any backend changes. It is a validation instrument, not a replacement for
+`nctl dashboard`: the static artifact and its file/LAN hosting are untouched.
+
+Compatibility posture for all of the above (event shape, event vocabulary, envelope fields, the
+`/api/v1` surface) is frozen additive-only from this phase on — see
+[`docs/compatibility.md`](docs/compatibility.md).
 
 ## Ansible configuration
 
