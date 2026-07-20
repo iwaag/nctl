@@ -286,6 +286,7 @@ def _execute_round(
     interrupted: "_InterruptFlag",
 ) -> RoundSummary:
     summary = RoundSummary(round=round_index, drift_fingerprint=plan.drift_fingerprint)
+    operation_generated_at = plan.drift_generated_at or snapshot.fetched_at.isoformat()
     bootstrap_actions = [a for a in plan.actions if a.reconciler_id in _BOOTSTRAP_LEDGER_RECONCILERS]
     service_actions = [a for a in plan.actions if a.reconciler_id not in _BOOTSTRAP_LEDGER_RECONCILERS]
 
@@ -295,7 +296,10 @@ def _execute_round(
             if interrupted.is_set():
                 raise _Interrupted()
             summary.actions.append(
-                _execute_action(cfg, op, artifacts, round_index, action, snapshot, client, now, command_runner)
+                _execute_action(
+                    cfg, op, artifacts, round_index, action, snapshot, client, now, command_runner,
+                    generated_at=operation_generated_at,
+                )
             )
     finally:
         client.close()
@@ -306,7 +310,10 @@ def _execute_round(
         if interrupted.is_set():
             raise _Interrupted()
         summary.actions.append(
-            _execute_action(cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner)
+            _execute_action(
+                cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner,
+                generated_at=operation_generated_at,
+            )
         )
 
     observe_targets = sorted(
@@ -369,6 +376,8 @@ def _execute_action(
     client: NautobotClient | None,
     now: Callable[[], datetime],
     command_runner: CommandRunner | None,
+    *,
+    generated_at: str,
 ) -> ActionResult:
     target_slugs = [t.slug for t in action.targets if t.slug]
     op.emit("action_started", f"action {action.id} started", action_id=action.id, reconciler_id=action.reconciler_id)
@@ -395,7 +404,10 @@ def _execute_action(
             detail = {"conflicts": ipam_result.conflicts, "skipped": ipam_result.skipped}
             return _actuation_result(op, action, target_slugs, True, detail, requires_observation=False)
         if action.reconciler_id in ("service_profile", "dnsmasq_config"):
-            return _run_playbook_action(cfg, op, artifacts, round_index, action, snapshot, command_runner)
+            return _run_playbook_action(
+                cfg, op, artifacts, round_index, action, snapshot, command_runner,
+                generated_at=generated_at,
+            )
         raise LedgerActionError("unknown_reconciler", f"no executor for reconciler {action.reconciler_id!r}")
     except (LedgerActionError, NautobotJobError, NautobotError) as exc:
         code = getattr(exc, "code", "action_failed")
@@ -460,6 +472,8 @@ def _run_playbook_action(
     action: ReconcileAction,
     snapshot: SourceSnapshot,
     command_runner: CommandRunner | None,
+    *,
+    generated_at: str,
 ) -> ActionResult:
     target_slugs = [t.slug for t in action.targets if t.slug]
     if action.action_kind == "dnsmasq_config":
@@ -471,9 +485,7 @@ def _run_playbook_action(
         )
 
     host_slugs = sorted(action.parameters.get("host_slugs") or target_slugs)
-    playbook_groups = _group_hosts_by_playbook(
-        action, host_slugs, snapshot, generated_at=snapshot.fetched_at.isoformat()
-    )
+    playbook_groups = _group_hosts_by_playbook(action, host_slugs, snapshot, generated_at=generated_at)
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     runner = AnsibleRunner(
         playbook_dir, timeout_seconds=cfg.reconcile.ansible_timeout_seconds, artifacts=artifacts, command_runner=command_runner

@@ -8,6 +8,7 @@ from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddr
 from nctl_core.sources.desired import (
     DesiredDependency,
     DesiredEndpoint,
+    DesiredEndpointRef,
     DesiredNode,
     DesiredNodeOperationalOverride,
     DesiredService,
@@ -204,6 +205,45 @@ def test_production_policy_reports_observed_os_in_provenance_without_mismatch():
     host_os = diffs[0].desired["operational"]["values"]["host_os"]
     assert host_os["value"] == "macos"
     assert host_os["source"] == "derived"
+
+
+def test_provenance_source_summary_keeps_alternate_endpoint_when_override_wins():
+    node = DesiredNode(
+        id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device",
+        realized_device_id="dev-1",
+    )
+    primary = primary_endpoint("n1", "agweb")
+    forced = DesiredEndpoint(
+        id="endpoint-forced", name="management", endpoint_type="management",
+        node_id="n1", node_slug="agweb", dns_name="forced.example.test",
+    )
+    override = DesiredNodeOperationalOverride(
+        id="override-1", node_id="n1",
+        local_endpoint=DesiredEndpointRef(
+            id=forced.id, name=forced.name, endpoint_type=forced.endpoint_type,
+            node_slug="agweb", dns_name=forced.dns_name,
+        ),
+    )
+    device = ActualDevice(
+        id="dev-1", name="agweb.local",
+        facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"},
+    )
+    snapshot = make_snapshot(
+        nodes=[node], endpoints=[primary, forced], operational_overrides=[override], devices=[device]
+    )
+
+    provenance = next(comparators.production_policy(snapshot, DriftContext(
+        generated_at="2026-07-15T12:00:00+00:00", profiles={}
+    )))
+
+    endpoint_record = provenance.desired["operational"]["values"]["connection_endpoint"]
+    assert endpoint_record["source"] == "override"
+    assert endpoint_record["source_reference"]["endpoint"]["id"] == "endpoint-forced"
+    summary = provenance.desired["source_summary"]
+    assert summary["operational_override_id"] == "override-1"
+    assert [item["id"] for item in summary["endpoint_candidates"]] == [
+        "endpoint-forced", "endpoint-n1"
+    ]
 
 
 def test_production_policy_global_contract_error_becomes_one_diff():

@@ -320,7 +320,16 @@ def _derived_value_provenance_diff(node_input, snapshot: SourceSnapshot, generat
         code="derived_value_provenance",
         severity=Severity.INFO,
         message=f"{node.slug}: effective derived/default/override value provenance",
-        desired={"operational": operational, "persisted_values": persisted},
+        desired={
+            "operational": operational,
+            "source_summary": {
+                "operational_override_id": (
+                    node_input.operational_override.id if node_input.operational_override else None
+                ),
+                "endpoint_candidates": [endpoint.evidence() for endpoint in node_input.endpoints],
+            },
+            "persisted_values": persisted,
+        },
         sources=["desired", "actual"],
     )
 

@@ -433,20 +433,23 @@ def test_output_is_byte_stable():
     assert render_production_report_json(first) == render_production_report_json(second)
 
 
-def test_ambiguous_neighbor_does_not_change_healthy_output() -> None:
+@pytest.mark.parametrize("failure", ["ambiguous_connection_endpoints", "missing_connection_endpoint"])
+def test_endpoint_failure_neighbor_does_not_change_healthy_output(failure: str) -> None:
     healthy = linux_node("aggood")
-    ambiguous = _custom_node(
-        "agbad",
-        endpoints=(
+    endpoints = (
+        (
             EndpointCandidate("endpoint-z", "z", "management", "agbad", ip_address="192.0.2.2"),
             EndpointCandidate("endpoint-a", "a", "management", "agbad", ip_address="192.0.2.3"),
-        ),
+        )
+        if failure == "ambiguous_connection_endpoints"
+        else ()
     )
+    bad = _custom_node("agbad", endpoints=endpoints)
     alone = compose([healthy])
-    mixed = compose([healthy, ambiguous])
+    mixed = compose([healthy, bad])
 
     assert ssh_host(mixed, "aggood") == ssh_host(alone, "aggood")
-    assert mixed.report["errors"][0]["code"] == "ambiguous_connection_endpoints"
+    assert mixed.report["errors"][0]["code"] == failure
     assert mixed.report["errors"][0]["evidence"]["field"] == "connection_endpoint"
 
 

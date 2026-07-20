@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,7 +14,8 @@ from nctl_core.reconcile import executor as executor_module
 from nctl_core.reconcile.executor import run_reconcile
 from nctl_core.reconcile.ledger import IpamReconcileResult, LinkActualNodeResult
 from nctl_core.reconcile.lock import acquire_reconcile_lock
-from nctl_core.sources.actual import ActualSnapshot
+from nctl_core.reconcile.model import ReconcileAction
+from nctl_core.sources.actual import ActualDevice, ActualSnapshot
 from nctl_core.sources.desired import DesiredNode, DesiredSnapshot
 from nctl_core.sources.snapshot import SourceSnapshot
 
@@ -92,6 +94,36 @@ def _stub_dashboard(monkeypatch, *, ok=True):
         return Envelope.build("nctl.dashboard.v1", executor_module.DashboardData(), [] if ok else [EnvelopeError(code="x", message="dashboard failed")])
 
     monkeypatch.setattr(executor_module, "render_dashboard_from_drift", fake)
+
+
+def test_playbook_grouping_passes_the_fixed_operation_timestamp_to_resolver(monkeypatch):
+    node = _node("agweb").model_copy(update={"realized_device_id": "dev-1"})
+    snapshot = SourceSnapshot(
+        desired=DesiredSnapshot(nodes=[node]),
+        actual=ActualSnapshot(devices=[ActualDevice(id="dev-1", name="agweb.local")]),
+        fetched_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+    )
+    action = ReconcileAction(
+        id="service_profile:web", reconciler_id="service_profile", action_kind="playbook",
+        targets=[Target(kind="service", slug="web", id="s1")],
+        claimed_diff_codes=["service_not_running"], reason="test", mutates=True,
+        requires_observation=False,
+        parameters={"playbook_by_os": {"linux": "playbooks/linux.yml"}},
+    )
+    seen = {}
+
+    def fake_resolve(**kwargs):
+        seen["generated_at"] = kwargs["generated_at"]
+        return SimpleNamespace(host_os=SimpleNamespace(value="linux"))
+
+    monkeypatch.setattr(executor_module, "resolve_operational_values", fake_resolve)
+
+    groups = executor_module._group_hosts_by_playbook(
+        action, ["agweb"], snapshot, generated_at="2026-07-20T12:34:56+00:00"
+    )
+
+    assert groups == {"playbooks/linux.yml": ["agweb"]}
+    assert seen["generated_at"] == "2026-07-20T12:34:56+00:00"
 
 
 def _sequence(monkeypatch, results):
