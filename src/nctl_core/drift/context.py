@@ -19,5 +19,11 @@ from typing import Any
 class DriftContext:
     generated_at: str
     profiles: dict[str, Any] = field(default_factory=dict)
+    # Set when `load_deployment_profiles` raised `DeploymentProfilesError` (missing,
+    # unparsable, or contract-invalid `vars/deployment_profiles.yml`) -- Phase 4 Decision 3:
+    # `production_policy` turns this into a classified global ERROR
+    # `deployment_profiles_unavailable` instead of silently composing against `{}`. `None`
+    # means profiles loaded fine (possibly legitimately empty).
+    profiles_error: str | None = None
     events_dir: Path | None = None
     service_observation_max_age_hours: int = 24

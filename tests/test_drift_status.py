@@ -36,7 +36,7 @@ def test_no_error_diffs_is_converged():
 
 def test_warning_and_info_only_is_converged():
     status = derive_status(
-        [_diff("active_placement_not_applied", Severity.WARNING), _diff("derived_value_provenance", Severity.INFO)],
+        [_diff("active_placement_not_applied", Severity.WARNING), _diff("intent_effect_summary", Severity.INFO)],
         target_slug="agweb",
         observed_at=None,
         events_dir=None,

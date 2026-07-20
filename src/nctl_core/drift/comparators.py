@@ -53,10 +53,13 @@ from nctl_core.production.adapter import build_production_node_inputs
 from nctl_core.production.composer import (
     ACTIVE_PLACEMENT_NOT_APPLIED,
     ContractError,
+    NodeInput,
+    NodeOutcome,
+    build_node_report_record,
     compose_production_inventory,
+    try_resolve_operational_values,
     unapplied_placement_findings,
 )
-from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
 from nctl_core.sources.actual import ActualDevice
 from nctl_core.sources.snapshot import SourceSnapshot
 
@@ -185,9 +188,6 @@ def _ingest_lag_diff(target: Target, hostname: str, observed_at: datetime, devic
 def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
     node_inputs = build_production_node_inputs(snapshot)
 
-    for node_input in node_inputs:
-        yield _derived_value_provenance_diff(node_input, snapshot, context.generated_at)
-
     # active_placement_not_applied does not depend on profiles at all
     # (Decision 4 of core_reconcile) -- recorded intent must not disappear
     # merely because the profile-dependent composer below is unavailable, so
@@ -195,7 +195,25 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
     for entry in unapplied_placement_findings(node_inputs):
         yield _active_placement_not_applied_diff(entry)
 
+    if context.profiles_error is not None:
+        # Phase 4 Decision 3: a missing/unparsable/invalid deployment-profiles
+        # file is a classified global blocker, not a silent degrade to `{}`.
+        # No node's production state can be established without it, so every
+        # node's intent_effect_summary reports `unknown` rather than a guess.
+        yield DiffRecord(
+            target=Target(kind="global"),
+            code="deployment_profiles_unavailable",
+            severity=Severity.ERROR,
+            message=context.profiles_error,
+            sources=["actual"],
+        )
+        for node_input in node_inputs:
+            yield _intent_effect_summary_diff_unknown(node_input, context.generated_at)
+        return
+
     if not context.profiles:
+        for node_input in node_inputs:
+            yield _intent_effect_summary_diff_unknown(node_input, context.generated_at)
         return
 
     try:
@@ -214,19 +232,25 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
             message=str(exc),
             sources=["desired", "actual"],
         )
+        for node_input in node_inputs:
+            yield _intent_effect_summary_diff_unknown(node_input, context.generated_at)
         return
 
-    # Report 3.0 (Phase 4 Decision 3) carries one `nodes` record per desired
-    # node instead of parallel `errors`/`skipped`/`drift` collections; this
-    # translates each node's `local_findings` (Phase 1 Group C, still
-    # node-targeted ERROR diffs) and `production.state == "skipped"` reasons
-    # into the same diff shape as before. Structured local errors take
-    # priority: each becomes its own precise node-targeted diff, and the
-    # generic skip-reason conversion below is suppressed for the exact
-    # (node, code) pairs they already cover so the same failure never
-    # surfaces twice.
+    # Report 3.0 (Phase 4 Decision 2/3) carries one closed `nodes` record per
+    # desired node instead of parallel `errors`/`skipped`/`drift` collections.
+    # Each record becomes exactly one `intent_effect_summary` INFO diff
+    # (recorded intent, effective mechanism, and production/placement
+    # application in one place), plus every node's `local_findings` (Phase 1
+    # Group C, still node-targeted ERROR diffs) and `production.state ==
+    # "skipped"` reasons translated into the same actionable-diff shape as
+    # before. Structured local errors take priority: each becomes its own
+    # precise node-targeted diff, and the generic skip-reason conversion below
+    # is suppressed for the exact (node, code) pairs they already cover so the
+    # same failure never surfaces twice.
     structured_error_keys: set[tuple[str, str]] = set()
     for node_record in composition.report["nodes"]:
+        yield _intent_effect_summary_diff_from_record(node_record)
+
         identity = node_record["desired"]["node"]
         target = Target(kind="node", slug=identity["slug"], name=identity["name"], id=identity["id"])
         for finding in node_record["actual"]["local_findings"]:
@@ -256,84 +280,37 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
             )
 
 
-def _derived_value_provenance_diff(node_input, snapshot: SourceSnapshot, generated_at: str) -> DiffRecord:
-    try:
-        effective = resolve_operational_values(
-            node_id=node_input.id,
-            node_slug=node_input.slug,
-            endpoints=node_input.endpoints,
-            override=node_input.operational_override,
-            realized_type=node_input.realized.realized_type if node_input.realized else None,
-            facts=node_input.realized.facts if node_input.realized else None,
-            generated_at=generated_at,
-        )
-        operational = {"values": effective.as_dict(), "finding": None}
-    except DerivationFailure as exc:
-        operational = {
-            "values": None,
-            "finding": {"code": exc.code, "field": exc.field, "evidence": dict(exc.evidence)},
-        }
+def _intent_effect_summary_diff_from_record(node_record: dict) -> DiffRecord:
+    """Turn one report-3.0 node record (`production.composer.build_node_report_record`) into
+    the `intent_effect_summary` INFO diff (Phase 4 Decision 2): the record's `desired` section
+    already *is* the recorded intent, and its `actual` section already *is* the effective
+    mechanism plus production/placement application -- this is a pure re-labeling, not a
+    second derivation.
+    """
 
-    node = next(item for item in snapshot.desired.nodes if item.id == node_input.id)
-    persisted = []
-    for field_name in ("realized_device", "realized_vm"):
-        value = getattr(node, f"{field_name}_id")
-        source = getattr(node, f"{field_name}_source")
-        if value is not None:
-            persisted.append(
-                _persisted_value_record(node.id, field_name, value, source, source == "override")
-            )
-    for endpoint in sorted(
-        (item for item in snapshot.desired.endpoints if item.node_id == node.id), key=lambda item: item.id
-    ):
-        for field_name in ("dns_name", "mdns_name"):
-            value = getattr(endpoint, field_name)
-            source = getattr(endpoint, f"{field_name}_source")
-            if value is not None:
-                persisted.append(
-                    _persisted_value_record(
-                        endpoint.id, field_name, value, source, source in {"intent", "override"}
-                    )
-                )
-        if endpoint.realized_ip_address_id is not None:
-            persisted.append(
-                _persisted_value_record(
-                    endpoint.id,
-                    "realized_ip_address",
-                    endpoint.realized_ip_address_id,
-                    endpoint.realized_ip_address_source,
-                    endpoint.realized_ip_address_source == "override",
-                )
-            )
+    identity = node_record["desired"]["node"]
     return DiffRecord(
-        target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
-        code="derived_value_provenance",
+        target=Target(kind="node", slug=identity["slug"], name=identity["name"], id=identity["id"]),
+        code="intent_effect_summary",
         severity=Severity.INFO,
-        message=f"{node.slug}: effective derived/default/override value provenance",
-        desired={
-            "operational": operational,
-            "source_summary": {
-                "operational_override_id": (
-                    node_input.operational_override.id if node_input.operational_override else None
-                ),
-                "endpoint_candidates": [endpoint.evidence() for endpoint in node_input.endpoints],
-            },
-            "persisted_values": persisted,
-        },
+        message=f"{identity['slug']}: recorded intent, effective mechanism, and production application",
+        desired=node_record["desired"],
+        actual=node_record["actual"],
         sources=["desired", "actual"],
     )
 
 
-def _persisted_value_record(row_id: str, field_name: str, value, source: str | None, override_won: bool) -> dict:
-    return {
-        "field": field_name,
-        "record": {
-            "value": value,
-            "source": source,
-            "source_reference": {"kind": "desired_field", "id": row_id, "field": field_name},
-            "override_won": override_won,
-        },
-    }
+def _intent_effect_summary_diff_unknown(node_input: NodeInput, generated_at: str) -> DiffRecord:
+    """Build one `intent_effect_summary` diff when production composition itself could not
+    run (missing/invalid deployment profiles, or a global contract failure) -- the node's
+    recorded intent and effective mechanism are still fully computable and worth surfacing,
+    but its production/placement application is genuinely `unknown`, not `included`/`skipped`/
+    `out_of_scope`, since composition was never attempted.
+    """
+
+    effective, finding = try_resolve_operational_values(node_input, generated_at)
+    outcome = NodeOutcome(state="unknown", reasons=[], effective=effective, finding=finding, active_placement_ids=[])
+    return _intent_effect_summary_diff_from_record(build_node_report_record(node_input, outcome))
 
 
 def _active_placement_not_applied_diff(entry: dict) -> DiffRecord:

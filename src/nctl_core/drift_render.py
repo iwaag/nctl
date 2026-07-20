@@ -12,12 +12,17 @@ current state" only holds if drift itself never errors out over a disagreeing
 node) — `envelope.ok` and the exit code only go false when the run *itself*
 fails (bad token, unreachable Nautobot, unreadable dump directory propagating
 as `NautobotError`), never because a target came back `drifting`/`unknown`.
-A missing or invalid `vars/deployment_profiles.yml` is treated the same way
-`production_policy` already treats an absent profiles map internally
-(`comparators.py`: "if not context.profiles: return") — degraded to `{}`
-rather than failing the whole run, since a drift command that goes dark
-because of one unrelated file is worse than a drift command that just runs
-every comparator except `production_policy`.
+
+A missing or invalid `vars/deployment_profiles.yml` does not fail the drift
+command either (`envelope.ok` stays `True`; a drift command going dark
+because of one unrelated file is worse than a drift command that just skips
+`production_policy`'s composition). Phase 4 Decision 3 changed what it
+*does* surface: `DeploymentProfilesError` is threaded through as
+`DriftContext.profiles_error` rather than silently degrading to `{}`, and
+`production_policy` turns that into a classified global ERROR
+`deployment_profiles_unavailable` target -- visible, and blocking for
+`nctl reconcile` (global `MANUAL_REVIEW`), without blocking every other
+comparator or the drift run itself.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ from pydantic import BaseModel
 from nctl_core.config import Config, ConfigError
 from nctl_core.drift.context import DriftContext
 from nctl_core.drift.engine import DriftResult, TargetStatus, compute_drift
-from nctl_core.drift.model import Severity
+from nctl_core.drift.model import DiffRecord, Severity
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
@@ -109,10 +114,12 @@ def fetch_and_compute_drift(
         return EnvelopeError(code="nautobot_token_error", message=str(exc))
 
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
+    profiles_error: str | None = None
     try:
         profiles, _digest = load_deployment_profiles(playbook_dir)
-    except DeploymentProfilesError:
+    except DeploymentProfilesError as exc:
         profiles = {}
+        profiles_error = str(exc)
 
     client = NautobotClient(cfg.nautobot.url, token)
     try:
@@ -125,6 +132,7 @@ def fetch_and_compute_drift(
     context = DriftContext(
         generated_at=generated_at,
         profiles=profiles,
+        profiles_error=profiles_error,
         events_dir=cfg.events.resolved_log_dir(),
         service_observation_max_age_hours=cfg.reconcile.service_observation_max_age_hours,
     )
@@ -165,11 +173,67 @@ def render_drift_text(envelope: Envelope[DriftData]) -> str:
         label = target_status.target.slug or target_status.target.name or target_status.target.id or "?"
         lines.append(f"{label}  {target_status.status.value}  {len(target_status.diffs)} diff(s)")
         for diff in target_status.diffs:
-            lines.append(f"    [{diff.severity.value}] {diff.message}")
+            if diff.code == "intent_effect_summary":
+                lines.extend(_intent_effect_summary_lines(diff))
+            else:
+                lines.append(f"    [{diff.severity.value}] {diff.message}")
 
     status_line = " ".join(f"{status}={count}" for status, count in sorted(data.summary.items()))
     lines.append(f"summary: {status_line}" if status_line else "summary: (no targets)")
     return "\n".join(lines)
+
+
+def _intent_effect_summary_lines(diff: DiffRecord) -> list[str]:
+    """Render `intent_effect_summary` as three compact, deterministic lines
+    (Phase 4 Decision 2/Step 4.5 item 3) instead of the generic message line:
+    recorded intent, effective derived/default/override mechanism, and
+    production/placement application. Prints placement config *keys* only via
+    the caller never being handed config values here at all -- full config
+    remains in JSON evidence (`--json`), never dumped into this text.
+    """
+
+    node = diff.desired["node"]
+    intent_parts = [
+        f"lifecycle={node['lifecycle']}",
+        f"node_type={node['node_type']}",
+        f"accepted_actual_types={','.join(node['accepted_actual_types']) or '(none)'} "
+        f"({node['accepted_actual_types_source']})",
+    ]
+    placements = diff.desired["placements"]
+    if placements:
+        intent_parts.append(
+            "placements: "
+            + ", ".join(
+                f"{p['instance_name']}({p['service_slug']}/{p['desired_state']}/profile={p['deployment_profile']}"
+                f"/config_keys={sorted(p['config'])})"
+                for p in placements
+            )
+        )
+    intent_line = "    [info] intent: " + " ".join(intent_parts)
+
+    operational_values = diff.actual["operational_values"]
+    finding = diff.actual["operational_finding"]
+    if finding is not None:
+        effective_line = f"    [info] effective: derivation failed ({finding['code']}: {finding['message']})"
+    elif operational_values:
+        rendered_values = " ".join(
+            f"{field}={record['value']} ({record['source']})"
+            for field, record in sorted(operational_values.items())
+        )
+        effective_line = f"    [info] effective: {rendered_values}"
+    else:
+        effective_line = "    [info] effective: (not computed)"
+
+    production = diff.actual["production"]
+    application_parts = [f"state={production['state']}"]
+    if production["reasons"]:
+        application_parts.append(f"reasons={','.join(production['reasons'])}")
+    for effect in production["placement_effects"]:
+        suffix = f" ({effect['reason']})" if effect["reason"] else ""
+        application_parts.append(f"{effect['instance_name']}={effect['effect']}{suffix}")
+    application_line = "    [info] application: " + " ".join(application_parts)
+
+    return [intent_line, effective_line, application_line]
 
 
 def _failed(error: EnvelopeError) -> Envelope[DriftData]:

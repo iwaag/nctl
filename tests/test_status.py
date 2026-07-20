@@ -244,3 +244,31 @@ def test_build_status_ok_when_all_checks_pass(tmp_path, monkeypatch):
     events = [json.loads(line)["event"] for line in log_path.read_text().splitlines()]
     assert events[0] == "started"
     assert events[-1] == "finished"
+
+
+def test_render_status_text_points_to_drift_for_target_state(tmp_path, monkeypatch):
+    from nctl_core.status import render_status_text
+
+    dumps_dir = make_dump_dir(tmp_path)
+    outer = make_repo_with_submodule(tmp_path)
+    cfg = make_config(tmp_path, dumps_dir, outer)
+
+    class OkClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def ping(self):
+            return NautobotInfo(
+                reachable=True, url="http://nautobot.test", version="3.1.3",
+                authenticated=True, intent_catalog=True, intent_graphql=True,
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("nctl_core.status.NautobotClient", OkClient)
+
+    envelope = build_status(cfg)
+    text = render_status_text(envelope)
+
+    assert "target state: use `nctl drift --host SLUG`" in text

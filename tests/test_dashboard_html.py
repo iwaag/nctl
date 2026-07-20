@@ -179,28 +179,33 @@ def test_active_placement_not_applied_renders_with_warning_severity_and_evidence
     assert "<\\/" not in rendered_diff["message"]  # nothing hostile to begin with, sanity check only
 
 
-def test_derived_value_provenance_renders_as_info_with_field_sources():
+def test_intent_effect_summary_renders_as_info_with_field_sources():
     diff = DiffRecord(
         target=Target(kind="node", slug="agweb", name="agweb", id="n5"),
-        code="derived_value_provenance",
+        code="intent_effect_summary",
         severity=Severity.INFO,
-        message="agweb: effective derived/default/override value provenance",
+        message="agweb: recorded intent, effective mechanism, and production application",
         desired={
-            "operational": {
-                "values": {
-                    "host_os": {
-                        "value": "linux",
-                        "source": "derived",
-                        "source_reference": {
-                            "kind": "nodeutils_observation",
-                            "observed_system": "</script><script>alert(2)</script>",
-                        },
-                        "override_won": False,
-                    }
-                }
-            }
+            "node": {"id": "n5", "slug": "agweb", "name": "agweb", "lifecycle": "active", "node_type": "device",
+                      "role": None, "accepted_actual_types": ["device"], "accepted_actual_types_source": "derived"},
+            "endpoints": [], "placements": [], "operational_override": None,
         },
-        actual={},
+        actual={
+            "operational_values": {
+                "host_os": {
+                    "value": "linux",
+                    "source": "derived",
+                    "source_reference": {
+                        "kind": "nodeutils_observation",
+                        "observed_system": "</script><script>alert(2)</script>",
+                    },
+                    "override_won": False,
+                }
+            },
+            "operational_finding": None,
+            "local_findings": [],
+            "production": {"state": "included", "reasons": [], "placement_effects": []},
+        },
         sources=["desired", "actual"],
     )
     envelope = Envelope.build(
@@ -222,6 +227,6 @@ def test_derived_value_provenance_renders_as_info_with_field_sources():
     assert "<\\/script>" in raw
     embedded = json.loads(raw)
     rendered = embedded["data"]["targets"][0]["diffs"][0]
-    assert rendered["code"] == "derived_value_provenance"
+    assert rendered["code"] == "intent_effect_summary"
     assert rendered["severity"] == "info"
-    assert rendered["desired"]["operational"]["values"]["host_os"]["source"] == "derived"
+    assert rendered["actual"]["operational_values"]["host_os"]["source"] == "derived"

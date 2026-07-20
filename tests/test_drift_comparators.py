@@ -173,7 +173,7 @@ def test_production_policy_skipped_when_no_profiles_configured():
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles={})
 
     diffs = list(comparators.production_policy(snapshot, context))
-    assert [diff.code for diff in diffs] == ["derived_value_provenance"]
+    assert [diff.code for diff in diffs] == ["intent_effect_summary"]
     assert diffs[0].severity.value == "info"
 
 
@@ -201,8 +201,8 @@ def test_production_policy_reports_observed_os_in_provenance_without_mismatch():
 
     diffs = list(comparators.production_policy(snapshot, context))
 
-    assert [d.code for d in diffs] == ["derived_value_provenance"]
-    host_os = diffs[0].desired["operational"]["values"]["host_os"]
+    assert [d.code for d in diffs] == ["intent_effect_summary"]
+    host_os = diffs[0].actual["operational_values"]["host_os"]
     assert host_os["value"] == "macos"
     assert host_os["source"] == "derived"
 
@@ -236,12 +236,11 @@ def test_provenance_source_summary_keeps_alternate_endpoint_when_override_wins()
         generated_at="2026-07-15T12:00:00+00:00", profiles={}
     )))
 
-    endpoint_record = provenance.desired["operational"]["values"]["connection_endpoint"]
+    endpoint_record = provenance.actual["operational_values"]["connection_endpoint"]
     assert endpoint_record["source"] == "override"
     assert endpoint_record["source_reference"]["endpoint"]["id"] == "endpoint-forced"
-    summary = provenance.desired["source_summary"]
-    assert summary["operational_override_id"] == "override-1"
-    assert [item["id"] for item in summary["endpoint_candidates"]] == [
+    assert provenance.desired["operational_override"]["id"] == "override-1"
+    assert [item["id"] for item in provenance.desired["endpoints"]] == [
         "endpoint-forced", "endpoint-n1"
     ]
 
@@ -491,7 +490,7 @@ def test_production_policy_active_placement_not_applied_survives_empty_profiles(
 
     diffs = list(comparators.production_policy(snapshot, context))
 
-    assert {d.code for d in diffs} == {"derived_value_provenance", "active_placement_not_applied"}
+    assert {d.code for d in diffs} == {"intent_effect_summary", "active_placement_not_applied"}
     assert next(d for d in diffs if d.code == "active_placement_not_applied").severity.value == "warning"
 
 

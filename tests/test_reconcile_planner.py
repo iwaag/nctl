@@ -496,12 +496,12 @@ def test_ambiguous_endpoint_blocks_only_its_host_in_cluster_and_host_scopes():
     assert [record.code for record in blocked_plan.manual_review] == ["ambiguous_connection_endpoints"]
 
 
-def test_derived_value_provenance_info_is_omitted_from_reconcile_plan():
+def test_intent_effect_summary_info_is_omitted_from_reconcile_plan():
     node = _node("n1", "agweb")
     diff = DiffRecord(
         target=Target(kind="node", slug="agweb", name="agweb", id="n1"),
-        code="derived_value_provenance", severity=Severity.INFO,
-        message="agweb: effective derived/default/override value provenance",
+        code="intent_effect_summary", severity=Severity.INFO,
+        message="agweb: recorded intent, effective mechanism, and production application",
     )
 
     plan = _build(_snapshot(nodes=[node]), [diff])
@@ -509,6 +509,25 @@ def test_derived_value_provenance_info_is_omitted_from_reconcile_plan():
     assert plan.actions == []
     assert plan.manual_review == []
     assert plan.unsupported == []
+
+
+def test_deployment_profiles_unavailable_is_a_global_blocking_finding():
+    # Phase 4 Decision 3: a global ERROR deployment_profiles_unavailable diff is
+    # classified MANUAL_REVIEW like every other global code (classify()'s
+    # target_kind == "global" branch). The executor (Decision 5) refuses to
+    # execute *any* action while plan.has_global_blocking_findings() is true,
+    # regardless of other healthy nodes' own automatable diffs.
+    healthy = _node("n1", "aghealthy")
+    diffs = [
+        _global_diff("deployment_profiles_unavailable"),
+        _node_diff(healthy, "actual_node_not_linked"),
+    ]
+
+    plan = _build(_snapshot(nodes=[healthy]), diffs)
+
+    assert plan.has_global_blocking_findings() is True
+    codes = {record.code for record in plan.manual_review}
+    assert "deployment_profiles_unavailable" in codes
 
 
 def test_service_action_omitted_when_every_host_is_blocked():

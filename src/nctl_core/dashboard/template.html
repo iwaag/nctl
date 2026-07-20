@@ -121,6 +121,25 @@ main { padding: 1.25rem 1.5rem; max-width: 72rem; margin: 0 auto; }
   overflow-x: auto;
 }
 .diff-sources { font-size: 0.75rem; color: var(--muted); }
+.ies-section { margin: 0.3rem 0; font-size: 0.85rem; }
+.ies-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  display: block;
+  margin-bottom: 0.15rem;
+}
+.ies-field, .ies-effect { display: inline-block; margin: 0 0.4rem 0.2rem 0; }
+.ies-state { font-weight: 600; margin-right: 0.5rem; }
+.ies-finding { color: var(--red); }
+.badge.source-derived { background: var(--muted); }
+.badge.source-default { background: #9aa5b1; }
+.badge.source-override { background: #8a6d00; }
+.ies-effect-applied { color: var(--green); }
+.ies-effect-inactive_by_intent { color: var(--muted); }
+.ies-effect-not_applied { color: var(--red); }
+.ies-raw summary { cursor: pointer; font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; }
 .no-diffs { padding: 0 0.9rem 0.8rem; margin: 0; color: var(--muted); font-size: 0.85rem; }
 .empty { color: var(--muted); }
 footer {
@@ -204,17 +223,84 @@ footer {
     return box;
   }
 
+  function sourceBadge(source) {
+    return el("span", "badge source-" + source, source);
+  }
+
+  // Phase 4 Decision 2/Step 4.5 item 4: the same three sections (intent,
+  // effective mechanism, application) drift text renders, with source
+  // badges instead of inline "(derived)"/"(override)" text -- raw
+  // desired/actual JSON stays available, just collapsed by default.
+  function renderIntentEffectSummary(item, diff) {
+    var desired = diff.desired || {};
+    var actual = diff.actual || {};
+    var node = desired.node || {};
+
+    var intent = el("div", "ies-section");
+    intent.appendChild(el("span", "ies-label", "intent"));
+    intent.appendChild(el("span", null,
+      "lifecycle=" + node.lifecycle + " node_type=" + node.node_type + " accepted_actual_types=" +
+      (node.accepted_actual_types || []).join(",") + " "
+    ));
+    intent.appendChild(sourceBadge(node.accepted_actual_types_source));
+    (desired.placements || []).forEach(function (placement) {
+      intent.appendChild(el("div", null,
+        "  placement " + placement.instance_name + ": " + placement.service_slug + "/" +
+        placement.desired_state + "/profile=" + placement.deployment_profile
+      ));
+    });
+    item.appendChild(intent);
+
+    var effective = el("div", "ies-section");
+    effective.appendChild(el("span", "ies-label", "effective"));
+    var values = actual.operational_values || {};
+    Object.keys(values).sort().forEach(function (field) {
+      var record = values[field];
+      var chip = el("span", "ies-field");
+      chip.appendChild(el("span", null, field + "=" + record.value + " "));
+      chip.appendChild(sourceBadge(record.source));
+      effective.appendChild(chip);
+    });
+    if (actual.operational_finding) {
+      effective.appendChild(el("div", "ies-finding", "derivation failed: " + actual.operational_finding.code));
+    }
+    item.appendChild(effective);
+
+    var application = el("div", "ies-section");
+    application.appendChild(el("span", "ies-label", "application"));
+    var production = actual.production || {};
+    application.appendChild(el("span", "ies-state", "state=" + production.state));
+    (production.placement_effects || []).forEach(function (effect) {
+      application.appendChild(el("span", "ies-effect ies-effect-" + effect.effect,
+        effect.instance_name + "=" + effect.effect + (effect.reason ? " (" + effect.reason + ")" : "")
+      ));
+    });
+    item.appendChild(application);
+
+    var raw = el("details", "ies-raw");
+    raw.appendChild(el("summary", null, "raw evidence"));
+    var desiredBlock = evidenceBlock("desired", diff.desired);
+    if (desiredBlock) raw.appendChild(desiredBlock);
+    var actualBlock = evidenceBlock("actual", diff.actual);
+    if (actualBlock) raw.appendChild(actualBlock);
+    item.appendChild(raw);
+  }
+
   function renderDiff(diff) {
     var item = el("li", "diff");
     var head = el("div", "diff-head");
     head.appendChild(el("span", "badge severity-" + diff.severity, diff.severity));
     head.appendChild(el("code", "diff-code", diff.code));
     item.appendChild(head);
-    item.appendChild(el("p", "diff-message", diff.message));
-    var desired = evidenceBlock("desired", diff.desired);
-    if (desired) item.appendChild(desired);
-    var actual = evidenceBlock("actual", diff.actual);
-    if (actual) item.appendChild(actual);
+    if (diff.code === "intent_effect_summary") {
+      renderIntentEffectSummary(item, diff);
+    } else {
+      item.appendChild(el("p", "diff-message", diff.message));
+      var desired = evidenceBlock("desired", diff.desired);
+      if (desired) item.appendChild(desired);
+      var actual = evidenceBlock("actual", diff.actual);
+      if (actual) item.appendChild(actual);
+    }
     if (diff.sources && diff.sources.length) {
       item.appendChild(el("div", "diff-sources", "sources: " + diff.sources.join(", ")));
     }

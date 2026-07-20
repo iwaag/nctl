@@ -124,8 +124,8 @@ PRODUCTION_BLOCKING_NODE_CODES = (
 
 class LocalCompositionError(Exception):
     """One target-local Group C failure, carrying enough context to become a
-    structured `report["errors"]` entry and `report["skipped"]` reason
-    without re-raising and aborting the whole composition run.
+    node's `local_findings` entry and `production.state == "skipped"` reason
+    (report schema 3.0) without re-raising and aborting the whole composition run.
     """
 
     def __init__(self, code: str, message: str, *, stage: str, evidence: Mapping[str, Any]) -> None:
@@ -271,7 +271,7 @@ def compose_production_inventory(
     The Ansible inventory document is built by the same eligible-node loop this
     function has always used, unchanged, for byte-stability (Phase 4 Decision 3).
     Report building is a separate translation pass over per-node composition
-    outcomes (`_NodeOutcome`) so the closed `nodes` collection cannot perturb
+    outcomes (`NodeOutcome`) so the closed `nodes` collection cannot perturb
     inventory bytes for equal inputs.
     """
 
@@ -284,7 +284,7 @@ def compose_production_inventory(
     ssh_hosts: dict[str, dict[str, Any]] = {}
     selector_members: dict[str, set[str]] = {group: set() for group in _CORE_GROUPS}
     service_members: dict[str, set[str]] = {}
-    outcomes: dict[str, "_NodeOutcome"] = {}
+    outcomes: dict[str, "NodeOutcome"] = {}
     active_placements = 0
     inactive_placements = 0
     total_placements = 0
@@ -297,19 +297,19 @@ def compose_production_inventory(
             # node (Principle 3: a value the system would infer must be visible
             # even before the node can act on it) but never enters inventory
             # composition at all.
-            effective, finding = _try_resolve_operational_values(node, generated_at)
-            outcomes[node.id] = _NodeOutcome(
+            effective, finding = try_resolve_operational_values(node, generated_at)
+            outcomes[node.id] = NodeOutcome(
                 state="out_of_scope", reasons=[], effective=effective, finding=finding, active_placement_ids=[]
             )
             inactive_placements += len(node.placements)
             continue
 
-        effective, finding = _try_resolve_operational_values(node, generated_at)
+        effective, finding = try_resolve_operational_values(node, generated_at)
         if finding is not None:
             local_error = LocalCompositionError(
                 finding["code"], finding["message"], stage="operational_derivation", evidence=finding["evidence"]
             )
-            outcomes[node.id] = _NodeOutcome(
+            outcomes[node.id] = NodeOutcome(
                 state="skipped",
                 reasons=[finding["code"]],
                 effective=None,
@@ -322,7 +322,7 @@ def compose_production_inventory(
 
         skip_reasons = _host_actual_skip_reasons(node, effective)
         if skip_reasons:
-            outcomes[node.id] = _NodeOutcome(
+            outcomes[node.id] = NodeOutcome(
                 state="skipped",
                 reasons=sorted(set(skip_reasons)),
                 effective=effective,
@@ -337,7 +337,7 @@ def compose_production_inventory(
         try:
             host_vars, host_os = _compose_host(node, effective, validated_profiles)
         except LocalCompositionError as local_error:
-            outcomes[node.id] = _NodeOutcome(
+            outcomes[node.id] = NodeOutcome(
                 state="skipped",
                 reasons=[local_error.code],
                 effective=effective,
@@ -361,7 +361,7 @@ def compose_production_inventory(
             else:
                 inactive_placements += 1
 
-        outcomes[node.id] = _NodeOutcome(
+        outcomes[node.id] = NodeOutcome(
             state="included",
             reasons=[],
             effective=effective,
@@ -380,7 +380,7 @@ def compose_production_inventory(
         deployment_profile_digest=deployment_profile_digest,
     )
 
-    report_nodes = [_node_report_record(node, outcomes[node.id]) for node in all_nodes]
+    report_nodes = [build_node_report_record(node, outcomes[node.id]) for node in all_nodes]
     applied_placements = sum(
         1
         for record in report_nodes
@@ -420,9 +420,9 @@ def compose_production_inventory(
 
 
 @dataclass
-class _NodeOutcome:
+class NodeOutcome:
     """Per-node composition outcome, kept separate from the inventory-building loop's
-    own local variables so the report translation pass (`_node_report_record`) cannot
+    own local variables so the report translation pass (`build_node_report_record`) cannot
     influence inventory bytes.
     """
 
@@ -436,7 +436,7 @@ class _NodeOutcome:
     local_error: LocalCompositionError | None = None
 
 
-def _try_resolve_operational_values(
+def try_resolve_operational_values(
     node: NodeInput, generated_at: str
 ) -> tuple[EffectiveOperationalValues | None, dict[str, Any] | None]:
     try:
@@ -461,9 +461,9 @@ def _try_resolve_operational_values(
         }
 
 
-def _node_report_record(node: NodeInput, outcome: "_NodeOutcome") -> dict[str, Any]:
+def build_node_report_record(node: NodeInput, outcome: "NodeOutcome") -> dict[str, Any]:
     """Build one closed report-3.0 node record (Phase 4 Decision 2) from a node and its
-    already-computed composition `_NodeOutcome`. Pure translation -- performs no derivation
+    already-computed composition `NodeOutcome`. Pure translation -- performs no derivation
     and touches no inventory-building state.
     """
 
@@ -552,7 +552,7 @@ def _operational_override_entry(override: OperationalOverride | None) -> dict[st
     }
 
 
-def _placement_effect_entry(placement: PlacementInput, outcome: "_NodeOutcome") -> dict[str, Any]:
+def _placement_effect_entry(placement: PlacementInput, outcome: "NodeOutcome") -> dict[str, Any]:
     if outcome.state == "included":
         if placement.id in outcome.active_placement_ids:
             effect, reason = "applied", None
@@ -561,9 +561,14 @@ def _placement_effect_entry(placement: PlacementInput, outcome: "_NodeOutcome") 
     elif placement.desired_state != "active":
         effect, reason = "inactive_by_intent", None
     else:
-        reason = outcome.reasons[0] if outcome.reasons else (
-            "node_out_of_scope" if outcome.state == "out_of_scope" else "node_skipped"
-        )
+        if outcome.reasons:
+            reason = outcome.reasons[0]
+        elif outcome.state == "out_of_scope":
+            reason = "node_out_of_scope"
+        elif outcome.state == "unknown":
+            reason = "production_unknown"
+        else:
+            reason = "node_skipped"
         effect = "not_applied"
     return {
         "placement_id": placement.id,

@@ -4,7 +4,8 @@ import httpx
 import respx
 
 from nctl_core.config import Config
-from nctl_core.drift_render import build_drift, render_drift_text
+from nctl_core.drift.model import DiffRecord, Severity, Target
+from nctl_core.drift_render import _intent_effect_summary_lines, build_drift, render_drift_text
 from nctl_core.nautobot import NautobotConnectionError
 
 BASE_URL = "http://nautobot.test"
@@ -91,6 +92,12 @@ ONE_DEVICE_ACTUAL_RESPONSE = {
 
 def make_config(tmp_path) -> Config:
     (tmp_path / "dumps").mkdir()
+    # A valid (if empty) deployment_profiles.yml by default so tests unrelated to profile
+    # loading don't trip Phase 4's new deployment_profiles_unavailable global blocker; tests
+    # that specifically exercise missing/invalid profiles build their own tmp_path layout.
+    vars_dir = tmp_path / "ansible_agdev" / "vars"
+    vars_dir.mkdir(parents=True)
+    (vars_dir / "deployment_profiles.yml").write_text("deployment_profiles: {}\n")
     config_path = tmp_path / "nctl.toml"
     config_path.write_text(
         f"""
@@ -204,16 +211,20 @@ def test_build_drift_degrades_on_nautobot_failure(tmp_path, monkeypatch):
 
 
 @respx.mock
-def test_build_drift_degrades_missing_deployment_profiles_without_failing(tmp_path):
-    # No vars/deployment_profiles.yml exists under the configured playbook_dir;
-    # `production_policy` simply produces no diffs (see comparators.py's own
-    # "if not context.profiles: return" guard) rather than failing the run.
+def test_build_drift_reports_missing_deployment_profiles_as_global_error_without_failing(tmp_path):
+    # No vars/deployment_profiles.yml exists under the configured playbook_dir. Phase 4
+    # Decision 3: this is a classified global ERROR (deployment_profiles_unavailable), not a
+    # silent degrade to `{}` -- but it still doesn't fail the drift command itself.
     _mock_graphql(EMPTY_DESIRED_RESPONSE)
     cfg = make_config(tmp_path)
+    (cfg.ansible.resolved_playbook_dir(cfg.source_path.parent) / "vars" / "deployment_profiles.yml").unlink()
 
     envelope = build_drift(cfg)
 
     assert envelope.ok is True
+    global_targets = [t for t in envelope.data.targets if t.target.kind == "global"]
+    codes = [d.code for t in global_targets for d in t.diffs]
+    assert "deployment_profiles_unavailable" in codes
 
 
 def test_render_drift_text_error_lines_when_not_ok(tmp_path, monkeypatch):
@@ -246,7 +257,9 @@ def test_render_drift_text_lists_targets_diffs_and_summary(tmp_path):
     text = render_drift_text(envelope)
 
     assert "agok  converged  1 diff(s)" in text
-    assert "[info] agok: effective derived/default/override value provenance" in text
+    assert "[info] intent: lifecycle=active node_type=device" in text
+    assert "[info] effective:" in text
+    assert "[info] application: state=" in text
     assert "agmissing  unknown  3 diff(s)" in text
     assert "[error] agmissing: missing_actual_node" in text
     assert "[error] agmissing: references realized_device 'dev-gone', which no longer exists in Nautobot" in text
@@ -276,3 +289,53 @@ def test_envelope_json_round_trips_expected_keys(tmp_path):
 
     assert parsed["schema"] == "nctl.drift.v1"
     assert set(parsed["data"].keys()) == {"generated_at", "summary", "severity_summary", "targets", "sources"}
+
+
+def test_intent_effect_summary_lines_show_config_keys_not_values():
+    diff = DiffRecord(
+        target=Target(kind="node", slug="agweb", name="agweb", id="node-1"),
+        code="intent_effect_summary",
+        severity=Severity.INFO,
+        message="agweb: recorded intent, effective mechanism, and production application",
+        desired={
+            "node": {
+                "id": "node-1", "slug": "agweb", "name": "agweb", "lifecycle": "active", "node_type": "device",
+                "role": None, "accepted_actual_types": ["device"], "accepted_actual_types_source": "derived",
+            },
+            "endpoints": [],
+            "placements": [
+                {
+                    "id": "p1", "service_id": "svc-1", "service_slug": "web", "instance_name": "primary",
+                    "desired_state": "active", "instance_role": None, "deployment_profile": "web",
+                    "config_schema_version": "1", "config": {"api_token": "super-secret-value", "enabled": True},
+                    "assignment_source": "manual", "endpoint_id": None,
+                }
+            ],
+            "operational_override": None,
+        },
+        actual={
+            "operational_values": {
+                "host_os": {
+                    "value": "linux", "source": "derived",
+                    "source_reference": {"kind": "nodeutils_observation", "observed_system": "Linux", "collected_at": "x"},
+                    "override_won": False,
+                }
+            },
+            "operational_finding": None,
+            "local_findings": [],
+            "production": {
+                "state": "included", "reasons": [],
+                "placement_effects": [{"placement_id": "p1", "instance_name": "primary", "effect": "applied", "reason": None}],
+            },
+        },
+        sources=["desired", "actual"],
+    )
+
+    lines = _intent_effect_summary_lines(diff)
+    text = "\n".join(lines)
+
+    assert "config_keys=['api_token', 'enabled']" in text
+    assert "super-secret-value" not in text
+    assert "host_os=linux (derived)" in text
+    assert "state=included" in text
+    assert "primary=applied" in text

@@ -1,5 +1,11 @@
 """Pure library logic for `nctl status` (Step 0.6): the reference implementation of the
 envelope, event log, and independent-degradation conventions.
+
+Phase 4 Decision 1: `nctl status` answers one question only -- are Nautobot, local
+observations, and repository inputs available/fresh enough to work? It is controller/input
+health, not a second per-target drift command; per-target converged/drifting/unknown state is
+`nctl drift [--host NODE]`'s job. `nctl.status.v1` and this module's data model do not change
+for this -- `render_status_text` just adds one line pointing readers at `nctl drift`.
 """
 
 from __future__ import annotations
@@ -111,6 +117,7 @@ def render_status_text(envelope: Envelope[StatusData]) -> str:
         lines.append(f"error [{err.code}]: {err.message}")
 
     lines.append(f"ok: {envelope.ok}")
+    lines.append("target state: use `nctl drift --host SLUG`")
     return "\n".join(lines)
 
 

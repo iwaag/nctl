@@ -41,7 +41,7 @@ def test_node_with_no_diffs_is_seeded_as_converged():
     [target_status] = result.targets
     assert target_status.target.slug == "agok"
     assert target_status.status == Status.CONVERGED
-    assert [diff.code for diff in target_status.diffs] == ["derived_value_provenance"]
+    assert [diff.code for diff in target_status.diffs] == ["intent_effect_summary"]
     assert result.summary["converged"] == 1
 
 
