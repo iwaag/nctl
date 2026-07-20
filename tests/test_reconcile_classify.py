@@ -64,7 +64,7 @@ def test_every_phase1_local_composer_code_is_classified():
     # declared code set directly -- the composer, comparator, and classifier
     # are required to share one vocabulary rather than each declaring their
     # own copy (roadmap.md mandatory check 2).
-    assert len(PHASE1_LOCAL_CODES) == 16
+    assert len(PHASE1_LOCAL_CODES) == 18
     for code in PHASE1_LOCAL_CODES:
         result = classify(code, target_kind="node")
         assert result.classification == Classification.MANUAL_REVIEW, code

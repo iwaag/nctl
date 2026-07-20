@@ -74,6 +74,9 @@ NODE_LOCAL_CODES = frozenset(
         "invalid_connection_address",
     }
 )
+OPERATIONAL_DERIVATION_CODES = frozenset(
+    {"ambiguous_connection_endpoints", "missing_connection_endpoint"}
+)
 PLACEMENT_LOCAL_CODES = frozenset(
     {
         "unknown_profile",
@@ -101,7 +104,9 @@ ACTIVE_PLACEMENT_NOT_APPLIED = "active_placement_not_applied"
 # `reconcile/classify.py` must register as MANUAL_REVIEW with no reconciler,
 # and every code the planner must treat as a production-actuation blocker
 # for its owning node.
-PHASE1_LOCAL_CODES = LOCAL_COMPOSITION_CODES | {ACTIVE_PLACEMENT_NOT_APPLIED}
+PHASE1_LOCAL_CODES = LOCAL_COMPOSITION_CODES | OPERATIONAL_DERIVATION_CODES | {
+    ACTIVE_PLACEMENT_NOT_APPLIED
+}
 
 
 class LocalCompositionError(Exception):
