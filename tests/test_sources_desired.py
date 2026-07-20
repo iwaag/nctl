@@ -39,7 +39,9 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "accepted_actual_types": ["DEVICE"],
                             "expected_spec": {"serial": "SER123"},
                             "realized_device": {"id": "dev-1"},
+                            "realized_device_source": "DERIVED",
                             "realized_vm": None,
+                            "realized_vm_source": None,
                         }
                     ],
                     "desired_endpoints": [
@@ -50,13 +52,16 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "ip_address": "192.0.2.10/32",
                             "ip_policy": "DHCP_RESERVED",
                             "dns_name": "edge-1.example.test",
+                            "dns_name_source": "INTENT",
                             "mdns_name": "edge-1.local",
+                            "mdns_name_source": "DERIVED",
                             "vpn_dns_name": None,
                             "protocol": None,
                             "port": None,
                             "generate_dnsmasq": True,
                             "dnsmasq_record_type": "HOST_RECORD",
                             "realized_ip_address": {"id": "ip-1"},
+                            "realized_ip_address_source": "OVERRIDE",
                             "desired_node": {"id": "node-1", "slug": "edge-1"},
                         }
                     ],
@@ -73,12 +78,10 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "dnsmasq_options": {"lease_time": "12h"},
                         }
                     ],
-                    "desired_node_operational_configs": [
+                    "desired_node_operational_overrides": [
                         {
-                            "id": "opconf-1",
+                            "id": "override-1",
                             "desired_node": {"id": "node-1"},
-                            "actual_state_policy": "REQUIRED",
-                            "expected_host_os": "LINUX",
                             "declared_host_os": None,
                             "connection_path": "LOCAL",
                             "ansible_port": None,
@@ -144,6 +147,7 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert node.accepted_actual_types == ["device"]
     assert node.expected_spec == {"serial": "SER123"}
     assert node.realized_device_id == "dev-1"
+    assert node.realized_device_source == "derived"
     assert node.realized_vm_id is None
 
     endpoint = snapshot.endpoints[0]
@@ -152,18 +156,19 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert endpoint.dnsmasq_record_type == "host_record"
     assert endpoint.node_slug == "edge-1"
     assert endpoint.realized_ip_address_id == "ip-1"
+    assert endpoint.dns_name_source == "intent"
+    assert endpoint.mdns_name_source == "derived"
+    assert endpoint.realized_ip_address_source == "override"
 
     ip_range = snapshot.ip_ranges[0]
     assert ip_range.range_policy == "dhcp_dynamic_pool"
     assert ip_range.lifecycle == "active"
 
-    opconf = snapshot.operational_configs[0]
-    assert opconf.actual_state_policy == "required"
-    assert opconf.expected_host_os == "linux"
-    assert opconf.power_control == "wol"
-    assert opconf.local_endpoint is not None
-    assert opconf.local_endpoint.node_slug == "edge-1"
-    assert opconf.tailscale_endpoint is None
+    override = snapshot.operational_overrides[0]
+    assert override.power_control == "wol"
+    assert override.local_endpoint is not None
+    assert override.local_endpoint.node_slug == "edge-1"
+    assert override.tailscale_endpoint is None
 
     placement = snapshot.placements[0]
     assert placement.desired_state == "active"
@@ -185,7 +190,7 @@ def test_query_requests_all_desired_collections():
         "desired_nodes",
         "desired_endpoints",
         "desired_ip_ranges",
-        "desired_node_operational_configs",
+        "desired_node_operational_overrides",
         "desired_service_placements",
         "desired_services",
         "desired_dependencies",

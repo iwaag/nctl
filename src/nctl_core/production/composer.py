@@ -44,6 +44,7 @@ from .contract import (
     validate_production_inventory_document,
     validate_production_report,
 )
+from .derivation import EndpointCandidate, OperationalOverride
 
 # Production-eligible desired node types.  Containers never enter the production
 # inventory; the actual-backed/declared distinction is made by the operational
@@ -188,6 +189,8 @@ class NodeInput:
     name: str
     lifecycle: str
     node_type: str
+    endpoints: tuple[EndpointCandidate, ...] = ()
+    operational_override: OperationalOverride | None = None
     operational_config: OperationalConfigInput | None = None
     placements: tuple[PlacementInput, ...] = ()
     realized: RealizedState | None = None

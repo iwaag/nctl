@@ -1,10 +1,9 @@
 """Adapts a `SourceSnapshot` into the composer's input dataclasses (Phase 2 Step 2).
 
 Mirrors nintent's `jobs.py::_build_production_node_inputs`, reading Phase 2
-Step 1's typed read-models instead of the ORM. `DesiredNodeOperationalConfig`'s
-`local_endpoint`/`tailscale_endpoint` are already shaped like `EndpointInput`
-(same fields, ported by the same fetch layer), so mapping them across is a
-field-for-field copy rather than a second GraphQL round trip.
+Step 1's typed read-models instead of the ORM. All node endpoints and the
+optional override are passed separately so the pure resolver, not this
+GraphQL adapter, owns selection and precedence.
 """
 
 from __future__ import annotations
@@ -13,18 +12,22 @@ from collections import defaultdict
 
 from nctl_core.sources.actual import ActualDevice, read_actual_facts
 from nctl_core.sources.desired import (
-    DesiredEndpointRef,
+    DesiredEndpoint,
     DesiredNode,
-    DesiredNodeOperationalConfig,
+    DesiredNodeOperationalOverride,
     DesiredServicePlacement,
 )
 from nctl_core.sources.snapshot import SourceSnapshot
 
-from .composer import EndpointInput, NodeInput, OperationalConfigInput, PlacementInput, RealizedState
+from .composer import NodeInput, PlacementInput, RealizedState
+from .derivation import EndpointCandidate, OperationalOverride
 
 
 def build_production_node_inputs(snapshot: SourceSnapshot) -> list[NodeInput]:
-    operational_by_node = {oc.node_id: oc for oc in snapshot.desired.operational_configs}
+    override_by_node = {item.node_id: item for item in snapshot.desired.operational_overrides}
+    endpoints_by_node: dict[str, list[DesiredEndpoint]] = defaultdict(list)
+    for endpoint in snapshot.desired.endpoints:
+        endpoints_by_node[endpoint.node_id].append(endpoint)
     placements_by_node: dict[str, list[DesiredServicePlacement]] = defaultdict(list)
     for placement in snapshot.desired.placements:
         placements_by_node[placement.node_id].append(placement)
@@ -43,7 +46,11 @@ def build_production_node_inputs(snapshot: SourceSnapshot) -> list[NodeInput]:
                 name=node.name,
                 lifecycle=node.lifecycle,
                 node_type=node.node_type,
-                operational_config=_operational_config_input(operational_by_node.get(node.id)),
+                endpoints=tuple(
+                    _endpoint_candidate(endpoint)
+                    for endpoint in sorted(endpoints_by_node.get(node.id, ()), key=lambda item: item.id)
+                ),
+                operational_override=_operational_override(override_by_node.get(node.id)),
                 placements=placements,
                 realized=_realized_state(node, devices_by_id),
             )
@@ -51,33 +58,30 @@ def build_production_node_inputs(snapshot: SourceSnapshot) -> list[NodeInput]:
     return node_inputs
 
 
-def _endpoint_input(ref: DesiredEndpointRef | None) -> EndpointInput | None:
-    if ref is None:
-        return None
-    return EndpointInput(
-        name=ref.name,
-        endpoint_type=ref.endpoint_type,
-        node_slug=ref.node_slug,
-        ip_address=ref.ip_address,
-        dns_name=ref.dns_name,
-        mdns_name=ref.mdns_name,
+def _endpoint_candidate(endpoint: DesiredEndpoint) -> EndpointCandidate:
+    return EndpointCandidate(
+        id=endpoint.id,
+        name=endpoint.name,
+        endpoint_type=endpoint.endpoint_type,
+        node_slug=endpoint.node_slug,
+        ip_address=endpoint.ip_address,
+        dns_name=endpoint.dns_name,
+        mdns_name=endpoint.mdns_name,
     )
 
 
-def _operational_config_input(oc: DesiredNodeOperationalConfig | None) -> OperationalConfigInput | None:
-    if oc is None:
+def _operational_override(item: DesiredNodeOperationalOverride | None) -> OperationalOverride | None:
+    if item is None:
         return None
-    return OperationalConfigInput(
-        id=oc.id,
-        actual_state_policy=oc.actual_state_policy,
-        connection_path=oc.connection_path,
-        power_control=oc.power_control,
-        is_laptop=oc.is_laptop,
-        expected_host_os=oc.expected_host_os,
-        declared_host_os=oc.declared_host_os,
-        local_endpoint=_endpoint_input(oc.local_endpoint),
-        tailscale_endpoint=_endpoint_input(oc.tailscale_endpoint),
-        ansible_port=oc.ansible_port,
+    return OperationalOverride(
+        id=item.id,
+        declared_host_os=item.declared_host_os,
+        connection_path=item.connection_path,
+        local_endpoint_id=item.local_endpoint.id if item.local_endpoint else None,
+        tailscale_endpoint_id=item.tailscale_endpoint.id if item.tailscale_endpoint else None,
+        ansible_port=item.ansible_port,
+        power_control=item.power_control,
+        is_laptop=item.is_laptop,
     )
 
 

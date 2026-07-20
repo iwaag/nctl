@@ -42,7 +42,9 @@ DESIRED_QUERY = """
     accepted_actual_types
     expected_spec
     realized_device { id }
+    realized_device_source
     realized_vm { id }
+    realized_vm_source
   }
   desired_endpoints {
     id
@@ -51,13 +53,16 @@ DESIRED_QUERY = """
     ip_address
     ip_policy
     dns_name
+    dns_name_source
     mdns_name
+    mdns_name_source
     vpn_dns_name
     protocol
     port
     generate_dnsmasq
     dnsmasq_record_type
     realized_ip_address { id }
+    realized_ip_address_source
     desired_node { id slug }
   }
   desired_ip_ranges {
@@ -71,11 +76,9 @@ DESIRED_QUERY = """
     generate_dnsmasq
     dnsmasq_options
   }
-  desired_node_operational_configs {
+  desired_node_operational_overrides {
     id
     desired_node { id }
-    actual_state_policy
-    expected_host_os
     declared_host_os
     connection_path
     ansible_port
@@ -125,7 +128,7 @@ DESIRED_QUERY = """
 
 
 class DesiredEndpointRef(BaseModel):
-    """A node-scoped endpoint as referenced from an operational config."""
+    """A node-scoped endpoint as referenced from an operational override."""
 
     id: str
     name: str
@@ -146,7 +149,9 @@ class DesiredNode(BaseModel):
     accepted_actual_types: list[str] = []
     expected_spec: dict[str, Any] = {}
     realized_device_id: str | None = None
+    realized_device_source: str | None = None
     realized_vm_id: str | None = None
+    realized_vm_source: str | None = None
 
 
 class DesiredEndpoint(BaseModel):
@@ -158,13 +163,16 @@ class DesiredEndpoint(BaseModel):
     ip_address: str | None = None
     ip_policy: str = "static"
     dns_name: str | None = None
+    dns_name_source: str | None = None
     mdns_name: str | None = None
+    mdns_name_source: str | None = None
     vpn_dns_name: str | None = None
     protocol: str | None = None
     port: int | None = None
     generate_dnsmasq: bool = False
     dnsmasq_record_type: str = "host_record"
     realized_ip_address_id: str | None = None
+    realized_ip_address_source: str | None = None
 
 
 class DesiredIPRange(BaseModel):
@@ -179,16 +187,14 @@ class DesiredIPRange(BaseModel):
     dnsmasq_options: dict[str, Any] = {}
 
 
-class DesiredNodeOperationalConfig(BaseModel):
+class DesiredNodeOperationalOverride(BaseModel):
     id: str
     node_id: str
-    actual_state_policy: str
-    expected_host_os: str | None = None
     declared_host_os: str | None = None
-    connection_path: str
+    connection_path: str | None = None
     ansible_port: int | None = None
-    power_control: str = "none"
-    is_laptop: bool = False
+    power_control: str | None = None
+    is_laptop: bool | None = None
     local_endpoint: DesiredEndpointRef | None = None
     tailscale_endpoint: DesiredEndpointRef | None = None
 
@@ -236,7 +242,7 @@ class DesiredSnapshot(BaseModel):
     nodes: list[DesiredNode] = []
     endpoints: list[DesiredEndpoint] = []
     ip_ranges: list[DesiredIPRange] = []
-    operational_configs: list[DesiredNodeOperationalConfig] = []
+    operational_overrides: list[DesiredNodeOperationalOverride] = []
     placements: list[DesiredServicePlacement] = []
     services: list[DesiredService] = []
     dependencies: list[DesiredDependency] = []
@@ -248,8 +254,8 @@ def fetch_desired_snapshot(client: NautobotClient) -> DesiredSnapshot:
         nodes=[_build_node(row) for row in data["desired_nodes"]],
         endpoints=[_build_endpoint(row) for row in data["desired_endpoints"]],
         ip_ranges=[_build_ip_range(row) for row in data["desired_ip_ranges"]],
-        operational_configs=[
-            _build_operational_config(row) for row in data["desired_node_operational_configs"]
+        operational_overrides=[
+            _build_operational_override(row) for row in data["desired_node_operational_overrides"]
         ],
         placements=[_build_placement(row) for row in data["desired_service_placements"]],
         services=[_build_service(row) for row in data["desired_services"]],
@@ -270,7 +276,9 @@ def _build_node(row: dict[str, Any]) -> DesiredNode:
         accepted_actual_types=[_lower(item) for item in (row.get("accepted_actual_types") or [])],
         expected_spec=row.get("expected_spec") or {},
         realized_device_id=realized_device["id"] if realized_device else None,
+        realized_device_source=_lower(row.get("realized_device_source")),
         realized_vm_id=realized_vm["id"] if realized_vm else None,
+        realized_vm_source=_lower(row.get("realized_vm_source")),
     )
 
 
@@ -286,13 +294,16 @@ def _build_endpoint(row: dict[str, Any]) -> DesiredEndpoint:
         ip_address=row.get("ip_address"),
         ip_policy=_lower(row.get("ip_policy")) or "static",
         dns_name=row.get("dns_name"),
+        dns_name_source=_lower(row.get("dns_name_source")),
         mdns_name=row.get("mdns_name"),
+        mdns_name_source=_lower(row.get("mdns_name_source")),
         vpn_dns_name=row.get("vpn_dns_name"),
         protocol=row.get("protocol"),
         port=row.get("port"),
         generate_dnsmasq=bool(row.get("generate_dnsmasq")),
         dnsmasq_record_type=_lower(row.get("dnsmasq_record_type")) or "host_record",
         realized_ip_address_id=realized_ip_address["id"] if realized_ip_address else None,
+        realized_ip_address_source=_lower(row.get("realized_ip_address_source")),
     )
 
 
@@ -324,17 +335,15 @@ def _build_endpoint_ref(row: dict[str, Any] | None) -> DesiredEndpointRef | None
     )
 
 
-def _build_operational_config(row: dict[str, Any]) -> DesiredNodeOperationalConfig:
-    return DesiredNodeOperationalConfig(
+def _build_operational_override(row: dict[str, Any]) -> DesiredNodeOperationalOverride:
+    return DesiredNodeOperationalOverride(
         id=row["id"],
         node_id=row["desired_node"]["id"],
-        actual_state_policy=_lower(row["actual_state_policy"]),
-        expected_host_os=_lower(row.get("expected_host_os")),
         declared_host_os=_lower(row.get("declared_host_os")),
-        connection_path=_lower(row["connection_path"]),
+        connection_path=_lower(row.get("connection_path")),
         ansible_port=row.get("ansible_port"),
-        power_control=_lower(row.get("power_control")) or "none",
-        is_laptop=bool(row.get("is_laptop")),
+        power_control=_lower(row.get("power_control")),
+        is_laptop=row.get("is_laptop"),
         local_endpoint=_build_endpoint_ref(row.get("local_endpoint")),
         tailscale_endpoint=_build_endpoint_ref(row.get("tailscale_endpoint")),
     )

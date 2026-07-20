@@ -151,6 +151,35 @@ def test_declared_haos_and_forced_tailscale_are_override_driven() -> None:
     assert values.ansible_port.value == 2222
 
 
+def test_forced_local_endpoint_wins_and_observed_address_still_has_precedence() -> None:
+    endpoints = (
+        _endpoint("derived", endpoint_type="primary", ip_address="192.0.2.20"),
+        _endpoint("forced", endpoint_type="management", ip_address=None, dns_name="forced.test"),
+    )
+    values = _resolve(
+        endpoints=endpoints,
+        override=OperationalOverride(id="override-1", local_endpoint_id="forced"),
+    )
+    assert values.connection_endpoint.value == "primary"
+    assert values.connection_endpoint.source_reference["endpoint"]["id"] == "forced"
+    assert values.connection_address.value == "192.0.2.10"
+    assert values.connection_address.source_reference["kind"] == "nodeutils_observation"
+
+
+@pytest.mark.parametrize(
+    ("override", "code"),
+    [
+        (OperationalOverride(id="o", connection_path="tailscale"), "unresolved_connection_path"),
+        (OperationalOverride(id="o", power_control="macos_sleep"), "invalid_platform_power"),
+        (OperationalOverride(id="o", local_endpoint_id="missing"), "unresolved_connection_path"),
+    ],
+)
+def test_invalid_override_matrix_fails_locally(override: OperationalOverride, code: str) -> None:
+    with pytest.raises(DerivationFailure) as raised:
+        _resolve(override=override)
+    assert raised.value.code == code
+
+
 @pytest.mark.parametrize(
     ("facts", "realized_type", "expected_code"),
     [

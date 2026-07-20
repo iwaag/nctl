@@ -17,7 +17,7 @@ DESIRED_DATA = {
     "desired_nodes": [],
     "desired_endpoints": [],
     "desired_ip_ranges": [],
-    "desired_node_operational_configs": [],
+    "desired_node_operational_overrides": [],
     "desired_service_placements": [],
     "desired_services": [],
     "desired_dependencies": [],
