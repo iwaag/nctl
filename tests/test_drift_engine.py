@@ -66,6 +66,10 @@ def test_multiple_nodes_sorted_and_summarized_independently():
 
 
 def test_global_diff_from_production_policy_appears_as_its_own_target():
+    # A malformed shared deployment-profile map (Group A) is the only
+    # composition failure that still produces a `global` target after Phase
+    # 1 -- every node/placement-owned Group C code (e.g. invalid_platform_power)
+    # is node-local instead, per p0/field-classification.md Section 6.
     node = DesiredNode(id="n1", slug="agbad", name="agbad", lifecycle="active", node_type="device", realized_device_id="dev-1")
     op_config = DesiredNodeOperationalConfig(
         id="op1",
@@ -73,11 +77,10 @@ def test_global_diff_from_production_policy_appears_as_its_own_target():
         actual_state_policy="required",
         connection_path="local",
         expected_host_os="linux",
-        power_control="macos_sleep",
     )
     device = ActualDevice(id="dev-1", name="agbad.local", facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"})
     snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], devices=[device])
-    profiles = {"web": {"group": "web_server", "config_schema_version": "1", "variables": {}}}
+    profiles = {"web": {"group": "web_server", "config_schema_version": "1", "variables": "not-an-object"}}
     context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=profiles)
 
     result = compute_drift(snapshot, context)
@@ -86,4 +89,4 @@ def test_global_diff_from_production_policy_appears_as_its_own_target():
     assert "global" in kinds
     global_target = next(t for t in result.targets if t.target.kind == "global")
     assert global_target.status == Status.DRIFTING
-    assert global_target.diffs[0].code == "invalid_platform_power"
+    assert global_target.diffs[0].code == "invalid_profile_variables"

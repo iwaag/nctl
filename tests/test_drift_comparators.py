@@ -204,6 +204,32 @@ def test_production_policy_reports_os_mismatch_drift_as_warning():
 
 
 def test_production_policy_global_contract_error_becomes_one_diff():
+    # A malformed shared deployment-profile map is a Group A error: it is
+    # raised by validate_deployment_profiles before the per-node loop even
+    # starts, so it stays global. (A node/placement-owned Group C failure,
+    # such as invalid_platform_power, is now node-local -- see
+    # test_production_policy_local_error_becomes_node_targeted_diff.)
+    node = DesiredNode(id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device")
+    op_config = DesiredNodeOperationalConfig(
+        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
+    )
+    device = ActualDevice(id="dev-1", name="agweb.local", facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"})
+    node = DesiredNode(**{**node.model_dump(), "realized_device_id": "dev-1"})
+    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], devices=[device])
+    broken_profiles = {"web": {"group": "web_server", "config_schema_version": "1", "variables": "not-an-object"}}
+    context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=broken_profiles)
+
+    diffs = list(comparators.production_policy(snapshot, context))
+
+    assert [d.code for d in diffs] == ["invalid_profile_variables"]
+    assert diffs[0].target.kind == "global"
+
+
+def test_production_policy_local_error_becomes_node_targeted_diff():
+    # invalid_platform_power is a Group C code (Phase 1): one node's
+    # unsafe platform/power combination skips only that node, and today's
+    # generic skip-reason conversion already attributes it to that node
+    # rather than a global target.
     node = DesiredNode(id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device")
     op_config = DesiredNodeOperationalConfig(
         id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux", power_control="macos_sleep"
@@ -216,7 +242,8 @@ def test_production_policy_global_contract_error_becomes_one_diff():
     diffs = list(comparators.production_policy(snapshot, context))
 
     assert [d.code for d in diffs] == ["invalid_platform_power"]
-    assert diffs[0].target.kind == "global"
+    assert diffs[0].target.kind == "node"
+    assert diffs[0].target.slug == "agweb"
 
 
 # --- node_intent_matching / endpoint_intent_matching / service_intent_matching --------

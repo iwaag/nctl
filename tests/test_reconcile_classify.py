@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from nctl_core.production.composer import PHASE1_LOCAL_CODES
 from nctl_core.reconcile.classify import CODE_CLASSIFICATION, UnclassifiedDiffCodeError, classify
 from nctl_core.reconcile.model import Classification
 
@@ -55,6 +56,19 @@ def test_every_producible_diff_code_is_classified():
     assert scanned, "the scan found no codes at all -- the regex or file list is stale"
     unclassified = sorted(code for code in scanned if code not in CODE_CLASSIFICATION)
     assert unclassified == [], f"new diff code(s) with no reconcile classification: {unclassified}"
+
+
+def test_every_phase1_local_composer_code_is_classified():
+    # better_usability p1: the source scan above targets comparator/evaluator
+    # files, not production/composer.py, so this imports the composer's own
+    # declared code set directly -- the composer, comparator, and classifier
+    # are required to share one vocabulary rather than each declaring their
+    # own copy (roadmap.md mandatory check 2).
+    assert len(PHASE1_LOCAL_CODES) == 16
+    for code in PHASE1_LOCAL_CODES:
+        result = classify(code, target_kind="node")
+        assert result.classification == Classification.MANUAL_REVIEW, code
+        assert result.reconciler_id is None, code
 
 
 def test_unknown_code_raises_instead_of_defaulting():

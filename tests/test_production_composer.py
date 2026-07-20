@@ -13,6 +13,10 @@ import pytest
 import yaml
 
 from nctl_core.production.composer import (
+    LOCAL_COMPOSITION_CODES,
+    MERGE_LOCAL_CODES,
+    NODE_LOCAL_CODES,
+    PLACEMENT_LOCAL_CODES,
     EndpointInput,
     NodeInput,
     OperationalConfigInput,
@@ -293,20 +297,26 @@ def test_skipped_host_placement_does_not_create_dangling_group():
     assert result.report["summary"]["active_placements"] == 0
 
 
-def test_missing_operational_config_fails_whole_run():
+def test_missing_operational_config_skips_only_that_node():
     node = NodeInput("node-x", "agx", "agx", "active", "device", None, (), None)
-    with pytest.raises(ContractError) as caught:
-        compose([node])
-    assert caught.value.code == "missing_operational_config"
+    result = compose([node])
+
+    assert result.report["skipped"][0]["reasons"] == ["missing_operational_config"]
+    assert result.report["errors"][0]["code"] == "missing_operational_config"
+    assert result.report["errors"][0]["stage"] == "operational_config"
+    assert "agx" not in result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
 
 
-def test_invalid_platform_power_fails_whole_run():
-    with pytest.raises(ContractError) as caught:
-        compose([linux_node("agbad", power="macos_sleep")])
-    assert caught.value.code == "invalid_platform_power"
+def test_invalid_platform_power_skips_only_that_node():
+    result = compose([linux_node("agbad", power="macos_sleep")])
+
+    assert result.report["skipped"][0]["reasons"] == ["invalid_platform_power"]
+    error = result.report["errors"][0]
+    assert error["code"] == "invalid_platform_power"
+    assert error["stage"] == "platform_policy"
 
 
-def test_conflicting_placement_variables_fail_whole_run():
+def test_conflicting_placement_variables_skip_only_that_node():
     node = linux_node(
         "agconf",
         placements=[
@@ -314,16 +324,24 @@ def test_conflicting_placement_variables_fail_whole_run():
             PlacementInput("p2", "secondary", "web", "1", config={"enabled": False}),
         ],
     )
-    with pytest.raises(ContractError) as caught:
-        compose([node])
-    assert caught.value.code == "conflicting_host_variable"
+    result = compose([node])
+
+    assert result.report["skipped"][0]["reasons"] == ["conflicting_host_variable"]
+    error = result.report["errors"][0]
+    assert error["code"] == "conflicting_host_variable"
+    assert error["stage"] == "host_merge"
 
 
-def test_unknown_profile_fails_whole_run():
+def test_unknown_profile_skips_only_that_node():
     node = linux_node("agunk", placements=[PlacementInput("p1", "primary", "missing", "1", config={})])
-    with pytest.raises(ContractError) as caught:
-        compose([node])
-    assert caught.value.code == "unknown_profile"
+    result = compose([node])
+
+    assert result.report["skipped"][0]["reasons"] == ["unknown_profile"]
+    error = result.report["errors"][0]
+    assert error["code"] == "unknown_profile"
+    assert error["stage"] == "placement_config"
+    assert error["evidence"]["placement"]["deployment_profile"] == "missing"
+    assert error["evidence"]["placement"]["id"] == "p1"
 
 
 def test_multiple_services_on_one_node():
@@ -409,3 +427,270 @@ def test_renderers_are_schema_versioned_and_parseable():
     rendered_json = render_production_report_json(result)
     assert rendered_json.endswith("\n")
     assert json.loads(rendered_json)["schema_version"] == "1.0"
+
+
+# --- Step 1.6: full Group C isolation matrix -------------------------------
+#
+# Every case pairs one healthy node with one bad node built to trigger exactly
+# one Group C code, and asserts the healthy node composes normally while the
+# bad node is skipped with a matching skipped/errors pair -- never a global
+# ContractError.
+
+_REQUIRED_PROFILE = {
+    "strict": {
+        "group": "strict_server",
+        "config_schema_version": "1",
+        "variables": {
+            "required_key": {"ansible_variable": "required_key", "type": "string", "required": True},
+        },
+    },
+}
+
+
+def _custom_node(slug, *, op_kwargs, placements=(), realized_type="device", facts=None):
+    op = OperationalConfigInput(id=f"op-{slug}", **op_kwargs)
+    realized = None
+    if realized_type is not None:
+        realized = RealizedState(realized_type=realized_type, facts=facts or linux_facts(), nautobot_device_id=f"dev-{slug}")
+    return NodeInput(
+        id=f"node-{slug}", slug=slug, name=slug, lifecycle="active", node_type="device",
+        operational_config=op, placements=tuple(placements), realized=realized,
+    )
+
+
+def _bad_missing_operational_config():
+    return NodeInput("node-bad", "agbad", "agbad", "active", "device", None, (), None)
+
+
+def _bad_invalid_actual_state_policy():
+    return _custom_node(
+        "agbad",
+        op_kwargs=dict(
+            actual_state_policy="required", connection_path="local",
+            expected_host_os="linux", declared_host_os="haos",
+        ),
+    )
+
+
+def _bad_unsupported_observed_host_os():
+    return _custom_node(
+        "agbad",
+        op_kwargs=dict(actual_state_policy="required", connection_path="local", expected_host_os="linux"),
+        facts=linux_facts(system="FreeBSD"),
+    )
+
+
+def _bad_invalid_platform_power():
+    return _custom_node(
+        "agbad",
+        op_kwargs=dict(
+            actual_state_policy="required", connection_path="local",
+            expected_host_os="linux", power_control="macos_sleep",
+        ),
+    )
+
+
+def _bad_endpoint_node_mismatch():
+    endpoint = EndpointInput(name="primary", endpoint_type="primary", node_slug="someone-else", ip_address="192.168.9.9/24")
+    return _custom_node(
+        "agbad",
+        op_kwargs=dict(
+            actual_state_policy="required", connection_path="local",
+            expected_host_os="linux", local_endpoint=endpoint,
+        ),
+    )
+
+
+def _bad_unresolved_connection_path():
+    return _custom_node(
+        "agbad",
+        op_kwargs=dict(actual_state_policy="required", connection_path="tailscale", expected_host_os="linux"),
+    )
+
+
+def _bad_invalid_connection_path():
+    return _custom_node(
+        "agbad",
+        op_kwargs=dict(actual_state_policy="required", connection_path="bogus", expected_host_os="linux"),
+    )
+
+
+def _bad_invalid_connection_address():
+    endpoint = EndpointInput(name="ts", endpoint_type="vpn", node_slug="agbad", ip_address="not-an-ip")
+    return _custom_node(
+        "agbad",
+        op_kwargs=dict(
+            actual_state_policy="required", connection_path="tailscale",
+            expected_host_os="linux", tailscale_endpoint=endpoint,
+        ),
+    )
+
+
+def _bad_unknown_profile():
+    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "missing", "1", config={})])
+
+
+def _bad_unsupported_config_schema():
+    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "web", "99", config={})])
+
+
+def test_invalid_placement_config_is_localized_when_raised(monkeypatch):
+    import nctl_core.production.composer as composer_mod
+
+    def _raise_invalid_config(*args, **kwargs):
+        raise ContractError("invalid_placement_config", "placement config must be an object")
+
+    monkeypatch.setattr(composer_mod, "map_placement_config", _raise_invalid_config)
+    good = linux_node("aggood")
+    bad = linux_node("agbad", placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})])
+
+    result = compose_production_inventory(
+        [good, bad], PROFILES,
+        generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+    )
+
+    assert "aggood" in result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
+    assert result.report["skipped"][0]["reasons"] == ["invalid_placement_config"]
+    assert result.report["errors"][0]["code"] == "invalid_placement_config"
+    assert result.report["errors"][0]["stage"] == "placement_config"
+
+
+def _bad_unknown_config_key():
+    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "web", "1", config={"nope": True})])
+
+
+def _bad_missing_required_config():
+    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "strict", "1", config={})])
+
+
+def _bad_invalid_profile_value_type():
+    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": "nope"})])
+
+
+def _bad_conflicting_host_variable():
+    return linux_node(
+        "agbad",
+        placements=[
+            PlacementInput("p1", "primary", "web", "1", config={"enabled": True}),
+            PlacementInput("p2", "secondary", "web", "1", config={"enabled": False}),
+        ],
+    )
+
+
+_GROUP_C_CASES = {
+    "missing_operational_config": (_bad_missing_operational_config, PROFILES),
+    "invalid_actual_state_policy": (_bad_invalid_actual_state_policy, PROFILES),
+    "unsupported_observed_host_os": (_bad_unsupported_observed_host_os, PROFILES),
+    "invalid_platform_power": (_bad_invalid_platform_power, PROFILES),
+    "endpoint_node_mismatch": (_bad_endpoint_node_mismatch, PROFILES),
+    "unresolved_connection_path": (_bad_unresolved_connection_path, PROFILES),
+    "invalid_connection_path": (_bad_invalid_connection_path, PROFILES),
+    "invalid_connection_address": (_bad_invalid_connection_address, PROFILES),
+    "unknown_profile": (_bad_unknown_profile, PROFILES),
+    "unsupported_config_schema": (_bad_unsupported_config_schema, PROFILES),
+    # invalid_placement_config is exercised separately below: composer always
+    # calls dict(placement.config) before map_placement_config, so a typed
+    # PlacementInput can never carry a non-mapping config through this path;
+    # the code stays in PLACEMENT_LOCAL_CODES for any future direct caller.
+    "unknown_config_key": (_bad_unknown_config_key, PROFILES),
+    "missing_required_config": (_bad_missing_required_config, {**PROFILES, **_REQUIRED_PROFILE}),
+    "invalid_profile_value_type": (_bad_invalid_profile_value_type, PROFILES),
+    "conflicting_host_variable": (_bad_conflicting_host_variable, PROFILES),
+}
+
+
+def test_group_c_matrix_covers_every_declared_local_code():
+    assert set(_GROUP_C_CASES) == LOCAL_COMPOSITION_CODES - {"invalid_placement_config"}
+    assert "invalid_placement_config" in PLACEMENT_LOCAL_CODES
+    assert LOCAL_COMPOSITION_CODES == NODE_LOCAL_CODES | PLACEMENT_LOCAL_CODES | MERGE_LOCAL_CODES
+
+
+@pytest.mark.parametrize("code", sorted(_GROUP_C_CASES))
+def test_group_c_failure_skips_only_the_bad_node(code):
+    build_bad, profiles = _GROUP_C_CASES[code]
+    good = linux_node("aggood", placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})])
+    bad = build_bad()
+
+    result = compose_production_inventory(
+        [good, bad], profiles,
+        generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+    )
+
+    ssh_hosts = result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
+    assert "aggood" in ssh_hosts
+    assert "agbad" not in ssh_hosts
+    for group_hosts_dict in result.inventory["all"]["children"].values():
+        assert "agbad" not in group_hosts_dict["hosts"]
+
+    assert result.report["skipped"] == [
+        {
+            "item_type": "desired_node",
+            "desired_node": bad.name,
+            "desired_node_slug": "agbad",
+            "desired_node_id": bad.id,
+            "reasons": [code],
+        }
+    ]
+    assert len(result.report["errors"]) == 1
+    error = result.report["errors"][0]
+    assert error["code"] == code
+    assert error["desired_node_slug"] == "agbad"
+    assert error["severity"] == "error"
+    assert error["stage"]
+    assert error["message"]
+
+    # The healthy node's own placement config/group membership survives intact.
+    assert ssh_hosts["aggood"]["web_enabled"] is True
+    assert "aggood" in group_hosts(result, "web_server")
+
+
+def test_group_c_output_is_byte_stable_across_runs():
+    good = linux_node("aggood")
+    bad = _bad_unknown_profile()
+    first = compose_production_inventory(
+        [good, bad], PROFILES,
+        generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+    )
+    second = compose_production_inventory(
+        [good, bad], PROFILES,
+        generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+    )
+    assert render_production_report_json(first) == render_production_report_json(second)
+
+
+def test_invalid_connection_address_per_node_call_site_is_local_not_global():
+    # contract.py's sole `invalid_connection_address` raise site (_normalize_ip)
+    # is reached only through resolve_connection_variables, which the composer
+    # calls once per node inside _compose_host -- there is no separate
+    # document-level call site in the current pipeline, so this is the one
+    # case Phase 0 flagged as needing to stay local (as opposed to a
+    # hypothetical Group B document-level normalization, which does not
+    # exist today).
+    result = compose_production_inventory(
+        [_bad_invalid_connection_address()], PROFILES,
+        generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+    )
+    assert result.report["errors"][0]["code"] == "invalid_connection_address"
+    assert result.report["errors"][0]["stage"] == "connection"
+
+
+def test_group_a_shared_profile_error_still_aborts_globally():
+    with pytest.raises(ContractError) as caught:
+        compose_production_inventory(
+            [linux_node("agweb")],
+            {"web": {"group": "web_server", "config_schema_version": "1", "variables": "not-an-object"}},
+            generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+        )
+    assert caught.value.code == "invalid_profile_variables"
+
+
+def test_group_b_final_output_error_still_aborts_globally(monkeypatch):
+    import nctl_core.production.composer as composer_mod
+
+    def _broken_document(*args, **kwargs):
+        raise ContractError("invalid_inventory_schema", "forced for test")
+
+    monkeypatch.setattr(composer_mod, "validate_production_inventory_document", _broken_document)
+    with pytest.raises(ContractError) as caught:
+        compose([linux_node("agweb")])
+    assert caught.value.code == "invalid_inventory_schema"

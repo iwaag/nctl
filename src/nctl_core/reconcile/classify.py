@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from nctl_core.production.composer import PHASE1_LOCAL_CODES
+
 from .model import Classification
 
 # observe_node — missing/stale/insufficient node or service evidence, and
@@ -131,6 +133,14 @@ _TABLE.update(
     {code: CodeClassification(Classification.AUTOMATIC, "service_profile") for code in _SERVICE_PROFILE_CODES}
 )
 _TABLE.update({code: CodeClassification(Classification.MANUAL_REVIEW) for code in _MANUAL_REVIEW_CODES})
+# better_usability Phase 1: every target-local production-composition failure
+# (`production/composer.py`'s Group C codes) plus `active_placement_not_applied`
+# is manual review with no reconciler -- a human must fix the node/placement
+# data (or, once Phase 2 ships, several of these codes disappear because the
+# field they concern is no longer required). Imported from composer.py rather
+# than redeclared so composer, comparator, and classifier can never disagree
+# on this vocabulary (roadmap.md's mandatory check 2).
+_TABLE.update({code: CodeClassification(Classification.MANUAL_REVIEW) for code in PHASE1_LOCAL_CODES})
 
 CODE_CLASSIFICATION: dict[str, CodeClassification] = dict(_TABLE)
 
