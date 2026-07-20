@@ -188,14 +188,14 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
     for node_input in node_inputs:
         yield _derived_value_provenance_diff(node_input, snapshot, context.generated_at)
 
+    # active_placement_not_applied does not depend on profiles at all
+    # (Decision 4 of core_reconcile) -- recorded intent must not disappear
+    # merely because the profile-dependent composer below is unavailable, so
+    # this pure, composer-independent source runs unconditionally.
+    for entry in unapplied_placement_findings(node_inputs):
+        yield _active_placement_not_applied_diff(entry)
+
     if not context.profiles:
-        # The composer itself cannot run without a profile map, but the
-        # lifecycle gate behind active_placement_not_applied does not depend
-        # on profiles at all (Decision 4) -- recorded intent must not
-        # disappear merely because this second, profile-dependent
-        # diagnostic source is unavailable.
-        for entry in unapplied_placement_findings(node_inputs):
-            yield _active_placement_not_applied_diff(entry)
         return
 
     try:
@@ -216,54 +216,44 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
         )
         return
 
-    # Structured local errors (Phase 1 Group C) take priority: each becomes
-    # its own precise node-targeted diff, and the generic skip-reason
-    # conversion below is suppressed for the exact (node, code) pairs they
-    # already cover so the same failure never surfaces twice.
+    # Report 3.0 (Phase 4 Decision 3) carries one `nodes` record per desired
+    # node instead of parallel `errors`/`skipped`/`drift` collections; this
+    # translates each node's `local_findings` (Phase 1 Group C, still
+    # node-targeted ERROR diffs) and `production.state == "skipped"` reasons
+    # into the same diff shape as before. Structured local errors take
+    # priority: each becomes its own precise node-targeted diff, and the
+    # generic skip-reason conversion below is suppressed for the exact
+    # (node, code) pairs they already cover so the same failure never
+    # surfaces twice.
     structured_error_keys: set[tuple[str, str]] = set()
-    for error in composition.report["errors"]:
-        target = Target(
-            kind="node", slug=error["desired_node_slug"], name=error["desired_node"], id=error["desired_node_id"]
-        )
-        yield DiffRecord(
-            target=target,
-            code=error["code"],
-            severity=Severity.ERROR,
-            message=error["message"],
-            desired=dict(error.get("evidence", {})),
-            actual={"stage": error["stage"]},
-            sources=["desired", "actual"],
-        )
-        structured_error_keys.add((error["desired_node_slug"], error["code"]))
+    for node_record in composition.report["nodes"]:
+        identity = node_record["desired"]["node"]
+        target = Target(kind="node", slug=identity["slug"], name=identity["name"], id=identity["id"])
+        for finding in node_record["actual"]["local_findings"]:
+            yield DiffRecord(
+                target=target,
+                code=finding["code"],
+                severity=Severity.ERROR,
+                message=finding["message"],
+                desired=dict(finding.get("evidence", {})),
+                actual={"stage": finding["stage"]},
+                sources=["desired", "actual"],
+            )
+            structured_error_keys.add((identity["slug"], finding["code"]))
 
-    for skip in composition.report["skipped"]:
-        target = Target(kind="node", slug=skip["desired_node_slug"], name=skip["desired_node"], id=skip["desired_node_id"])
-        for reason in skip["reasons"]:
-            if (skip["desired_node_slug"], reason) in structured_error_keys:
+        production = node_record["actual"]["production"]
+        if production["state"] != "skipped":
+            continue
+        for reason in production["reasons"]:
+            if (identity["slug"], reason) in structured_error_keys:
                 continue
             yield DiffRecord(
                 target=target,
                 code=reason,
                 severity=Severity.ERROR,
-                message=f"{skip['desired_node_slug']}: production composition skipped this node ({reason})",
+                message=f"{identity['slug']}: production composition skipped this node ({reason})",
                 sources=["desired", "actual"],
             )
-
-    for drift_entry in composition.report["drift"]:
-        yield _drift_entry_diff(drift_entry)
-
-
-def _drift_entry_diff(drift_entry: dict) -> DiffRecord:
-    """Dispatch one composer `report["drift"]` entry to its DiffRecord shape
-    by code. An unrecognized code is a composer/comparator vocabulary defect,
-    not a renderable diff -- it must fail loudly here rather than being
-    rendered with an unrelated code's message template.
-    """
-
-    code = drift_entry["code"]
-    if code == ACTIVE_PLACEMENT_NOT_APPLIED:
-        return _active_placement_not_applied_diff(drift_entry)
-    raise AssertionError(f"production_policy: unhandled composer drift code {code!r}")
 
 
 def _derived_value_provenance_diff(node_input, snapshot: SourceSnapshot, generated_at: str) -> DiffRecord:

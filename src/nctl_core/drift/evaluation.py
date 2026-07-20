@@ -594,7 +594,6 @@ def _expected_service_facts(
         "catalog_namespace": _text(desired_service.catalog_namespace),
         "catalog_metadata_name": _text(desired_service.catalog_metadata_name),
         "requirements": desired_service.requirements or {},
-        "placement_policy": desired_service.placement_policy or {},
         "dependencies": dependency_facts,
         "dependency_counts": counts,
     }

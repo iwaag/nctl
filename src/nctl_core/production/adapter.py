@@ -15,6 +15,7 @@ from nctl_core.sources.desired import (
     DesiredEndpoint,
     DesiredNode,
     DesiredNodeOperationalOverride,
+    DesiredService,
     DesiredServicePlacement,
 )
 from nctl_core.sources.snapshot import SourceSnapshot
@@ -32,11 +33,12 @@ def build_production_node_inputs(snapshot: SourceSnapshot) -> list[NodeInput]:
     for placement in snapshot.desired.placements:
         placements_by_node[placement.node_id].append(placement)
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
+    services_by_id = {service.id: service for service in snapshot.desired.services}
 
     node_inputs = []
     for node in sorted(snapshot.desired.nodes, key=lambda n: n.slug):
         placements = tuple(
-            _placement_input(placement)
+            _placement_input(placement, services_by_id)
             for placement in sorted(placements_by_node.get(node.id, ()), key=lambda p: p.instance_name)
         )
         node_inputs.append(
@@ -46,6 +48,8 @@ def build_production_node_inputs(snapshot: SourceSnapshot) -> list[NodeInput]:
                 name=node.name,
                 lifecycle=node.lifecycle,
                 node_type=node.node_type,
+                role=node.role,
+                accepted_actual_types=tuple(node.accepted_actual_types),
                 endpoints=tuple(
                     _endpoint_candidate(endpoint)
                     for endpoint in sorted(endpoints_by_node.get(node.id, ()), key=lambda item: item.id)
@@ -85,7 +89,10 @@ def _operational_override(item: DesiredNodeOperationalOverride | None) -> Operat
     )
 
 
-def _placement_input(placement: DesiredServicePlacement) -> PlacementInput:
+def _placement_input(
+    placement: DesiredServicePlacement, services_by_id: dict[str, DesiredService]
+) -> PlacementInput:
+    service = services_by_id.get(placement.service_id)
     return PlacementInput(
         id=placement.id,
         instance_name=placement.instance_name,
@@ -93,6 +100,11 @@ def _placement_input(placement: DesiredServicePlacement) -> PlacementInput:
         config_schema_version=placement.config_schema_version,
         desired_state=placement.desired_state,
         config=placement.config,
+        service_id=placement.service_id,
+        service_slug=service.slug if service is not None else "",
+        instance_role=placement.instance_role,
+        assignment_source=placement.assignment_source,
+        endpoint_id=placement.endpoint_id,
     )
 
 

@@ -8,7 +8,9 @@ GraphQL layer serializes ChoiceField values (`lifecycle`, `node_type`,
 `endpoint_type`, `ip_policy`, ...) as their UPPERCASE enum *name*; every
 choice field here is lowercased back to the vocabulary the ported nintent
 logic (Steps 2 and 4) expects. Free-form JSON fields (`config`,
-`dnsmasq_options`, `requirements`, `placement_policy`) round-trip untouched.
+`dnsmasq_options`, `requirements`) round-trip untouched. `placement_policy` was removed from
+`DesiredService` in Phase 4 (better_usability p4) Decision 6 -- inert, no producer of non-empty
+data, and no consumer; it is no longer fetched here or exposed on any typed model.
 
 This is a superset of `dnsmasq_query.py`'s desired-side fetch (endpoints + IP
 ranges); Step 4 switches `render dnsmasq` onto this module instead of
@@ -110,7 +112,6 @@ DESIRED_QUERY = """
     catalog_namespace
     catalog_metadata_name
     requirements
-    placement_policy
   }
   desired_dependencies {
     id
@@ -223,7 +224,6 @@ class DesiredService(BaseModel):
     catalog_namespace: str
     catalog_metadata_name: str
     requirements: dict[str, Any] = {}
-    placement_policy: dict[str, Any] = {}
 
 
 class DesiredDependency(BaseModel):
@@ -377,7 +377,6 @@ def _build_service(row: dict[str, Any]) -> DesiredService:
         catalog_namespace=row["catalog_namespace"],
         catalog_metadata_name=row["catalog_metadata_name"],
         requirements=row.get("requirements") or {},
-        placement_policy=row.get("placement_policy") or {},
     )
 
 

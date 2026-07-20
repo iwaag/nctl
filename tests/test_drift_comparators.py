@@ -495,8 +495,3 @@ def test_production_policy_active_placement_not_applied_survives_empty_profiles(
     assert next(d for d in diffs if d.code == "active_placement_not_applied").severity.value == "warning"
 
 
-def test_drift_entry_dispatch_rejects_unknown_composer_drift_code():
-    import pytest
-
-    with pytest.raises(AssertionError):
-        comparators._drift_entry_diff({"code": "some_future_composer_drift_code", "desired_node_slug": "agx"})

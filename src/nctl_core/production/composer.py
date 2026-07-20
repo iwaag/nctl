@@ -33,6 +33,7 @@ from nctl_core.sources.actual import ActualFacts
 
 from .contract import (
     PRODUCTION_INVENTORY_SCHEMA_VERSION,
+    PRODUCTION_REPORT_SCHEMA_VERSION,
     ContractError,
     actual_state_problem,
     map_placement_config,
@@ -40,7 +41,7 @@ from .contract import (
     resolve_connection_variables,
     validate_deployment_profiles,
     validate_production_inventory_document,
-    validate_production_report,
+    validate_production_report_v3,
 )
 from .derivation import (
     DerivationFailure,
@@ -135,6 +136,28 @@ class LocalCompositionError(Exception):
         super().__init__(message)
 
 
+# Deterministic accepted_actual_types-per-node_type mapping (Phase 4 Decision 4), matching
+# nintent's `operations.hosts._accepted_actual_types` and `loaders._ACTUAL_TYPE_DEFAULTS`.
+# A stored list equal to this mapping (order-independent) means "derived"; anything else
+# means an explicit override -- no separate provenance field is needed since the rule is
+# deterministic (see p4/plan.md Decision 4).
+ACCEPTED_ACTUAL_TYPE_DEFAULTS = {
+    "device": frozenset({"device"}),
+    "virtual_machine": frozenset({"virtual_machine"}),
+    "container": frozenset({"container"}),
+    "service_host": frozenset({"device", "virtual_machine", "container"}),
+}
+
+
+def accepted_actual_types_source(node_type: str, accepted_actual_types: Iterable[str]) -> str:
+    """Return `"derived"` or `"override"` for a stored `accepted_actual_types` list."""
+
+    canonical = ACCEPTED_ACTUAL_TYPE_DEFAULTS.get(node_type)
+    if canonical is not None and frozenset(accepted_actual_types) == canonical:
+        return "derived"
+    return "override"
+
+
 @dataclass(frozen=True)
 class PlacementInput:
     """Desired binding of one service instance to one node."""
@@ -145,6 +168,11 @@ class PlacementInput:
     config_schema_version: str
     desired_state: str = "active"
     config: Mapping[str, Any] = field(default_factory=dict)
+    service_id: str = ""
+    service_slug: str = ""
+    instance_role: str | None = None
+    assignment_source: str = "manual"
+    endpoint_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +193,8 @@ class NodeInput:
     name: str
     lifecycle: str
     node_type: str
+    role: str | None = None
+    accepted_actual_types: tuple[str, ...] = ()
     endpoints: tuple[EndpointCandidate, ...] = ()
     operational_override: OperationalOverride | None = None
     placements: tuple[PlacementInput, ...] = ()
@@ -232,67 +262,72 @@ def compose_production_inventory(
     generated_at: str,
     deployment_profile_digest: str,
 ) -> ProductionComposition:
-    """Compose a deterministic schema 2.0 production inventory and report.
+    """Compose a deterministic schema 2.0 production inventory plus a schema 3.0 report.
 
     Global contract violations raise :class:`ContractError` and abort the whole
     run (the caller preserves the previous inventory).  Host-specific actual
     state problems skip only the affected host with a structured reason.
+
+    The Ansible inventory document is built by the same eligible-node loop this
+    function has always used, unchanged, for byte-stability (Phase 4 Decision 3).
+    Report building is a separate translation pass over per-node composition
+    outcomes (`_NodeOutcome`) so the closed `nodes` collection cannot perturb
+    inventory bytes for equal inputs.
     """
 
     validated_profiles = validate_deployment_profiles(dict(profiles))
     profile_group_by_name = {name: profile["group"] for name, profile in validated_profiles.items()}
 
-    all_nodes = list(nodes)
-    eligible = sorted(
-        (node for node in all_nodes if is_production_eligible(node)),
-        key=lambda node: node.slug,
-    )
+    all_nodes = sorted(nodes, key=lambda node: node.slug)
+    eligible_slugs = {node.slug for node in all_nodes if is_production_eligible(node)}
 
     ssh_hosts: dict[str, dict[str, Any]] = {}
     selector_members: dict[str, set[str]] = {group: set() for group in _CORE_GROUPS}
     service_members: dict[str, set[str]] = {}
-    report_hosts: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-    drift: list[dict[str, Any]] = []
+    outcomes: dict[str, "_NodeOutcome"] = {}
     active_placements = 0
     inactive_placements = 0
     total_placements = 0
 
-    for node in eligible:
+    for node in all_nodes:
         total_placements += len(node.placements)
-        try:
-            effective = resolve_operational_values(
-                node_id=node.id,
-                node_slug=node.slug,
-                endpoints=node.endpoints,
-                override=node.operational_override,
-                realized_type=node.realized.realized_type if node.realized else None,
-                facts=node.realized.facts if node.realized else None,
-                generated_at=generated_at,
+
+        if node.slug not in eligible_slugs:
+            # Operational mechanism is still worth computing for an out-of-scope
+            # node (Principle 3: a value the system would infer must be visible
+            # even before the node can act on it) but never enters inventory
+            # composition at all.
+            effective, finding = _try_resolve_operational_values(node, generated_at)
+            outcomes[node.id] = _NodeOutcome(
+                state="out_of_scope", reasons=[], effective=effective, finding=finding, active_placement_ids=[]
             )
-        except DerivationFailure as exc:
+            inactive_placements += len(node.placements)
+            continue
+
+        effective, finding = _try_resolve_operational_values(node, generated_at)
+        if finding is not None:
             local_error = LocalCompositionError(
-                exc.code,
-                str(exc),
-                stage="operational_derivation",
-                evidence={"field": exc.field, **dict(exc.evidence)},
+                finding["code"], finding["message"], stage="operational_derivation", evidence=finding["evidence"]
             )
-            skipped.append(_local_skip_entry(node, local_error))
-            errors.append(_local_error_entry(node, local_error))
+            outcomes[node.id] = _NodeOutcome(
+                state="skipped",
+                reasons=[finding["code"]],
+                effective=None,
+                finding=finding,
+                active_placement_ids=[],
+                local_error=local_error,
+            )
             inactive_placements += len(node.placements)
             continue
 
         skip_reasons = _host_actual_skip_reasons(node, effective)
         if skip_reasons:
-            skipped.append(
-                {
-                    "item_type": "desired_node",
-                    "desired_node": node.name,
-                    "desired_node_slug": node.slug,
-                    "desired_node_id": node.id,
-                    "reasons": sorted(set(skip_reasons)),
-                }
+            outcomes[node.id] = _NodeOutcome(
+                state="skipped",
+                reasons=sorted(set(skip_reasons)),
+                effective=effective,
+                finding=None,
+                active_placement_ids=[],
             )
             # Placements on a skipped host are inactive export members and never
             # create dangling group entries.
@@ -302,10 +337,17 @@ def compose_production_inventory(
         try:
             host_vars, host_os = _compose_host(node, effective, validated_profiles)
         except LocalCompositionError as local_error:
-            skipped.append(_local_skip_entry(node, local_error))
-            errors.append(_local_error_entry(node, local_error))
+            outcomes[node.id] = _NodeOutcome(
+                state="skipped",
+                reasons=[local_error.code],
+                effective=effective,
+                finding=None,
+                active_placement_ids=[],
+                local_error=local_error,
+            )
             inactive_placements += len(node.placements)
             continue
+
         ssh_hosts[node.slug] = host_vars
         selector_members[_OS_SELECTOR_GROUP[host_os]].add(node.slug)
         if effective.power_control.value != "none":
@@ -319,20 +361,15 @@ def compose_production_inventory(
             else:
                 inactive_placements += 1
 
-        report_hosts.append(
-            {
-                "inventory_hostname": node.slug,
-                "desired_node_id": node.id,
-                "host_os": host_os,
-                "connection_path": effective.connection_path.value,
-                "actual_state_policy": effective.actual_state_policy.value,
-                "nautobot_device_id": host_vars.get("nautobot_device_id"),
-                "active_placement_ids": list(node_active_ids),
-                "operational_values": effective.as_dict(),
-            }
+        outcomes[node.id] = _NodeOutcome(
+            state="included",
+            reasons=[],
+            effective=effective,
+            finding=None,
+            active_placement_ids=list(node_active_ids),
+            host_os=host_os,
+            nautobot_device_id=host_vars.get("nautobot_device_id"),
         )
-
-    drift.extend(unapplied_placement_findings(all_nodes))
 
     inventory = _build_inventory_document(
         ssh_hosts=ssh_hosts,
@@ -342,30 +379,198 @@ def compose_production_inventory(
         generated_at=generated_at,
         deployment_profile_digest=deployment_profile_digest,
     )
+
+    report_nodes = [_node_report_record(node, outcomes[node.id]) for node in all_nodes]
+    applied_placements = sum(
+        1
+        for record in report_nodes
+        for effect in record["actual"]["production"]["placement_effects"]
+        if effect["effect"] == "applied"
+    )
+    not_applied_placements = sum(
+        1
+        for record in report_nodes
+        for effect in record["actual"]["production"]["placement_effects"]
+        if effect["effect"] == "not_applied"
+    )
     report = {
-        "schema_version": PRODUCTION_INVENTORY_SCHEMA_VERSION,
+        "schema_version": PRODUCTION_REPORT_SCHEMA_VERSION,
         "generation_id": generation_id,
         "generated_at": generated_at,
         "report_path": f"production.reports/{generation_id}.json",
         "deployment_profile_digest": deployment_profile_digest,
         "summary": {
-            "eligible": len(eligible),
+            "eligible": len(eligible_slugs),
             "included": len(ssh_hosts),
-            "skipped": len(skipped),
+            "skipped": sum(1 for outcome in outcomes.values() if outcome.state == "skipped"),
+            "out_of_scope": sum(1 for outcome in outcomes.values() if outcome.state == "out_of_scope"),
             "placements": total_placements,
             "active_placements": active_placements,
             "inactive_placements": inactive_placements,
+            "applied_placements": applied_placements,
+            "not_applied_placements": not_applied_placements,
         },
-        "hosts": sorted(report_hosts, key=lambda item: item["inventory_hostname"]),
-        "skipped": sorted(skipped, key=lambda item: item["desired_node_slug"]),
-        "drift": sorted(drift, key=lambda item: (item["desired_node_slug"], item["code"])),
-        "errors": sorted(errors, key=_error_sort_key),
+        "nodes": sorted(report_nodes, key=lambda item: item["desired"]["node"]["slug"]),
     }
 
     # Fail closed: the composer must only ever emit conforming documents.
     validate_production_inventory_document(inventory, validated_profiles)
-    validate_production_report(report)
+    validate_production_report_v3(report)
     return ProductionComposition(inventory=inventory, report=report)
+
+
+@dataclass
+class _NodeOutcome:
+    """Per-node composition outcome, kept separate from the inventory-building loop's
+    own local variables so the report translation pass (`_node_report_record`) cannot
+    influence inventory bytes.
+    """
+
+    state: str  # included | skipped | out_of_scope
+    reasons: list[str]
+    effective: EffectiveOperationalValues | None
+    finding: dict[str, Any] | None
+    active_placement_ids: list[str]
+    host_os: str | None = None
+    nautobot_device_id: str | None = None
+    local_error: LocalCompositionError | None = None
+
+
+def _try_resolve_operational_values(
+    node: NodeInput, generated_at: str
+) -> tuple[EffectiveOperationalValues | None, dict[str, Any] | None]:
+    try:
+        return (
+            resolve_operational_values(
+                node_id=node.id,
+                node_slug=node.slug,
+                endpoints=node.endpoints,
+                override=node.operational_override,
+                realized_type=node.realized.realized_type if node.realized else None,
+                facts=node.realized.facts if node.realized else None,
+                generated_at=generated_at,
+            ),
+            None,
+        )
+    except DerivationFailure as exc:
+        return None, {
+            "code": exc.code,
+            "field": exc.field,
+            "message": exc.message,
+            "evidence": {"field": exc.field, **dict(exc.evidence)},
+        }
+
+
+def _node_report_record(node: NodeInput, outcome: "_NodeOutcome") -> dict[str, Any]:
+    """Build one closed report-3.0 node record (Phase 4 Decision 2) from a node and its
+    already-computed composition `_NodeOutcome`. Pure translation -- performs no derivation
+    and touches no inventory-building state.
+    """
+
+    placement_effects = [
+        _placement_effect_entry(placement, outcome) for placement in sorted(node.placements, key=lambda p: p.instance_name)
+    ]
+    return {
+        "desired": {
+            "node": {
+                "id": node.id,
+                "slug": node.slug,
+                "name": node.name,
+                "lifecycle": node.lifecycle,
+                "node_type": node.node_type,
+                "role": node.role,
+                "accepted_actual_types": sorted(node.accepted_actual_types),
+                "accepted_actual_types_source": accepted_actual_types_source(node.node_type, node.accepted_actual_types),
+            },
+            "endpoints": [
+                {
+                    "id": endpoint.id,
+                    "name": endpoint.name,
+                    "endpoint_type": endpoint.endpoint_type,
+                    "ip_address": endpoint.ip_address,
+                    "dns_name": endpoint.dns_name,
+                    "mdns_name": endpoint.mdns_name,
+                }
+                for endpoint in sorted(node.endpoints, key=lambda item: item.id)
+            ],
+            "placements": [_placement_desired_entry(placement) for placement in sorted(node.placements, key=lambda p: p.instance_name)],
+            "operational_override": _operational_override_entry(node.operational_override),
+        },
+        "actual": {
+            "operational_values": outcome.effective.as_dict() if outcome.effective is not None else {},
+            "operational_finding": outcome.finding,
+            "local_findings": (
+                [
+                    {
+                        "code": outcome.local_error.code,
+                        "severity": "error",
+                        "message": outcome.local_error.message,
+                        "stage": outcome.local_error.stage,
+                        "evidence": outcome.local_error.evidence,
+                    }
+                ]
+                if outcome.local_error is not None
+                else []
+            ),
+            "production": {
+                "state": outcome.state,
+                "reasons": outcome.reasons,
+                "placement_effects": placement_effects,
+            },
+        },
+    }
+
+
+def _placement_desired_entry(placement: PlacementInput) -> dict[str, Any]:
+    return {
+        "id": placement.id,
+        "service_id": placement.service_id,
+        "service_slug": placement.service_slug,
+        "instance_name": placement.instance_name,
+        "desired_state": placement.desired_state,
+        "instance_role": placement.instance_role,
+        "deployment_profile": placement.deployment_profile,
+        "config_schema_version": placement.config_schema_version,
+        "config": dict(placement.config),
+        "assignment_source": placement.assignment_source,
+        "endpoint_id": placement.endpoint_id,
+    }
+
+
+def _operational_override_entry(override: OperationalOverride | None) -> dict[str, Any] | None:
+    if override is None:
+        return None
+    return {
+        "id": override.id,
+        "declared_host_os": override.declared_host_os,
+        "connection_path": override.connection_path,
+        "ansible_port": override.ansible_port,
+        "power_control": override.power_control,
+        "is_laptop": override.is_laptop,
+        "local_endpoint_id": override.local_endpoint_id,
+        "tailscale_endpoint_id": override.tailscale_endpoint_id,
+    }
+
+
+def _placement_effect_entry(placement: PlacementInput, outcome: "_NodeOutcome") -> dict[str, Any]:
+    if outcome.state == "included":
+        if placement.id in outcome.active_placement_ids:
+            effect, reason = "applied", None
+        else:
+            effect, reason = "inactive_by_intent", None
+    elif placement.desired_state != "active":
+        effect, reason = "inactive_by_intent", None
+    else:
+        reason = outcome.reasons[0] if outcome.reasons else (
+            "node_out_of_scope" if outcome.state == "out_of_scope" else "node_skipped"
+        )
+        effect = "not_applied"
+    return {
+        "placement_id": placement.id,
+        "instance_name": placement.instance_name,
+        "effect": effect,
+        "reason": reason,
+    }
 
 
 def _host_actual_skip_reasons(
@@ -488,41 +693,6 @@ def _placement_evidence(placement: PlacementInput) -> dict[str, Any]:
         "desired_state": placement.desired_state,
         "config": dict(placement.config),
     }
-
-
-def _local_skip_entry(node: NodeInput, local_error: LocalCompositionError) -> dict[str, Any]:
-    return {
-        "item_type": "desired_node",
-        "desired_node": node.name,
-        "desired_node_slug": node.slug,
-        "desired_node_id": node.id,
-        "reasons": [local_error.code],
-    }
-
-
-def _local_error_entry(node: NodeInput, local_error: LocalCompositionError) -> dict[str, Any]:
-    return {
-        "item_type": "desired_node",
-        "desired_node": node.name,
-        "desired_node_slug": node.slug,
-        "desired_node_id": node.id,
-        "code": local_error.code,
-        "severity": "error",
-        "message": local_error.message,
-        "stage": local_error.stage,
-        "evidence": local_error.evidence,
-    }
-
-
-def _error_sort_key(entry: Mapping[str, Any]) -> tuple[str, str, str, str, str]:
-    placement = entry.get("evidence", {}).get("placement", {})
-    return (
-        entry["desired_node_slug"],
-        entry["code"],
-        entry["stage"],
-        placement.get("instance_name") or "",
-        placement.get("id") or "",
-    )
 
 
 def _build_inventory_document(

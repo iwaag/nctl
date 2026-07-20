@@ -73,7 +73,6 @@ TWO_NODE_DESIRED_RESPONSE = {
                 "catalog_namespace": "ns",
                 "catalog_metadata_name": "web",
                 "requirements": {},
-                "placement_policy": {},
             }
         ],
         "desired_dependencies": [],

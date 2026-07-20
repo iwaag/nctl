@@ -24,7 +24,7 @@ from nctl_core.production.contract import (
     validate_deployment_profiles,
     validate_endpoint_ownership,
     validate_production_inventory_document,
-    validate_production_report,
+    validate_production_report_v3,
 )
 
 PROFILES = {
@@ -135,7 +135,7 @@ def test_merge_host_variables_conflict():
     )
 
 
-def test_production_inventory_and_report_schema_are_closed():
+def test_production_inventory_schema_is_closed():
     generation_id = "12345678-1234-5678-9234-567812345678"
     digest = "a" * 64
     inventory = {
@@ -166,59 +166,8 @@ def test_production_inventory_and_report_schema_are_closed():
             },
         }
     }
-    report = {
-        "schema_version": "2.0",
-        "generation_id": generation_id,
-        "generated_at": "2026-06-27T12:00:00+00:00",
-        "report_path": f"production.reports/{generation_id}.json",
-        "deployment_profile_digest": digest,
-        "summary": {
-            "eligible": 1,
-            "included": 1,
-            "skipped": 0,
-            "placements": 1,
-            "active_placements": 1,
-            "inactive_placements": 0,
-        },
-        "hosts": [
-            {
-                "inventory_hostname": "node-a",
-                "desired_node_id": "node-id",
-                "host_os": "linux",
-                "connection_path": "local",
-                "actual_state_policy": "required",
-                "nautobot_device_id": "device-id",
-                "active_placement_ids": ["placement-id"],
-                "operational_values": {
-                    field: {
-                        "value": None,
-                        "source": "default",
-                        "source_reference": {"kind": "safe_default", "field": field},
-                        "override_won": False,
-                    }
-                    for field in (
-                        "actual_state_policy",
-                        "host_os",
-                        "connection_path",
-                        "connection_endpoint",
-                        "connection_address",
-                        "ansible_port",
-                        "power_control",
-                        "is_laptop",
-                    )
-                },
-            }
-        ],
-        "skipped": [],
-        "drift": [],
-        "errors": [],
-    }
 
     assert validate_production_inventory_document(inventory, PROFILES) is inventory
-    assert validate_production_report(report) is report
-
-    old_report = {**report, "schema_version": "1.0"}
-    assert_contract_error("unsupported_inventory_schema", validate_production_report, old_report)
 
     old_inventory = {
         **inventory,
@@ -241,14 +190,142 @@ def test_production_inventory_and_report_schema_are_closed():
         "nintent_operational_config_id"
     ]
 
-    report["hosts"][0]["operational_values"]["host_os"]["source"] = "intent"
-    assert_contract_error("invalid_report_schema", validate_production_report, report)
-    report["hosts"][0]["operational_values"]["host_os"]["source"] = "default"
-
     inventory["all"]["children"]["ssh_hosts"]["hosts"]["node-a"]["package_manager"] = "apt"
     assert_contract_error(
         "unknown_host_variable", validate_production_inventory_document, inventory, PROFILES
     )
 
-    report["legacy"] = {}
-    assert_contract_error("invalid_contract_keys", validate_production_report, report)
+
+def _value_record(field_name: str) -> dict:
+    return {
+        "value": None,
+        "source": "default",
+        "source_reference": {"kind": "safe_default", "field": field_name},
+        "override_won": False,
+    }
+
+
+def _v3_node_record(*, state: str, effect: str = "applied", reason: str | None = None) -> dict:
+    return {
+        "desired": {
+            "node": {
+                "id": "node-id",
+                "slug": "node-a",
+                "name": "node-a",
+                "lifecycle": "active",
+                "node_type": "device",
+                "role": None,
+                "accepted_actual_types": ["device"],
+                "accepted_actual_types_source": "derived",
+            },
+            "endpoints": [],
+            "placements": [
+                {
+                    "id": "placement-id",
+                    "service_id": "service-id",
+                    "service_slug": "web",
+                    "instance_name": "primary",
+                    "desired_state": "active",
+                    "instance_role": None,
+                    "deployment_profile": "demo",
+                    "config_schema_version": "1",
+                    "config": {},
+                    "assignment_source": "manual",
+                    "endpoint_id": None,
+                }
+            ],
+            "operational_override": None,
+        },
+        "actual": {
+            "operational_values": {
+                field_name: _value_record(field_name)
+                for field_name in (
+                    "actual_state_policy",
+                    "host_os",
+                    "connection_path",
+                    "connection_endpoint",
+                    "connection_address",
+                    "ansible_port",
+                    "power_control",
+                    "is_laptop",
+                )
+            },
+            "operational_finding": None,
+            "local_findings": [],
+            "production": {
+                "state": state,
+                "reasons": [],
+                "placement_effects": [
+                    {"placement_id": "placement-id", "instance_name": "primary", "effect": effect, "reason": reason}
+                ],
+            },
+        },
+    }
+
+
+def _v3_report(nodes: list[dict], generation_id: str, digest: str) -> dict:
+    return {
+        "schema_version": "3.0",
+        "generation_id": generation_id,
+        "generated_at": "2026-06-27T12:00:00+00:00",
+        "report_path": f"production.reports/{generation_id}.json",
+        "deployment_profile_digest": digest,
+        "summary": {
+            "eligible": 1,
+            "included": 1,
+            "skipped": 0,
+            "out_of_scope": 0,
+            "placements": 1,
+            "active_placements": 1,
+            "inactive_placements": 0,
+            "applied_placements": 1,
+            "not_applied_placements": 0,
+        },
+        "nodes": nodes,
+    }
+
+
+def test_production_report_v3_schema_is_closed():
+    generation_id = "12345678-1234-5678-9234-567812345678"
+    digest = "a" * 64
+    report = _v3_report([_v3_node_record(state="included")], generation_id, digest)
+
+    assert validate_production_report_v3(report) is report
+
+    old_report = {**report, "schema_version": "2.0"}
+    assert_contract_error("unsupported_report_schema", validate_production_report_v3, old_report)
+
+    partial_report = {**report}
+    del partial_report["summary"]
+    assert_contract_error("invalid_contract_keys", validate_production_report_v3, partial_report)
+
+    partial_node = [dict(_v3_node_record(state="included"))]
+    del partial_node[0]["desired"]
+    assert_contract_error(
+        "invalid_contract_keys", validate_production_report_v3, _v3_report(partial_node, generation_id, digest)
+    )
+
+    duplicate_node_report = _v3_report(
+        [_v3_node_record(state="included"), _v3_node_record(state="included")], generation_id, digest
+    )
+    assert_contract_error("duplicate_node_id", validate_production_report_v3, duplicate_node_report)
+
+    contradiction_report = _v3_report(
+        [_v3_node_record(state="included", effect="not_applied", reason="node_skipped")], generation_id, digest
+    )
+    assert_contract_error(
+        "placement_effect_contradicts_node_state", validate_production_report_v3, contradiction_report
+    )
+
+    missing_effect_report = _v3_report([_v3_node_record(state="included")], generation_id, digest)
+    missing_effect_report["nodes"][0]["actual"]["production"]["placement_effects"] = []
+    assert_contract_error("invalid_report_schema", validate_production_report_v3, missing_effect_report)
+
+    unknown_placement_effect_report = _v3_report([_v3_node_record(state="included")], generation_id, digest)
+    unknown_placement_effect_report["nodes"][0]["actual"]["production"]["placement_effects"][0]["placement_id"] = "other"
+    assert_contract_error(
+        "placement_effect_unknown_placement", validate_production_report_v3, unknown_placement_effect_report
+    )
+
+    invalid_state_report = _v3_report([_v3_node_record(state="bogus")], generation_id, digest)
+    assert_contract_error("invalid_report_schema", validate_production_report_v3, invalid_state_report)

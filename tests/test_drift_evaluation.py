@@ -122,7 +122,6 @@ def service(**overrides):
         catalog_namespace="default",
         catalog_metadata_name="api",
         requirements={"memory_gb": 2},
-        placement_policy={},
     )
     data.update(overrides)
     return DesiredService(**data)

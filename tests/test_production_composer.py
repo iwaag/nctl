@@ -144,6 +144,79 @@ def group_hosts(composition: ProductionComposition, group):
     return set(children.get(group, {"hosts": {}})["hosts"])
 
 
+def node_record(composition: ProductionComposition, slug):
+    """Return the report-3.0 node record for `slug` (Phase 4 Decision 2/3)."""
+
+    return next(node for node in composition.report["nodes"] if node["desired"]["node"]["slug"] == slug)
+
+
+def skip_reasons(composition: ProductionComposition, slug):
+    return node_record(composition, slug)["actual"]["production"]["reasons"]
+
+
+def local_findings(composition: ProductionComposition, slug):
+    return node_record(composition, slug)["actual"]["local_findings"]
+
+
+def placement_effects(composition: ProductionComposition, slug):
+    return node_record(composition, slug)["actual"]["production"]["placement_effects"]
+
+
+def not_applied_out_of_scope_entries(composition: ProductionComposition):
+    """Every `not_applied`/`node_out_of_scope` placement effect across all nodes --
+    the report-3.0 replacement for the old composer-owned `report["drift"]` list,
+    which only ever carried `active_placement_not_applied` entries.
+    """
+
+    return [
+        {"slug": node["desired"]["node"]["slug"], **effect}
+        for node in composition.report["nodes"]
+        for effect in node["actual"]["production"]["placement_effects"]
+        if effect["reason"] == "node_out_of_scope"
+    ]
+
+
+def test_accepted_actual_types_source_is_derived_or_override():
+    from nctl_core.production.composer import accepted_actual_types_source
+
+    assert accepted_actual_types_source("device", ["device"]) == "derived"
+    assert accepted_actual_types_source("service_host", ["container", "device", "virtual_machine"]) == "derived"
+    assert accepted_actual_types_source("device", ["device", "virtual_machine"]) == "override"
+    assert accepted_actual_types_source("device", []) == "override"
+
+
+def test_node_report_record_carries_role_and_accepted_actual_types_source():
+    node = linux_node("agweb")
+    node = NodeInput(**{**node.__dict__, "role": "web-tier", "accepted_actual_types": ("device", "virtual_machine")})
+    result = compose([node])
+
+    identity = node_record(result, "agweb")["desired"]["node"]
+    assert identity["role"] == "web-tier"
+    assert identity["accepted_actual_types"] == ["device", "virtual_machine"]
+    assert identity["accepted_actual_types_source"] == "override"
+
+
+def test_placement_desired_entry_carries_service_identity_and_assignment_source():
+    node = linux_node(
+        "agweb",
+        placements=[
+            PlacementInput(
+                "p1", "primary", "web", "1", config={"enabled": True},
+                service_id="svc-1", service_slug="web", instance_role="primary", assignment_source="yaml",
+                endpoint_id="endpoint-agweb",
+            )
+        ],
+    )
+    result = compose([node])
+
+    placement = node_record(result, "agweb")["desired"]["placements"][0]
+    assert placement["service_id"] == "svc-1"
+    assert placement["service_slug"] == "web"
+    assert placement["instance_role"] == "primary"
+    assert placement["assignment_source"] == "yaml"
+    assert placement["endpoint_id"] == "endpoint-agweb"
+
+
 def test_linux_node_joins_actual_facts_and_service_group():
     node = linux_node("agweb", placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})])
     result = compose([node])
@@ -161,7 +234,7 @@ def test_linux_node_joins_actual_facts_and_service_group():
     assert result.report["summary"]["active_placements"] == 1
     assert result.report["summary"]["included"] == 1
     assert "nintent_operational_config_id" not in host
-    operational_values = result.report["hosts"][0]["operational_values"]
+    operational_values = node_record(result, "agweb")["actual"]["operational_values"]
     assert operational_values["host_os"] == {
         "value": "linux",
         "source": "derived",
@@ -183,7 +256,7 @@ def test_selector_groups_use_observed_system_directly():
     assert ssh_host(result, "agmac")["host_os"] == "macos"
     assert "agmac" in group_hosts(result, "macos")
     assert group_hosts(result, "linux") == set()
-    assert result.report["drift"] == []
+    assert not_applied_out_of_scope_entries(result) == []
 
 
 def test_wol_power_marks_power_managed():
@@ -274,27 +347,27 @@ def test_missing_realized_device_is_skipped():
     result = compose([linux_node("agnodev", realized_type=None)])
 
     assert result.inventory["all"]["children"]["ssh_hosts"]["hosts"] == {}
-    assert result.report["skipped"][0]["reasons"] == ["no_realized_device"]
+    assert skip_reasons(result, "agnodev") == ["no_realized_device"]
 
 
 def test_virtual_machine_is_unsupported():
     result = compose([linux_node("agvm", realized_type="virtual_machine")])
 
-    assert result.report["skipped"][0]["reasons"] == ["unsupported_actual_type"]
+    assert skip_reasons(result, "agvm") == ["unsupported_actual_type"]
 
 
 def test_stale_actual_data_is_skipped():
     node = linux_node("agstale", facts=linux_facts(collected_at="2026-06-20T00:00:00+00:00"))
     result = compose([node])
 
-    assert result.report["skipped"][0]["reasons"] == ["stale_actual_data"]
+    assert skip_reasons(result, "agstale") == ["stale_actual_data"]
 
 
 def test_wol_without_mac_is_skipped():
     node = linux_node("agnomac", power="wol", facts=linux_facts(mac=None))
     result = compose([node])
 
-    assert result.report["skipped"][0]["reasons"] == ["missing_mac_address"]
+    assert skip_reasons(result, "agnomac") == ["missing_mac_address"]
 
 
 def test_skipped_host_placement_does_not_create_dangling_group():
@@ -317,17 +390,17 @@ def test_missing_connection_endpoint_skips_only_that_node():
     )
     result = compose([node])
 
-    assert result.report["skipped"][0]["reasons"] == ["missing_connection_endpoint"]
-    assert result.report["errors"][0]["code"] == "missing_connection_endpoint"
-    assert result.report["errors"][0]["stage"] == "operational_derivation"
+    assert skip_reasons(result, "agx") == ["missing_connection_endpoint"]
+    assert local_findings(result, "agx")[0]["code"] == "missing_connection_endpoint"
+    assert local_findings(result, "agx")[0]["stage"] == "operational_derivation"
     assert "agx" not in result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
 
 
 def test_invalid_platform_power_skips_only_that_node():
     result = compose([linux_node("agbad", power="macos_sleep")])
 
-    assert result.report["skipped"][0]["reasons"] == ["invalid_platform_power"]
-    error = result.report["errors"][0]
+    assert skip_reasons(result, "agbad") == ["invalid_platform_power"]
+    error = local_findings(result, "agbad")[0]
     assert error["code"] == "invalid_platform_power"
     assert error["stage"] == "operational_derivation"
     assert error["evidence"]["field"] == "power_control"
@@ -343,8 +416,8 @@ def test_conflicting_placement_variables_skip_only_that_node():
     )
     result = compose([node])
 
-    assert result.report["skipped"][0]["reasons"] == ["conflicting_host_variable"]
-    error = result.report["errors"][0]
+    assert skip_reasons(result, "agconf") == ["conflicting_host_variable"]
+    error = local_findings(result, "agconf")[0]
     assert error["code"] == "conflicting_host_variable"
     assert error["stage"] == "host_merge"
 
@@ -353,8 +426,8 @@ def test_unknown_profile_skips_only_that_node():
     node = linux_node("agunk", placements=[PlacementInput("p1", "primary", "missing", "1", config={})])
     result = compose([node])
 
-    assert result.report["skipped"][0]["reasons"] == ["unknown_profile"]
-    error = result.report["errors"][0]
+    assert skip_reasons(result, "agunk") == ["unknown_profile"]
+    error = local_findings(result, "agunk")[0]
     assert error["code"] == "unknown_profile"
     assert error["stage"] == "placement_config"
     assert error["evidence"]["placement"]["deployment_profile"] == "missing"
@@ -449,8 +522,8 @@ def test_endpoint_failure_neighbor_does_not_change_healthy_output(failure: str) 
     mixed = compose([healthy, bad])
 
     assert ssh_host(mixed, "aggood") == ssh_host(alone, "aggood")
-    assert mixed.report["errors"][0]["code"] == failure
-    assert mixed.report["errors"][0]["evidence"]["field"] == "connection_endpoint"
+    assert local_findings(mixed, "agbad")[0]["code"] == failure
+    assert local_findings(mixed, "agbad")[0]["evidence"]["field"] == "connection_endpoint"
 
 
 def test_renderers_are_schema_versioned_and_parseable():
@@ -463,7 +536,7 @@ def test_renderers_are_schema_versioned_and_parseable():
 
     rendered_json = render_production_report_json(result)
     assert rendered_json.endswith("\n")
-    assert json.loads(rendered_json)["schema_version"] == "2.0"
+    assert json.loads(rendered_json)["schema_version"] == "3.0"
 
 
 # --- Step 1.6: full Group C isolation matrix -------------------------------
@@ -547,11 +620,11 @@ def _bad_invalid_connection_address():
 
 
 def _bad_unknown_profile():
-    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "missing", "1", config={})])
+    return linux_node("agbad", placements=[PlacementInput("p-bad", "primary", "missing", "1", config={})])
 
 
 def _bad_unsupported_config_schema():
-    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "web", "99", config={})])
+    return linux_node("agbad", placements=[PlacementInput("p-bad", "primary", "web", "99", config={})])
 
 
 def test_invalid_placement_config_is_localized_when_raised(monkeypatch):
@@ -570,29 +643,29 @@ def test_invalid_placement_config_is_localized_when_raised(monkeypatch):
     )
 
     assert "aggood" in result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
-    assert result.report["skipped"][0]["reasons"] == ["invalid_placement_config"]
-    assert result.report["errors"][0]["code"] == "invalid_placement_config"
-    assert result.report["errors"][0]["stage"] == "placement_config"
+    assert skip_reasons(result, "agbad") == ["invalid_placement_config"]
+    assert local_findings(result, "agbad")[0]["code"] == "invalid_placement_config"
+    assert local_findings(result, "agbad")[0]["stage"] == "placement_config"
 
 
 def _bad_unknown_config_key():
-    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "web", "1", config={"nope": True})])
+    return linux_node("agbad", placements=[PlacementInput("p-bad", "primary", "web", "1", config={"nope": True})])
 
 
 def _bad_missing_required_config():
-    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "strict", "1", config={})])
+    return linux_node("agbad", placements=[PlacementInput("p-bad", "primary", "strict", "1", config={})])
 
 
 def _bad_invalid_profile_value_type():
-    return linux_node("agbad", placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": "nope"})])
+    return linux_node("agbad", placements=[PlacementInput("p-bad", "primary", "web", "1", config={"enabled": "nope"})])
 
 
 def _bad_conflicting_host_variable():
     return linux_node(
         "agbad",
         placements=[
-            PlacementInput("p1", "primary", "web", "1", config={"enabled": True}),
-            PlacementInput("p2", "secondary", "web", "1", config={"enabled": False}),
+            PlacementInput("p-bad-1", "primary", "web", "1", config={"enabled": True}),
+            PlacementInput("p-bad-2", "secondary", "web", "1", config={"enabled": False}),
         ],
     )
 
@@ -639,19 +712,14 @@ def test_group_c_failure_skips_only_the_bad_node(code):
     for group_hosts_dict in result.inventory["all"]["children"].values():
         assert "agbad" not in group_hosts_dict["hosts"]
 
-    assert result.report["skipped"] == [
-        {
-            "item_type": "desired_node",
-            "desired_node": bad.name,
-            "desired_node_slug": "agbad",
-            "desired_node_id": bad.id,
-            "reasons": [code],
-        }
-    ]
-    assert len(result.report["errors"]) == 1
-    error = result.report["errors"][0]
+    record = node_record(result, "agbad")
+    assert record["desired"]["node"]["name"] == bad.name
+    assert record["desired"]["node"]["id"] == bad.id
+    assert record["actual"]["production"]["state"] == "skipped"
+    assert skip_reasons(result, "agbad") == [code]
+    assert len(local_findings(result, "agbad")) == 1
+    error = local_findings(result, "agbad")[0]
     assert error["code"] == code
-    assert error["desired_node_slug"] == "agbad"
     assert error["severity"] == "error"
     assert error["stage"]
     assert error["message"]
@@ -687,8 +755,8 @@ def test_invalid_connection_address_per_node_call_site_is_local_not_global():
         [_bad_invalid_connection_address()], PROFILES,
         generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
     )
-    assert result.report["errors"][0]["code"] == "invalid_connection_address"
-    assert result.report["errors"][0]["stage"] == "operational_derivation"
+    assert local_findings(result, "agbad")[0]["code"] == "invalid_connection_address"
+    assert local_findings(result, "agbad")[0]["stage"] == "operational_derivation"
 
 
 def test_group_a_shared_profile_error_still_aborts_globally():
@@ -731,17 +799,17 @@ def test_active_placement_on_ineligible_lifecycle_emits_finding(lifecycle):
     )
     result = compose([node])
 
-    entries = [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"]
+    record = node_record(result, "agplanned")
+    assert record["actual"]["production"]["state"] == "out_of_scope"
+    assert record["desired"]["node"]["lifecycle"] == lifecycle
+    entries = [e for e in placement_effects(result, "agplanned") if e["reason"] == "node_out_of_scope"]
     assert len(entries) == 1
     entry = entries[0]
-    assert entry["desired_node_slug"] == "agplanned"
-    assert entry["node_lifecycle"] == lifecycle
-    assert entry["eligible_lifecycles"] == ["active", "approved"]
-    assert entry["placement"]["id"] == "p1"
-    assert entry["placement"]["config"] == {"enabled": True}
+    assert entry["placement_id"] == "p1"
+    assert entry["effect"] == "not_applied"
+    assert record["desired"]["placements"][0]["config"] == {"enabled": True}
     # A planned/deprecated/retired node never enters inventory scope.
     assert "agplanned" not in result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
-    # Old counters are untouched -- the drift array is the new visibility surface.
     assert result.report["summary"]["eligible"] == 0
 
 
@@ -752,7 +820,8 @@ def test_disabled_placement_on_ineligible_node_produces_no_finding():
     )
     result = compose([node])
 
-    assert [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"] == []
+    assert not_applied_out_of_scope_entries(result) == []
+    assert placement_effects(result, "agplanned")[0]["effect"] == "inactive_by_intent"
 
 
 def test_empty_config_is_still_evidence_for_unapplied_placement():
@@ -762,9 +831,9 @@ def test_empty_config_is_still_evidence_for_unapplied_placement():
     )
     result = compose([node])
 
-    entries = [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"]
+    entries = [e for e in placement_effects(result, "agplanned") if e["reason"] == "node_out_of_scope"]
     assert len(entries) == 1
-    assert entries[0]["placement"]["config"] == {}
+    assert node_record(result, "agplanned")["desired"]["placements"][0]["config"] == {}
 
 
 def test_multiple_placements_on_one_ineligible_node_each_get_a_finding():
@@ -778,30 +847,42 @@ def test_multiple_placements_on_one_ineligible_node_each_get_a_finding():
     result = compose([node])
 
     entries = sorted(
-        (d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"),
-        key=lambda d: d["placement"]["instance_name"],
+        (e for e in placement_effects(result, "agplanned") if e["reason"] == "node_out_of_scope"),
+        key=lambda e: e["instance_name"],
     )
-    assert [e["placement"]["instance_name"] for e in entries] == ["db", "web"]
+    assert [e["instance_name"] for e in entries] == ["db", "web"]
 
 
 def test_production_eligible_control_node_gets_no_unapplied_finding():
     node = linux_node("agactive", placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})])
     result = compose([node])
 
-    assert [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"] == []
+    assert not_applied_out_of_scope_entries(result) == []
 
 
-def test_node_type_only_ineligibility_does_not_gain_the_lifecycle_code():
-    # A container's own node_type ineligibility is out of Phase 1's scope --
-    # the lifecycle-specific code must not fire merely because the node is
-    # excluded from production for an unrelated reason.
+def test_node_type_only_ineligibility_is_out_of_scope_in_the_report():
+    # A container is out of production scope for a node_type reason, not a
+    # lifecycle reason -- report 3.0 (Phase 4 Decision 2) still surfaces it
+    # uniformly as `out_of_scope` with a `node_out_of_scope` placement effect,
+    # covering every ineligibility reason rather than only the lifecycle gate
+    # `unapplied_placement_findings` (the older, narrower drift-only helper
+    # still used when profiles are unavailable) is scoped to.
     node = _planned_node(
         "agcontainer", lifecycle="active", node_type="container",
         placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})],
     )
     result = compose([node])
 
-    assert [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"] == []
+    record = node_record(result, "agcontainer")
+    assert record["actual"]["production"]["state"] == "out_of_scope"
+    assert placement_effects(result, "agcontainer") == [
+        {"placement_id": "p1", "instance_name": "primary", "effect": "not_applied", "reason": "node_out_of_scope"}
+    ]
+    # The older lifecycle-only helper still does not fire for this node.
+    assert not_applied_out_of_scope_entries(result)  # composer's own report *does* cover it
+    from nctl_core.production.composer import unapplied_placement_findings
+
+    assert unapplied_placement_findings([node]) == []
 
 
 def test_unapplied_placement_findings_helper_is_deterministically_ordered():

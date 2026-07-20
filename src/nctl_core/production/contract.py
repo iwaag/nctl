@@ -6,8 +6,12 @@ Ported unchanged: `PRODUCTION_INVENTORY_SCHEMA_VERSION`, `ContractError`,
 `map_placement_config`, `validate_endpoint_ownership`,
 `actual_state_problem`,
 `resolve_connection_variables`, `merge_host_variables`,
-`validate_production_inventory_document`, `validate_production_report`, and
-their private helpers.
+`validate_production_inventory_document`, and their private helpers.
+
+Phase 4 Decision 3 replaced the ported schema-2.0 `validate_production_report` with
+`validate_production_report_v3` (`PRODUCTION_REPORT_SCHEMA_VERSION = "3.0"`), independent of
+`PRODUCTION_INVENTORY_SCHEMA_VERSION`, which stays `"2.0"` and unchanged for the inventory
+document itself.
 
 **Not ported** (see `profiles.py`'s docstring): `parse_profile_job_input` and
 `_raise_invalid_constant` (the Job-input byte-contract transport, replaced by
@@ -29,6 +33,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 PRODUCTION_INVENTORY_SCHEMA_VERSION = "2.0"
+# Phase 4 Decision 3: the companion report's schema advances independently of the
+# Ansible inventory document/variables, which stay 2.0 and byte-stable for equal
+# inputs. `nctl.render.production.v1`'s envelope also does not change.
+PRODUCTION_REPORT_SCHEMA_VERSION = "3.0"
 PRODUCTION_PROFILE_CONTRACT_VERSION = "1"
 ACTUAL_MAX_AGE_HOURS = 72
 
@@ -59,35 +67,25 @@ _BASE_HOST_VARIABLES = {
     "nautobot_device_id",
     "nintent_active_placement_ids",
 }
-_REPORT_KEYS = {
+_REPORT_V3_KEYS = {
     "schema_version",
     "generation_id",
     "generated_at",
     "report_path",
     "deployment_profile_digest",
     "summary",
-    "hosts",
-    "skipped",
-    "drift",
-    "errors",
+    "nodes",
 }
-_REPORT_SUMMARY_KEYS = {
+_REPORT_V3_SUMMARY_KEYS = {
     "eligible",
     "included",
     "skipped",
+    "out_of_scope",
     "placements",
     "active_placements",
     "inactive_placements",
-}
-_REPORT_HOST_KEYS = {
-    "inventory_hostname",
-    "desired_node_id",
-    "host_os",
-    "connection_path",
-    "actual_state_policy",
-    "nautobot_device_id",
-    "active_placement_ids",
-    "operational_values",
+    "applied_placements",
+    "not_applied_placements",
 }
 _OPERATIONAL_VALUE_KEYS = {
     "actual_state_policy",
@@ -100,6 +98,41 @@ _OPERATIONAL_VALUE_KEYS = {
     "is_laptop",
 }
 _VALUE_RECORD_KEYS = {"value", "source", "source_reference", "override_won"}
+_PRODUCTION_STATES = {"included", "skipped", "out_of_scope", "unknown"}
+_PLACEMENT_EFFECTS = {"applied", "inactive_by_intent", "not_applied"}
+_NODE_KEYS = {"id", "slug", "name", "lifecycle", "node_type", "role", "accepted_actual_types", "accepted_actual_types_source"}
+_DESIRED_ENDPOINT_KEYS = {"id", "name", "endpoint_type", "ip_address", "dns_name", "mdns_name"}
+_DESIRED_PLACEMENT_KEYS = {
+    "id",
+    "service_id",
+    "service_slug",
+    "instance_name",
+    "desired_state",
+    "instance_role",
+    "deployment_profile",
+    "config_schema_version",
+    "config",
+    "assignment_source",
+    "endpoint_id",
+}
+_OPERATIONAL_OVERRIDE_KEYS = {
+    "id",
+    "declared_host_os",
+    "connection_path",
+    "ansible_port",
+    "power_control",
+    "is_laptop",
+    "local_endpoint_id",
+    "tailscale_endpoint_id",
+}
+_OPERATIONAL_FINDING_KEYS = {"code", "field", "message", "evidence"}
+_PLACEMENT_EFFECT_KEYS = {"placement_id", "instance_name", "effect", "reason"}
+_PRODUCTION_STATE_SECTION_KEYS = {"state", "reasons", "placement_effects"}
+_NODE_RECORD_TOP_KEYS = {"desired", "actual"}
+_NODE_RECORD_DESIRED_KEYS = {"node", "endpoints", "placements", "operational_override"}
+_NODE_RECORD_ACTUAL_KEYS = {"operational_values", "operational_finding", "local_findings", "production"}
+_LOCAL_FINDING_KEYS = {"code", "severity", "message", "stage", "evidence"}
+_LOCAL_FINDING_SEVERITIES = {"error"}
 
 
 class ContractError(ValueError):
@@ -410,14 +443,25 @@ def validate_production_inventory_document(
     return value
 
 
-def validate_production_report(value: Any) -> dict[str, Any]:
-    """Validate the closed companion-report envelope for schema 2.0."""
+def validate_production_report_v3(value: Any) -> dict[str, Any]:
+    """Validate the closed companion-report envelope for schema 3.0 (Phase 4 Decision 3).
+
+    Replaces the schema 2.0 `hosts`/`skipped`/`drift`/`errors` parallel collections with one
+    closed `nodes` list -- every desired node appears exactly once, including nodes outside
+    production scope. Rejects schema `2.0` reports (checked against
+    `PRODUCTION_REPORT_SCHEMA_VERSION`, independent of the inventory document's own schema
+    constant), partial node records, duplicate node/placement IDs, and a placement effect that
+    contradicts its node's `production.state`.
+    """
 
     if not isinstance(value, dict):
         raise ContractError("invalid_report_schema", "report must be an object")
-    _require_exact_keys(value, _REPORT_KEYS, "report")
-    _validate_generation_metadata(
-        schema_version=value["schema_version"],
+    _require_exact_keys(value, _REPORT_V3_KEYS, "report")
+    if value["schema_version"] != PRODUCTION_REPORT_SCHEMA_VERSION:
+        raise ContractError(
+            "unsupported_report_schema", f"expected schema {PRODUCTION_REPORT_SCHEMA_VERSION}"
+        )
+    _validate_generation_id_and_timing(
         generation_id=value["generation_id"],
         generated_at=value["generated_at"],
         report_path=value["report_path"],
@@ -426,24 +470,153 @@ def validate_production_report(value: Any) -> dict[str, Any]:
     summary = value["summary"]
     if not isinstance(summary, dict):
         raise ContractError("invalid_report_schema", "summary must be an object")
-    _require_exact_keys(summary, _REPORT_SUMMARY_KEYS, "report.summary")
+    _require_exact_keys(summary, _REPORT_V3_SUMMARY_KEYS, "report.summary")
     if any(not isinstance(summary[key], int) or isinstance(summary[key], bool) or summary[key] < 0 for key in summary):
         raise ContractError("invalid_report_schema", "summary values must be non-negative integers")
-    for key in ("hosts", "skipped", "drift", "errors"):
-        if not isinstance(value[key], list):
-            raise ContractError("invalid_report_schema", f"{key} must be an array")
-    for index, host in enumerate(value["hosts"]):
-        path = f"report.hosts[{index}]"
-        if not isinstance(host, dict):
-            raise ContractError("invalid_report_schema", "host must be an object", path=path)
-        _require_exact_keys(host, _REPORT_HOST_KEYS, path)
-        operational_values = host["operational_values"]
-        if not isinstance(operational_values, dict):
-            raise ContractError("invalid_report_schema", "operational_values must be an object", path=path)
-        _require_exact_keys(operational_values, _OPERATIONAL_VALUE_KEYS, f"{path}.operational_values")
-        for field_name, record in operational_values.items():
-            _validate_value_record(record, f"{path}.operational_values.{field_name}")
+
+    nodes = value["nodes"]
+    if not isinstance(nodes, list):
+        raise ContractError("invalid_report_schema", "nodes must be an array")
+
+    seen_node_ids: set[str] = set()
+    seen_placement_ids: set[str] = set()
+    for index, node in enumerate(nodes):
+        path = f"report.nodes[{index}]"
+        _validate_node_record(node, path)
+        node_id = node["desired"]["node"]["id"]
+        if node_id in seen_node_ids:
+            raise ContractError("duplicate_node_id", f"node id {node_id!r} appears more than once", path=path)
+        seen_node_ids.add(node_id)
+        for placement in node["desired"]["placements"]:
+            if placement["id"] in seen_placement_ids:
+                raise ContractError(
+                    "duplicate_placement_id", f"placement id {placement['id']!r} appears more than once", path=path
+                )
+            seen_placement_ids.add(placement["id"])
     return value
+
+
+def _validate_node_record(node: Any, path: str) -> None:
+    if not isinstance(node, dict):
+        raise ContractError("invalid_report_schema", "node record must be an object", path=path)
+    _require_exact_keys(node, _NODE_RECORD_TOP_KEYS, path)
+
+    desired = node["desired"]
+    if not isinstance(desired, dict):
+        raise ContractError("invalid_report_schema", "desired must be an object", path=f"{path}.desired")
+    _require_exact_keys(desired, _NODE_RECORD_DESIRED_KEYS, f"{path}.desired")
+
+    node_identity = desired["node"]
+    if not isinstance(node_identity, dict):
+        raise ContractError("invalid_report_schema", "node identity must be an object", path=f"{path}.desired.node")
+    _require_exact_keys(node_identity, _NODE_KEYS, f"{path}.desired.node")
+    if node_identity["accepted_actual_types_source"] not in {"derived", "override"}:
+        raise ContractError(
+            "invalid_report_schema",
+            "accepted_actual_types_source must be derived or override",
+            path=f"{path}.desired.node.accepted_actual_types_source",
+        )
+
+    for index, endpoint in enumerate(desired["endpoints"]):
+        endpoint_path = f"{path}.desired.endpoints[{index}]"
+        if not isinstance(endpoint, dict):
+            raise ContractError("invalid_report_schema", "endpoint must be an object", path=endpoint_path)
+        _require_exact_keys(endpoint, _DESIRED_ENDPOINT_KEYS, endpoint_path)
+
+    placement_ids_on_node: set[str] = set()
+    for index, placement in enumerate(desired["placements"]):
+        placement_path = f"{path}.desired.placements[{index}]"
+        if not isinstance(placement, dict):
+            raise ContractError("invalid_report_schema", "placement must be an object", path=placement_path)
+        _require_exact_keys(placement, _DESIRED_PLACEMENT_KEYS, placement_path)
+        placement_ids_on_node.add(placement["id"])
+
+    override = desired["operational_override"]
+    if override is not None:
+        if not isinstance(override, dict):
+            raise ContractError(
+                "invalid_report_schema", "operational_override must be an object or null", path=f"{path}.desired.operational_override"
+            )
+        _require_exact_keys(override, _OPERATIONAL_OVERRIDE_KEYS, f"{path}.desired.operational_override")
+
+    actual = node["actual"]
+    if not isinstance(actual, dict):
+        raise ContractError("invalid_report_schema", "actual must be an object", path=f"{path}.actual")
+    _require_exact_keys(actual, _NODE_RECORD_ACTUAL_KEYS, f"{path}.actual")
+
+    operational_values = actual["operational_values"]
+    if not isinstance(operational_values, dict):
+        raise ContractError("invalid_report_schema", "operational_values must be an object", path=f"{path}.actual.operational_values")
+    if operational_values:
+        _require_exact_keys(operational_values, _OPERATIONAL_VALUE_KEYS, f"{path}.actual.operational_values")
+        for field_name, record in operational_values.items():
+            _validate_value_record(record, f"{path}.actual.operational_values.{field_name}")
+
+    finding = actual["operational_finding"]
+    if finding is not None:
+        if not isinstance(finding, dict):
+            raise ContractError(
+                "invalid_report_schema", "operational_finding must be an object or null", path=f"{path}.actual.operational_finding"
+            )
+        _require_exact_keys(finding, _OPERATIONAL_FINDING_KEYS, f"{path}.actual.operational_finding")
+
+    local_findings = actual["local_findings"]
+    if not isinstance(local_findings, list):
+        raise ContractError("invalid_report_schema", "local_findings must be an array", path=f"{path}.actual.local_findings")
+    for index, local_finding in enumerate(local_findings):
+        finding_path = f"{path}.actual.local_findings[{index}]"
+        if not isinstance(local_finding, dict):
+            raise ContractError("invalid_report_schema", "local finding must be an object", path=finding_path)
+        _require_exact_keys(local_finding, _LOCAL_FINDING_KEYS, finding_path)
+        if local_finding["severity"] not in _LOCAL_FINDING_SEVERITIES:
+            raise ContractError("invalid_report_schema", "invalid local finding severity", path=f"{finding_path}.severity")
+
+    production = actual["production"]
+    if not isinstance(production, dict):
+        raise ContractError("invalid_report_schema", "production must be an object", path=f"{path}.actual.production")
+    _require_exact_keys(production, _PRODUCTION_STATE_SECTION_KEYS, f"{path}.actual.production")
+    if production["state"] not in _PRODUCTION_STATES:
+        raise ContractError("invalid_report_schema", "invalid production state", path=f"{path}.actual.production.state")
+    if not isinstance(production["reasons"], list):
+        raise ContractError("invalid_report_schema", "production.reasons must be an array", path=f"{path}.actual.production.reasons")
+
+    placement_effects = production["placement_effects"]
+    if not isinstance(placement_effects, list):
+        raise ContractError(
+            "invalid_report_schema", "production.placement_effects must be an array", path=f"{path}.actual.production.placement_effects"
+        )
+    effect_ids: set[str] = set()
+    for index, effect in enumerate(placement_effects):
+        effect_path = f"{path}.actual.production.placement_effects[{index}]"
+        if not isinstance(effect, dict):
+            raise ContractError("invalid_report_schema", "placement effect must be an object", path=effect_path)
+        _require_exact_keys(effect, _PLACEMENT_EFFECT_KEYS, effect_path)
+        if effect["effect"] not in _PLACEMENT_EFFECTS:
+            raise ContractError("invalid_report_schema", "invalid placement effect", path=f"{effect_path}.effect")
+        if effect["placement_id"] not in placement_ids_on_node:
+            raise ContractError(
+                "placement_effect_unknown_placement",
+                f"placement_id {effect['placement_id']!r} is not one of this node's desired placements",
+                path=effect_path,
+            )
+        effect_ids.add(effect["placement_id"])
+        if production["state"] == "included" and effect["effect"] == "not_applied":
+            # An included node's own composition either applies an active placement or the
+            # node would not have been included at all -- "not_applied" on an included node is
+            # a contradiction between the two sections of this same record, not a legitimate
+            # composer outcome (Phase 4 Step 4.4 item 5).
+            raise ContractError(
+                "placement_effect_contradicts_node_state",
+                "an included node cannot report a not_applied placement effect",
+                path=effect_path,
+            )
+    missing_effects = placement_ids_on_node - effect_ids
+    if missing_effects:
+        raise ContractError(
+            "invalid_report_schema",
+            f"missing placement_effects for placement ids: {sorted(missing_effects)}",
+            path=f"{path}.actual.production.placement_effects",
+        )
 
 
 def _validate_value_record(record: Any, path: str) -> None:
@@ -562,6 +735,23 @@ def _validate_generation_metadata(
 ) -> None:
     if schema_version != PRODUCTION_INVENTORY_SCHEMA_VERSION:
         raise ContractError("unsupported_inventory_schema", f"expected schema {PRODUCTION_INVENTORY_SCHEMA_VERSION}")
+    _validate_generation_id_and_timing(
+        generation_id=generation_id, generated_at=generated_at, report_path=report_path, digest=digest
+    )
+
+
+def _validate_generation_id_and_timing(
+    *,
+    generation_id: Any,
+    generated_at: Any,
+    report_path: Any,
+    digest: Any,
+) -> None:
+    """The generation_id/generated_at/report_path/digest checks shared by the inventory
+    document (schema 2.0) and the companion report (schema 3.0) -- everything except the
+    schema-version check itself, which each caller compares against its own constant.
+    """
+
     try:
         parsed_uuid = uuid.UUID(str(generation_id))
     except (ValueError, AttributeError) as exc:

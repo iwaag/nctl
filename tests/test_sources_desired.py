@@ -117,7 +117,6 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "catalog_namespace": "default",
                             "catalog_metadata_name": "dnsmasq",
                             "requirements": {},
-                            "placement_policy": {},
                         }
                     ],
                     "desired_dependencies": [
