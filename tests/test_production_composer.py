@@ -694,3 +694,115 @@ def test_group_b_final_output_error_still_aborts_globally(monkeypatch):
     with pytest.raises(ContractError) as caught:
         compose([linux_node("agweb")])
     assert caught.value.code == "invalid_inventory_schema"
+
+
+# --- Step 1.3: active_placement_not_applied (unapplied intent) -------------
+
+
+def _planned_node(slug, *, lifecycle="planned", placements=(), node_type="device"):
+    op = OperationalConfigInput(
+        id=f"op-{slug}", actual_state_policy="required", connection_path="local", expected_host_os="linux",
+    )
+    return NodeInput(
+        id=f"node-{slug}", slug=slug, name=slug, lifecycle=lifecycle, node_type=node_type,
+        operational_config=op, placements=tuple(placements), realized=None,
+    )
+
+
+@pytest.mark.parametrize("lifecycle", ["planned", "deprecated", "retired"])
+def test_active_placement_on_ineligible_lifecycle_emits_finding(lifecycle):
+    node = _planned_node(
+        "agplanned", lifecycle=lifecycle,
+        placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})],
+    )
+    result = compose([node])
+
+    entries = [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["desired_node_slug"] == "agplanned"
+    assert entry["node_lifecycle"] == lifecycle
+    assert entry["eligible_lifecycles"] == ["active", "approved"]
+    assert entry["placement"]["id"] == "p1"
+    assert entry["placement"]["config"] == {"enabled": True}
+    # A planned/deprecated/retired node never enters inventory scope.
+    assert "agplanned" not in result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
+    # Old counters are untouched -- the drift array is the new visibility surface.
+    assert result.report["summary"]["eligible"] == 0
+
+
+def test_disabled_placement_on_ineligible_node_produces_no_finding():
+    node = _planned_node(
+        "agplanned",
+        placements=[PlacementInput("p1", "primary", "web", "1", desired_state="disabled", config={"enabled": True})],
+    )
+    result = compose([node])
+
+    assert [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"] == []
+
+
+def test_empty_config_is_still_evidence_for_unapplied_placement():
+    node = _planned_node(
+        "agplanned",
+        placements=[PlacementInput("p1", "primary", "home_assistant", "1", config={})],
+    )
+    result = compose([node])
+
+    entries = [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"]
+    assert len(entries) == 1
+    assert entries[0]["placement"]["config"] == {}
+
+
+def test_multiple_placements_on_one_ineligible_node_each_get_a_finding():
+    node = _planned_node(
+        "agplanned",
+        placements=[
+            PlacementInput("p1", "web", "web", "1", config={"enabled": True}),
+            PlacementInput("p2", "db", "db", "1", config={"port": 5432}),
+        ],
+    )
+    result = compose([node])
+
+    entries = sorted(
+        (d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"),
+        key=lambda d: d["placement"]["instance_name"],
+    )
+    assert [e["placement"]["instance_name"] for e in entries] == ["db", "web"]
+
+
+def test_production_eligible_control_node_gets_no_unapplied_finding():
+    node = linux_node("agactive", placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})])
+    result = compose([node])
+
+    assert [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"] == []
+
+
+def test_node_type_only_ineligibility_does_not_gain_the_lifecycle_code():
+    # A container's own node_type ineligibility is out of Phase 1's scope --
+    # the lifecycle-specific code must not fire merely because the node is
+    # excluded from production for an unrelated reason.
+    node = _planned_node(
+        "agcontainer", lifecycle="active", node_type="container",
+        placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})],
+    )
+    result = compose([node])
+
+    assert [d for d in result.report["drift"] if d["code"] == "active_placement_not_applied"] == []
+
+
+def test_unapplied_placement_findings_helper_is_deterministically_ordered():
+    from nctl_core.production.composer import unapplied_placement_findings
+
+    node_b = _planned_node("agb", placements=[PlacementInput("p2", "z-instance", "web", "1", config={})])
+    node_a = _planned_node("aga", placements=[PlacementInput("p1", "a-instance", "web", "1", config={})])
+    entries = unapplied_placement_findings([node_b, node_a])
+    assert [e["desired_node_slug"] for e in entries] == ["aga", "agb"]
+
+
+def test_unapplied_placement_findings_does_not_touch_profiles():
+    from nctl_core.production.composer import unapplied_placement_findings
+
+    node = _planned_node("agplanned", placements=[PlacementInput("p1", "primary", "totally-unknown-profile", "1", config={})])
+    # No ContractError -- the helper never validates against a profile map at all.
+    entries = unapplied_placement_findings([node])
+    assert entries[0]["placement"]["deployment_profile"] == "totally-unknown-profile"

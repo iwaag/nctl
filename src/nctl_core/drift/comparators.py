@@ -50,7 +50,12 @@ from datetime import datetime
 from typing import Iterator
 
 from nctl_core.production.adapter import build_production_node_inputs
-from nctl_core.production.composer import ContractError, compose_production_inventory
+from nctl_core.production.composer import (
+    ACTIVE_PLACEMENT_NOT_APPLIED,
+    ContractError,
+    compose_production_inventory,
+    unapplied_placement_findings,
+)
 from nctl_core.sources.actual import ActualDevice
 from nctl_core.sources.snapshot import SourceSnapshot
 
@@ -178,10 +183,18 @@ def _ingest_lag_diff(target: Target, hostname: str, observed_at: datetime, devic
 
 @register("node")
 def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    node_inputs = build_production_node_inputs(snapshot)
+
     if not context.profiles:
+        # The composer itself cannot run without a profile map, but the
+        # lifecycle gate behind active_placement_not_applied does not depend
+        # on profiles at all (Decision 4) -- recorded intent must not
+        # disappear merely because this second, profile-dependent
+        # diagnostic source is unavailable.
+        for entry in unapplied_placement_findings(node_inputs):
+            yield _active_placement_not_applied_diff(entry)
         return
 
-    node_inputs = build_production_node_inputs(snapshot)
     try:
         composition = compose_production_inventory(
             node_inputs,
@@ -200,9 +213,31 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
         )
         return
 
+    # Structured local errors (Phase 1 Group C) take priority: each becomes
+    # its own precise node-targeted diff, and the generic skip-reason
+    # conversion below is suppressed for the exact (node, code) pairs they
+    # already cover so the same failure never surfaces twice.
+    structured_error_keys: set[tuple[str, str]] = set()
+    for error in composition.report["errors"]:
+        target = Target(
+            kind="node", slug=error["desired_node_slug"], name=error["desired_node"], id=error["desired_node_id"]
+        )
+        yield DiffRecord(
+            target=target,
+            code=error["code"],
+            severity=Severity.ERROR,
+            message=error["message"],
+            desired=dict(error.get("evidence", {})),
+            actual={"stage": error["stage"]},
+            sources=["desired", "actual"],
+        )
+        structured_error_keys.add((error["desired_node_slug"], error["code"]))
+
     for skip in composition.report["skipped"]:
         target = Target(kind="node", slug=skip["desired_node_slug"], name=skip["desired_node"], id=skip["desired_node_id"])
         for reason in skip["reasons"]:
+            if (skip["desired_node_slug"], reason) in structured_error_keys:
+                continue
             yield DiffRecord(
                 target=target,
                 code=reason,
@@ -212,19 +247,55 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
             )
 
     for drift_entry in composition.report["drift"]:
+        yield _drift_entry_diff(drift_entry)
+
+
+def _drift_entry_diff(drift_entry: dict) -> DiffRecord:
+    """Dispatch one composer `report["drift"]` entry to its DiffRecord shape
+    by code. An unrecognized code is a composer/comparator vocabulary defect,
+    not a renderable diff -- it must fail loudly here rather than being
+    rendered with an unrelated code's message template.
+    """
+
+    code = drift_entry["code"]
+    if code == "desired_actual_os_mismatch":
         target = Target(kind="node", slug=drift_entry["desired_node_slug"])
-        yield DiffRecord(
+        return DiffRecord(
             target=target,
-            code=drift_entry["code"],
+            code=code,
             severity=Severity.WARNING,
             message=(
-                f"{drift_entry['desired_node_slug']}: {drift_entry['code']} "
+                f"{drift_entry['desired_node_slug']}: {code} "
                 f"(expected {drift_entry.get('expected_host_os')}, observed {drift_entry.get('observed_host_os')})"
             ),
             desired={"expected_host_os": drift_entry.get("expected_host_os")},
             actual={"observed_host_os": drift_entry.get("observed_host_os")},
             sources=["desired", "actual"],
         )
+    if code == ACTIVE_PLACEMENT_NOT_APPLIED:
+        return _active_placement_not_applied_diff(drift_entry)
+    raise AssertionError(f"production_policy: unhandled composer drift code {code!r}")
+
+
+def _active_placement_not_applied_diff(entry: dict) -> DiffRecord:
+    target = Target(kind="node", slug=entry["desired_node_slug"], name=entry["desired_node"], id=entry["desired_node_id"])
+    placement = entry["placement"]
+    return DiffRecord(
+        target=target,
+        code=ACTIVE_PLACEMENT_NOT_APPLIED,
+        severity=Severity.WARNING,
+        message=(
+            f"{entry['desired_node_slug']}: placement {placement['instance_name']!r} is recorded as active but "
+            f"not applied because node lifecycle {entry['node_lifecycle']!r} is outside production scope"
+        ),
+        desired={"placement": placement},
+        actual={
+            "node_lifecycle": entry["node_lifecycle"],
+            "eligible_lifecycles": entry["eligible_lifecycles"],
+            "application_status": "not_applied",
+        },
+        sources=["desired", "actual"],
+    )
 
 
 @register("node")

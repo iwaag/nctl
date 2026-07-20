@@ -384,3 +384,78 @@ def test_service_intent_matching_emits_placement_evidence_and_distinct_code():
     assert stopped.desired["expected"]["deployment_profile"] == "nomad_server"
     assert stopped.actual["actual"]["observed_state"] == "failed"
     assert stopped.actual["actual"]["observed_source"] == "systemd"
+
+
+def test_production_policy_local_error_yields_structured_error_not_generic_skip():
+    # unknown_profile is a structured Group C error (Phase 1): production_policy
+    # must emit the precise error-derived diff and must not also emit a second,
+    # generic "production composition skipped this node" diff for the same
+    # (node, code) pair.
+    node = DesiredNode(id="n1", slug="agbad", name="agbad", lifecycle="active", node_type="device", realized_device_id="dev-1")
+    op_config = DesiredNodeOperationalConfig(
+        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
+    )
+    device = ActualDevice(id="dev-1", name="agbad.local", facts={"host_system": "Linux", "last_seen": "2026-07-15T11:00:00+00:00"})
+    placement = DesiredServicePlacement(
+        id="p1", service_id="s1", node_id="n1", instance_name="primary",
+        deployment_profile="missing-profile", config_schema_version="1", config={"x": 1},
+    )
+    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], devices=[device], placements=[placement])
+    context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=PROFILES)
+
+    diffs = [d for d in comparators.production_policy(snapshot, context) if d.target.slug == "agbad"]
+
+    assert [d.code for d in diffs] == ["unknown_profile"]
+    assert diffs[0].severity.value == "error"
+    assert diffs[0].target.kind == "node"
+    assert diffs[0].desired["placement"]["id"] == "p1"
+    assert diffs[0].desired["placement"]["config"] == {"x": 1}
+    assert diffs[0].actual == {"stage": "placement_config"}
+
+
+def test_production_policy_active_placement_not_applied_is_warning_and_converged_safe():
+    node = DesiredNode(id="n1", slug="agplanned", name="agplanned", lifecycle="planned", node_type="device")
+    op_config = DesiredNodeOperationalConfig(
+        id="op1", node_id="n1", actual_state_policy="required", connection_path="local", expected_host_os="linux"
+    )
+    placement = DesiredServicePlacement(
+        id="p1", service_id="s1", node_id="n1", instance_name="primary",
+        deployment_profile="web", config_schema_version="1", config={},
+    )
+    snapshot = make_snapshot(nodes=[node], operational_configs=[op_config], placements=[placement])
+    context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles=PROFILES)
+
+    diffs = list(comparators.production_policy(snapshot, context))
+
+    assert [d.code for d in diffs] == ["active_placement_not_applied"]
+    assert diffs[0].severity.value == "warning"
+    assert diffs[0].target.kind == "node"
+    assert diffs[0].target.slug == "agplanned"
+    assert diffs[0].desired["placement"]["config"] == {}
+    assert diffs[0].actual["node_lifecycle"] == "planned"
+    assert diffs[0].actual["application_status"] == "not_applied"
+
+
+def test_production_policy_active_placement_not_applied_survives_empty_profiles():
+    # Decision 4: the lifecycle gate must not depend on loading deployment
+    # profiles -- an empty/unreadable profile map degrades the rest of
+    # production_policy but must not hide recorded, unapplied intent.
+    node = DesiredNode(id="n1", slug="agplanned", name="agplanned", lifecycle="deprecated", node_type="device")
+    placement = DesiredServicePlacement(
+        id="p1", service_id="s1", node_id="n1", instance_name="primary",
+        deployment_profile="web", config_schema_version="1", config={"enabled": True},
+    )
+    snapshot = make_snapshot(nodes=[node], placements=[placement])
+    context = DriftContext(generated_at="2026-07-15T12:00:00+00:00", profiles={})
+
+    diffs = list(comparators.production_policy(snapshot, context))
+
+    assert [d.code for d in diffs] == ["active_placement_not_applied"]
+    assert diffs[0].severity.value == "warning"
+
+
+def test_drift_entry_dispatch_rejects_unknown_composer_drift_code():
+    import pytest
+
+    with pytest.raises(AssertionError):
+        comparators._drift_entry_diff({"code": "some_future_composer_drift_code", "desired_node_slug": "agx"})

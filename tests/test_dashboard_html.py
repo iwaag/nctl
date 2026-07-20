@@ -124,3 +124,56 @@ def test_all_status_styles_exist():
     for status in ("converged", "converging", "drifting", "unknown"):
         assert f".tile.status-{status}" in html
         assert f".chip.status-{status}" in html
+
+
+def test_active_placement_not_applied_renders_with_warning_severity_and_evidence():
+    diff = DiffRecord(
+        target=Target(kind="node", slug="agplanned", name="agplanned", id="n4"),
+        code="active_placement_not_applied",
+        severity=Severity.WARNING,
+        message="agplanned: placement 'primary' is recorded as active but not applied because node lifecycle 'planned' is outside production scope",
+        desired={
+            "placement": {
+                "id": "p1",
+                "instance_name": "primary",
+                "deployment_profile": "web",
+                "config_schema_version": "1",
+                "desired_state": "active",
+                "config": {"enabled": True},
+            }
+        },
+        actual={"node_lifecycle": "planned", "eligible_lifecycles": ["active", "approved"], "application_status": "not_applied"},
+        sources=["desired", "actual"],
+    )
+    envelope = Envelope.build(
+        "nctl.drift.v1",
+        DriftData(
+            generated_at="2026-07-16T12:00:00+00:00",
+            summary={"converged": 1, "drifting": 0, "converging": 0, "unknown": 0},
+            severity_summary={"error": 0, "warning": 1, "info": 0},
+            targets=[
+                TargetStatus(
+                    target=Target(kind="node", slug="agplanned", name="agplanned", id="n4"),
+                    status=Status.CONVERGED,
+                    diffs=[diff],
+                ),
+            ],
+            sources=DriftSourcesData(fetched_at="2026-07-16T12:00:00+00:00", observed_dump_count=0, observed_errors=[]),
+        ),
+        [],
+    )
+
+    html = render_dashboard_html(envelope)
+    embedded = json.loads(_extract_embedded(html))
+    rendered_diff = embedded["data"]["targets"][0]["diffs"][0]
+    target_status = embedded["data"]["targets"][0]["status"]
+
+    # A warning-only target stays converged (Decision 4): the dashboard tile
+    # is still green, but the finding (message, evidence, warning severity)
+    # is present in the payload the client-side JS renders as a badge/detail.
+    assert target_status == "converged"
+    assert rendered_diff["code"] == "active_placement_not_applied"
+    assert rendered_diff["severity"] == "warning"
+    assert "not applied" in rendered_diff["message"]
+    assert rendered_diff["desired"]["placement"]["config"] == {"enabled": True}
+    assert "<\\/" not in rendered_diff["message"]  # nothing hostile to begin with, sanity check only

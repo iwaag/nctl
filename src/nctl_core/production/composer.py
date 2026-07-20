@@ -205,6 +205,42 @@ def is_production_eligible(node: NodeInput) -> bool:
     )
 
 
+def unapplied_placement_findings(nodes: Iterable[NodeInput]) -> list[dict[str, Any]]:
+    """Return one `active_placement_not_applied` report-drift entry per active
+    placement recorded on a production-capable node whose lifecycle is not
+    (yet) production-eligible (Step 1.3, discussion.md Example 1).
+
+    A pure helper deliberately independent of deployment profiles: it never
+    maps or validates placement `config` against a profile, so it stays
+    correct even when profiles are unreadable/missing (the drift comparator's
+    degraded-profile path still needs this finding). `node_type`-only
+    ineligibility (a container, for instance) is out of this code's scope --
+    only the lifecycle gate identified by Phase 0 is covered.
+    """
+
+    entries: list[dict[str, Any]] = []
+    for node in sorted(nodes, key=lambda item: item.slug):
+        if node.node_type not in PRODUCTION_ELIGIBLE_NODE_TYPES:
+            continue
+        if node.lifecycle in PRODUCTION_ELIGIBLE_LIFECYCLES:
+            continue
+        for placement in sorted(node.placements, key=lambda item: (item.instance_name, item.id)):
+            if placement.desired_state != "active":
+                continue
+            entries.append(
+                {
+                    "code": ACTIVE_PLACEMENT_NOT_APPLIED,
+                    "desired_node_slug": node.slug,
+                    "desired_node": node.name,
+                    "desired_node_id": node.id,
+                    "node_lifecycle": node.lifecycle,
+                    "eligible_lifecycles": sorted(PRODUCTION_ELIGIBLE_LIFECYCLES),
+                    "placement": _placement_evidence(placement),
+                }
+            )
+    return entries
+
+
 def compose_production_inventory(
     nodes: Iterable[NodeInput],
     profiles: Mapping[str, Any],
@@ -223,8 +259,9 @@ def compose_production_inventory(
     validated_profiles = validate_deployment_profiles(dict(profiles))
     profile_group_by_name = {name: profile["group"] for name, profile in validated_profiles.items()}
 
+    all_nodes = list(nodes)
     eligible = sorted(
-        (node for node in nodes if is_production_eligible(node)),
+        (node for node in all_nodes if is_production_eligible(node)),
         key=lambda node: node.slug,
     )
 
@@ -304,6 +341,8 @@ def compose_production_inventory(
                 "active_placement_ids": list(node_active_ids),
             }
         )
+
+    drift.extend(unapplied_placement_findings(all_nodes))
 
     inventory = _build_inventory_document(
         ssh_hosts=ssh_hosts,

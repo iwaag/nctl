@@ -153,3 +153,19 @@ def test_successful_actuation_followed_by_newer_observation_is_not_converging(tm
     )
 
     assert status == Status.DRIFTING
+
+
+def test_phase1_local_composition_error_is_drifting_not_unknown():
+    # A Group C code (Phase 1) means "we have the data and it's invalid",
+    # not "we lack actual data" -- it must resolve to drifting, unlike the
+    # existing evidence-gap codes in UNKNOWN_CODES.
+    status = derive_status([_diff("unknown_profile")], target_slug="agweb", observed_at=None, events_dir=None)
+    assert status == Status.DRIFTING
+
+
+def test_active_placement_not_applied_warning_alone_is_converged():
+    status = derive_status(
+        [_diff("active_placement_not_applied", Severity.WARNING)],
+        target_slug="agplanned", observed_at=None, events_dir=None,
+    )
+    assert status == Status.CONVERGED
