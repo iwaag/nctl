@@ -15,30 +15,44 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
   `ansible_agdev/vars/deployment_profiles.yml`, with a `group` name and a
   `variables` map (this is how a placement's `config` becomes Ansible
   variables — see `production/composer.py::map_placement_config`).
-- The target `DesiredNode` (and, if you want mDNS bootstrap connectivity, a
-  `DesiredEndpoint` with `mdns_name` on it) already exists. A newly created
-  node is `active` by default (Better Usability Phase 3) — no lifecycle
-  promotion step and no operational-config row are required before it's
-  eligible for production composition; see `nctl lifecycle` in
-  `nctl/README.md` only if you deliberately want to stage it as `planned`
-  first.
+- The target `DesiredNode` already exists and is converged — see
+  [register-a-new-pc.md](register-a-new-pc.md) if it doesn't yet. A newly
+  created node is `active` by default (Better Usability Phase 3) — no
+  lifecycle promotion step and no operational-config row are required before
+  it's eligible for production composition.
 
-## Steps
+## Steps (Nautobot UI — no nautobot-server shell)
 
-1. Create a `DesiredService` — one row per service, not per instance:
+Both models have full CRUD UI under `/plugins/intent-catalog/` (and `nodes`/
+`services`/`endpoints` also have a REST API, per `nctl/README_DEV.md`;
+`placements` is UI-only today).
+
+1. **Create a `DesiredService`** at `/plugins/intent-catalog/services/add/` —
+   one row per service, not per instance:
    - `name` / `slug`: e.g. `dnsmasq`.
    - `display_name`: human label.
    - `service_type`: `service` (or the closest fit).
-   - `lifecycle`: `active` once you intend it to actually run.
+   - `lifecycle`: **set this to `active` explicitly** once you intend it to
+     actually run. Unlike `DesiredNode.lifecycle`, `DesiredService.lifecycle`
+     deliberately kept its `proposed` default in Better Usability Phase 3 —
+     nothing promotes a service to `active` for you, so this is genuine
+     intent you must state, not an oversight.
    - `intent_source`: required (non-null FK) — use a `manual` IntentSource
-     for hand-entered services; create one (`slug="manual"`,
+     for hand-entered services; create one at
+     `/plugins/intent-catalog/sources/add/` (`slug="manual"`,
      `source_type="manual"`) if none exists yet.
    - `catalog_namespace` / `catalog_metadata_name`: `default` / the service
      slug is enough for a manual entry (these plus `intent_source` are the
      row's uniqueness key).
+   - `requirements`: leave `{}` unless you have genuine operator-declared
+     requirements to record — this field is never populated by analysis
+     (Better Usability Phase 4 keeps `analysis_provenance` strictly separate
+     from operator intent, so a re-analysis run can never overwrite what you
+     put here).
 
-2. Create a `DesiredServicePlacement` binding that service to the target
-   node:
+2. **Create a `DesiredServicePlacement`** at
+   `/plugins/intent-catalog/placements/add/`, binding that service to the
+   target node:
    - `desired_service`: the row from step 1.
    - `desired_node`: the target `DesiredNode` (e.g. `agdnsmasq`).
    - `instance_name`: unique per service (e.g. `dnsmasq`) — `(desired_service,
@@ -47,8 +61,9 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
    - `desired_state`: `active` to actuate/observe it; `disabled` to declare
      intent without provisioning yet.
    - `deployment_profile`: must match a key in `deployment_profiles.yml`
-     (e.g. `dnsmasq`) — this is what derives group membership in every
-     generated inventory.
+     (e.g. `dnsmasq`) — this, together with `config`, is genuine placement
+     intent, not a derived value: which profile a placement uses and which
+     knobs it sets are choices only you can make.
    - `config_schema_version`: `"1"` unless the profile defines a newer one.
    - `config`: a JSON object of the operational knobs the profile's
      `variables` map accepts (for `dnsmasq`: `interfaces`, `enable_dhcp`,
@@ -56,73 +71,50 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
      `bind_interfaces`, `cache_size`, `dhcp_authoritative`). An empty `{}` is
      valid — the Ansible role's own defaults apply (DHCP off, listens on
      `127.0.0.1` only), which is the safe starting point; override only the
-     knobs your deployment actually needs.
+     knobs your deployment actually needs. A non-default `config` is genuine
+     placement intent too — it is never inferred.
 
-That's it — no code, no nintent push/rebuild. Both `nctl render hosts-intent`
-(bare group, for bootstrap-time playbooks before any production inventory
-exists) and `nctl render production` (full variables, resolved from
-`config`/ledger) pick the placement up on their next run.
+## Verify with drift before touching anything
 
-## Example: dnsmasq on agdnsmasq
-
-Declared on the dev instance (`nautobot-server shell`, since nintent's REST
-API only exposes `nodes`/`services`/`endpoints` viewsets — `IntentSource` and
-`DesiredServicePlacement` have no REST endpoint yet, only Django admin/UI
-forms):
-
-```python
-from nautobot_intent_catalog.models import (
-    IntentSource, DesiredService, DesiredServicePlacement, DesiredNode,
-)
-
-source, _ = IntentSource.objects.get_or_create(
-    slug="manual",
-    defaults={"name": "Manual", "source_type": IntentSource.SOURCE_MANUAL, "enabled": True},
-)
-
-service, _ = DesiredService.objects.get_or_create(
-    intent_source=source,
-    catalog_namespace="default",
-    catalog_metadata_name="dnsmasq",
-    defaults={
-        "name": "dnsmasq",
-        "slug": "dnsmasq",
-        "display_name": "dnsmasq",
-        "service_type": DesiredService.SERVICE_TYPE_SERVICE,
-        "lifecycle": DesiredService.LIFECYCLE_ACTIVE,
-    },
-)
-
-node = DesiredNode.objects.get(slug="agdnsmasq")
-
-placement, _ = DesiredServicePlacement.objects.get_or_create(
-    desired_service=service,
-    instance_name="dnsmasq",
-    defaults={
-        "desired_node": node,
-        "desired_state": DesiredServicePlacement.STATE_ACTIVE,
-        "deployment_profile": "dnsmasq",
-        "config_schema_version": "1",
-        "config": {},  # safe defaults; override interfaces/enable_dhcp/local_domain for a real network
-        "assignment_source": DesiredServicePlacement.SOURCE_MANUAL,
-    },
-)
+```bash
+uv run --project nctl nctl drift --host NODE
 ```
 
-Verify with `nctl render hosts-intent --json` (or `render production`): the
-`dnsmasq_server` group should appear with `agdnsmasq` as a bare member.
+Check the node's `intent_effect_summary` `application` line: your new
+placement should show `applied` if the node is already `included` in
+production, or a specific reason (e.g. `node_out_of_scope`,
+`node_skipped`) if it isn't yet. This is the same "recorded but not applied"
+visibility the plan requires — a placement that doesn't apply always says
+why, never silently.
 
-## Known gap (not blocking, out of scope here)
+## Dry-run, then apply
 
-`GET /api/plugins/intent-catalog/services/` currently 500s
-(`ImproperlyConfigured`) once any `DesiredService` has a non-null
-`intent_source`, because its `NautobotModelSerializer` auto-generates a
-hyperlinked field for `intent_source` pointing at
-`intentsource-detail`, a view that was never registered
-(`nautobot_intent_catalog/api/urls.py` only registers `nodes`, `services`,
-`endpoints`). This does not affect `nctl` — every fetch here goes through
-GraphQL (`sources/desired.py::DESIRED_QUERY`), which only serializes
-explicitly requested fields and has no such hyperlink resolution step. Worth
-a fix in `nintent` itself (register an `IntentSource` viewset, or drop
-`intent_source` from the REST serializer's `fields`), tracked separately from
-this plan.
+```bash
+uv run --project nctl nctl reconcile NODE
+uv run --project nctl nctl reconcile NODE --yes
+```
+
+The first call is a bounded plan with zero writes; review it, then re-run
+with `--yes` to actuate (regenerates the production inventory, runs the
+matching Ansible play, and re-verifies).
+
+## Confirm the placement effect
+
+```bash
+uv run --project nctl nctl drift --host NODE
+```
+
+The remaining `intent_effect_summary` should show `effect: applied` for this
+placement once converged.
+
+## The dnsmasq self-bootstrap exception
+
+A brand-new dnsmasq node has no production inventory entry yet (nodeutils
+hasn't observed it, so it can't enter production composition). This is the
+**one** documented exception to "service actuation normally uses the
+production inventory nctl regenerates": `nctl apply dnsmasq --inventory
+PATH` can target the bootstrap `hosts_intent.yml` inventory for exactly this
+one-time window. See
+[`nctl/README.md`](../README.md#usage)'s "bootstrap escape hatch" section for
+the full sequence — it is not part of the ordinary service path above and
+`nctl reconcile` never does this automatically.

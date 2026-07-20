@@ -16,6 +16,11 @@ cp example.nctl.toml ../nctl.toml   # at the pj-clusterintent root, git-ignored
 export NAUTOBOT_TOKEN=...           # or set nautobot.token_file
 ```
 
+## Recipes
+
+- [`register a new PC`](docs/register-a-new-pc.md) — new machine to converged, intent-only.
+- [`add a basic service`](docs/add-a-basic-service.md) — place a service on an existing node.
+
 ## Usage
 
 ```bash
