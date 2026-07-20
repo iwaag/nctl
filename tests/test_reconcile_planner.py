@@ -83,6 +83,18 @@ def _global_diff(code: str) -> DiffRecord:
     return DiffRecord(target=Target(kind="global"), code=code, severity=Severity.ERROR, message=code)
 
 
+def _service_observation_diff(
+    service: DesiredService, node: DesiredNode, code: str = "service_observation_missing"
+) -> DiffRecord:
+    return DiffRecord(
+        target=Target(kind="service", slug=service.slug, name=service.name, id=service.id),
+        code=code,
+        severity=Severity.ERROR,
+        message=f"{service.slug}: {code}",
+        desired={"expected": {"node_slug": node.slug, "node_id": node.id}},
+    )
+
+
 CLUSTER = PlanScope(kind="cluster")
 
 
@@ -316,6 +328,62 @@ def test_observe_node_aggregates_targets_and_codes():
     assert action.reconciler_id == "observe_node"
     assert {t.slug for t in action.targets} == {"agweb", "agdb"}
     assert set(action.claimed_diff_codes) == {"missing_actual_data", "ingest_lag"}
+
+
+def test_observe_node_resolves_service_target_to_owning_node():
+    node = _node("n1", "agdnsmasq")
+    svc = _service("s1", "dnsmasq")
+    snapshot = _snapshot(nodes=[node], services=[svc], placements=[_placement("p1", service_id="s1", node_id="n1", deployment_profile="daemon")])
+    diffs = [
+        _service_observation_diff(svc, node),
+        _node_diff(node, "missing_actual_data"),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    [action] = plan.actions
+    assert action.reconciler_id == "observe_node"
+    assert [t.kind for t in action.targets] == ["node"]
+    assert {t.slug for t in action.targets} == {"agdnsmasq"}
+    assert set(action.claimed_diff_codes) == {"service_observation_missing", "missing_actual_data"}
+
+
+def test_observe_node_resolves_service_target_alongside_unrelated_node():
+    dnsmasq_node = _node("n1", "agdnsmasq")
+    web_node = _node("n2", "agweb")
+    svc = _service("s1", "dnsmasq")
+    snapshot = _snapshot(
+        nodes=[dnsmasq_node, web_node],
+        services=[svc],
+        placements=[_placement("p1", service_id="s1", node_id="n1", deployment_profile="daemon")],
+    )
+    diffs = [
+        _service_observation_diff(svc, dnsmasq_node),
+        _node_diff(web_node, "missing_actual_data"),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    [action] = plan.actions
+    assert action.reconciler_id == "observe_node"
+    assert {t.kind for t in action.targets} == {"node"}
+    assert {t.slug for t in action.targets} == {"agdnsmasq", "agweb"}
+
+
+def test_observe_node_raises_when_service_diff_has_no_node_slug():
+    svc = _service("s1", "dnsmasq")
+    snapshot = _snapshot(services=[svc])
+    diffs = [
+        DiffRecord(
+            target=Target(kind="service", slug=svc.slug, name=svc.name, id=svc.id),
+            code="service_observation_missing",
+            severity=Severity.ERROR,
+            message="dnsmasq: service_observation_missing",
+        )
+    ]
+
+    with pytest.raises(ValueError, match="node_slug"):
+        _build(snapshot, diffs)
 
 
 def test_fingerprint_ignores_non_error_diffs():

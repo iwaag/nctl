@@ -246,6 +246,41 @@ def test_max_rounds_reached_when_progress_never_completes(tmp_path, monkeypatch)
     assert len(envelope.data.rounds) == 3
 
 
+# --- observe_node target resolution -------------------------------------------
+
+
+def test_observe_node_action_only_receives_node_slugs_for_service_diffs(tmp_path, monkeypatch):
+    """Regression for the fix1 bug: a service-kind evidence-gap diff must resolve
+    to its owning node before reaching run_observation, not fail with
+    'hosts are not bootstrap-eligible: <service-slug>'.
+    """
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node("agdnsmasq")
+    diff = DiffRecord(
+        target=Target(kind="service", slug="dnsmasq", name="dnsmasq", id="s1"),
+        code="service_observation_missing",
+        severity=Severity.ERROR,
+        message="dnsmasq: service_observation_missing",
+        desired={"expected": {"node_slug": node.slug, "node_id": node.id}},
+    )
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])])])
+    _stub_dashboard(monkeypatch)
+
+    captured = {}
+
+    def fake_run_observation(*a, **kwargs):
+        captured["target_slugs"] = kwargs.get("target_slugs") or a[2]
+        return executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result())
+
+    monkeypatch.setattr(executor_module, "run_observation", fake_run_observation)
+
+    envelope = run_reconcile(cfg, apply_changes=True, max_rounds=1)
+
+    assert captured["target_slugs"] == ["agdnsmasq"]
+    assert envelope.data.rounds[0].actions[0].success is True
+
+
 # --- lock contention ----------------------------------------------------------
 
 

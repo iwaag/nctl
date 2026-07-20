@@ -131,8 +131,18 @@ def build_plan(
             continue
         code_classification = classify(diff.code, target_kind=diff.target.kind)
         if code_classification.classification == Classification.OBSERVATION:
-            key = _target_key(diff.target)
-            observe_targets[key] = diff.target
+            target = diff.target
+            if target.kind == "service":
+                expected = diff.desired.get("expected", {})
+                node_slug = expected.get("node_slug")
+                if not node_slug:
+                    raise ValueError(
+                        f"planner defect: OBSERVATION diff {diff.code!r} on service target "
+                        f"{target.slug!r} has no desired.expected.node_slug to resolve to a node"
+                    )
+                target = Target(kind="node", slug=node_slug, id=expected.get("node_id"))
+            key = _target_key(target)
+            observe_targets[key] = target
             observe_codes.add(diff.code)
         elif code_classification.classification == Classification.MANUAL_REVIEW:
             manual_review.append(_manual_record(diff, "not automatable: ambiguity, conflict, or destructive change"))
