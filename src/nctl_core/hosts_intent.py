@@ -9,6 +9,15 @@ observable — eligibility gates, mDNS endpoint selection order, sort keys, the
 ``skip_reasons`` vocabulary, group/hostvars structure, YAML/JSON serialization
 options — is unchanged. Schema bumped to 3.0 because the generator changed
 (nothing asserts on it; the header stays honest for humans and later phases).
+
+Schema bumped to 4.0 (basic_service plan Step 2): active `DesiredServicePlacement`
+rows are now folded in, emitting one bare (host-var-free) group per
+`deployment_profile` alongside `ssh_hosts` -- the same "groups derive from
+placements" rule `production/composer.py` already applies, so bootstrap-time
+playbooks can target a service group (e.g. `dnsmasq_server`) over mDNS before
+any production inventory exists. A placement whose profile is unknown or
+whose node was not exported to `ssh_hosts` is reported in `skipped`
+(`item_type: desired_service_placement`) rather than silently dropped.
 """
 
 from __future__ import annotations
@@ -20,9 +29,9 @@ from typing import Any, Iterable
 
 import yaml
 
-from nctl_core.sources.desired import DesiredEndpoint, DesiredNode
+from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredServicePlacement
 
-HOSTS_INTENT_SCHEMA_VERSION = "3.0"
+HOSTS_INTENT_SCHEMA_VERSION = "4.0"
 ELIGIBLE_NODE_LIFECYCLES = frozenset({"planned", "approved", "active"})
 # service_host represents a host whose eventual Nautobot object may be either a
 # device or a virtual machine, so it is eligible for bootstrap discovery too.
@@ -51,22 +60,35 @@ def export_hosts_intent(
     nodes: Iterable[DesiredNode],
     endpoints: Iterable[DesiredEndpoint],
     *,
+    placements: Iterable[DesiredServicePlacement] = (),
+    profile_groups: dict[str, str] | None = None,
     include_skipped: bool = True,
 ) -> HostsIntentExport:
-    """Return a deterministic minimal Ansible inventory from desired nodes."""
+    """Return a deterministic minimal Ansible inventory from desired nodes.
+
+    ``profile_groups`` maps ``deployment_profile`` name to Ansible group name
+    (the same mapping ``production/composer.py`` derives from
+    ``deployment_profiles.yml``); active placements whose profile is not in
+    this map, or whose node was not exported to ``ssh_hosts``, are reported
+    in ``skipped`` instead of silently dropped.
+    """
 
     endpoints_by_node: dict[str, list[DesiredEndpoint]] = {}
     for endpoint in endpoints:
         endpoints_by_node.setdefault(endpoint.node_id, []).append(endpoint)
 
+    nodes_list = list(nodes)
+    node_by_id = {node.id: node for node in nodes_list}
+
     hosts: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     group_members: dict[str, set[str]] = {"ssh_hosts": set()}
+    exported_hostname_by_node_id: dict[str, str] = {}
     total_nodes = 0
     exported_nodes = 0
     skipped_nodes = 0
 
-    for node in sorted(list(nodes), key=_node_sort_key):
+    for node in sorted(nodes_list, key=_node_sort_key):
         total_nodes += 1
         node_skip_reasons = _node_skip_reasons(node)
         endpoint = _select_mdns_endpoint(endpoints_by_node.get(node.id, []))
@@ -98,6 +120,29 @@ def export_hosts_intent(
             }
         )
         group_members["ssh_hosts"].add(inventory_hostname)
+        exported_hostname_by_node_id[node.id] = inventory_hostname
+
+    profile_groups = profile_groups or {}
+    for placement in placements:
+        if placement.desired_state != "active":
+            continue
+
+        group = profile_groups.get(placement.deployment_profile)
+        hostname = exported_hostname_by_node_id.get(placement.node_id)
+        placement_skip_reasons = []
+        if group is None:
+            placement_skip_reasons.append("unknown_deployment_profile")
+        if hostname is None:
+            placement_skip_reasons.append("node_not_exported")
+
+        if placement_skip_reasons:
+            if include_skipped:
+                skipped.append(
+                    _placement_skip_entry(placement, node_by_id.get(placement.node_id), placement_skip_reasons)
+                )
+            continue
+
+        group_members.setdefault(group, set()).add(hostname)
 
     hosts.sort(key=lambda item: item["inventory_hostname"])
     skipped.sort(key=_skip_sort_key)
@@ -212,6 +257,20 @@ def _node_skip_entry(
         "desired_node_slug": _text(node.slug),
         "desired_endpoint": _text(endpoint.name) if endpoint else "",
         "desired_endpoint_id": _text(endpoint.id) if endpoint else "",
+        "reasons": sorted(set(reasons)),
+    }
+
+
+def _placement_skip_entry(
+    placement: DesiredServicePlacement, node: DesiredNode | None, reasons: list[str]
+) -> dict[str, Any]:
+    return {
+        "item_type": "desired_service_placement",
+        "desired_node": _text(node.name) if node else "",
+        "desired_node_id": _text(placement.node_id),
+        "desired_node_slug": _text(node.slug) if node else "",
+        "group": _text(placement.deployment_profile),
+        "instance_name": _text(placement.instance_name),
         "reasons": sorted(set(reasons)),
     }
 

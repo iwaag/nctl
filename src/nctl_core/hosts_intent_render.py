@@ -29,6 +29,7 @@ from nctl_core.hosts_intent import (
 from nctl_core.inventory_write import write_validated_inventory
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
+from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
 from nctl_core.sources.desired import fetch_desired_snapshot
 
 RENDER_HOSTS_INTENT_SCHEMA = "nctl.render.hosts_intent.v1"
@@ -55,6 +56,13 @@ def build_hosts_intent_render(cfg: Config) -> Envelope[HostsIntentRenderData]:
     except ConfigError as exc:
         return _failed(EnvelopeError(code="nautobot_token_error", message=str(exc)))
 
+    playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
+    try:
+        profiles, _digest = load_deployment_profiles(playbook_dir)
+    except DeploymentProfilesError as exc:
+        return _failed(EnvelopeError(code="deployment_profiles_invalid", message=str(exc)))
+    profile_groups = {name: profile["group"] for name, profile in profiles.items()}
+
     client = NautobotClient(cfg.nautobot.url, token)
     try:
         snapshot = fetch_desired_snapshot(client)
@@ -63,7 +71,9 @@ def build_hosts_intent_render(cfg: Config) -> Envelope[HostsIntentRenderData]:
     finally:
         client.close()
 
-    export = export_hosts_intent(snapshot.nodes, snapshot.endpoints)
+    export = export_hosts_intent(
+        snapshot.nodes, snapshot.endpoints, placements=snapshot.placements, profile_groups=profile_groups
+    )
     payload = hosts_intent_payload(export, generated_at=generated_at)
     data = HostsIntentRenderData(
         schema_version=payload["schema_version"],
