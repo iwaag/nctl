@@ -22,6 +22,7 @@ from nctl_core.events import OperationLog
 from nctl_core.output import Envelope, EnvelopeError
 
 APPLY_DNSMASQ_SCHEMA = "nctl.apply.dnsmasq.v1"
+SETUP_PLAYBOOK = Path("playbooks/bootstrap/setup_dnsmasq.yml")
 DEPLOY_PLAYBOOK = Path("playbooks/dnsmasq/deploy_dnsmasq_records.yml")
 TARGET_GROUP = "dnsmasq_server"
 
@@ -35,6 +36,7 @@ class DnsmasqApplyData(BaseModel):
     target_group: str = TARGET_GROUP
     target_hosts: list[str] = Field(default_factory=list)
     render_summary: dict[str, Any] = Field(default_factory=dict)
+    setup: AnsibleRunResult | None = None
     ansible: AnsibleRunResult | None = None
 
 
@@ -97,11 +99,61 @@ def build_dnsmasq_apply(cfg: Config, apply_changes: bool = False) -> Envelope[Dn
         return _failure(op, data, [error], error.message)
 
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
+    resolved_inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
+    runner = AnsibleRunner(
+        playbook_dir,
+        timeout_seconds=cfg.reconcile.ansible_timeout_seconds,
+        artifacts=artifacts,
+    )
+
+    setup_args = [
+        "ansible-playbook",
+        "-i",
+        str(resolved_inventory),
+        str(playbook_dir / SETUP_PLAYBOOK),
+    ]
+    if not apply_changes:
+        setup_args.extend(["--check", "--diff"])
+
+    if apply_changes:
+        op.emit("setup_started", "dnsmasq daemon setup started", target_hosts=target_hosts)
+
+    setup_result = runner.run(setup_args, mode=mode, artifact_stem="ansible/dnsmasq-setup")
+    data.setup = setup_result
+    if setup_result.exit_code != 0:
+        code = "ansible_setup_failed" if mode == "apply" else "ansible_setup_dry_run_failed"
+        message = (
+            f"ansible-playbook daemon setup {mode} timed out after "
+            f"{cfg.reconcile.ansible_timeout_seconds} seconds"
+            if setup_result.timed_out
+            else f"ansible-playbook daemon setup {mode} exited with code {setup_result.exit_code}"
+        )
+        error = EnvelopeError(
+            code=code,
+            message=message,
+            detail={
+                "exit_code": setup_result.exit_code,
+                "recap": setup_result.recap,
+                "timed_out": setup_result.timed_out,
+            },
+        )
+        return _failure(op, data, [error], error.message)
+
+    if apply_changes:
+        op.emit("setup_completed", "dnsmasq daemon setup completed", exit_code=setup_result.exit_code, recap=setup_result.recap)
+    else:
+        op.emit(
+            "setup_dry_run_completed",
+            "dnsmasq daemon setup dry-run completed",
+            exit_code=setup_result.exit_code,
+            recap=setup_result.recap,
+        )
+
     playbook_path = playbook_dir / DEPLOY_PLAYBOOK
     args = [
         "ansible-playbook",
         "-i",
-        str(cfg.ansible.resolved_inventory(cfg.source_path.parent)),
+        str(resolved_inventory),
         str(playbook_path),
         "-e",
         f"dnsmasq_records_src={artifact_path}",
@@ -112,11 +164,6 @@ def build_dnsmasq_apply(cfg: Config, apply_changes: bool = False) -> Envelope[Dn
     if apply_changes:
         op.emit("apply_started", "dnsmasq apply started", target_hosts=target_hosts)
 
-    runner = AnsibleRunner(
-        playbook_dir,
-        timeout_seconds=cfg.reconcile.ansible_timeout_seconds,
-        artifacts=artifacts,
-    )
     result = runner.run(args, mode=mode, artifact_stem="ansible/dnsmasq")
     data.ansible = result
     if result.exit_code != 0:
@@ -151,11 +198,20 @@ def render_dnsmasq_apply_text(envelope: Envelope[DnsmasqApplyData]) -> str:
     ]
     if data.target_hosts:
         lines.append(f"targets: {', '.join(data.target_hosts)}")
+    if data.setup is not None:
+        lines.append("")
+        lines.append("-- daemon setup --")
+        if data.setup.stdout:
+            lines.append(data.setup.stdout.rstrip())
+        if data.setup.stderr:
+            lines.append(data.setup.stderr.rstrip())
     if data.ansible is not None:
+        lines.append("")
+        lines.append("-- records deploy --")
         if data.ansible.stdout:
-            lines.extend(["", data.ansible.stdout.rstrip()])
+            lines.append(data.ansible.stdout.rstrip())
         if data.ansible.stderr:
-            lines.extend(["", data.ansible.stderr.rstrip()])
+            lines.append(data.ansible.stderr.rstrip())
     for error in envelope.errors:
         lines.append(f"error [{error.code}]: {error.message}")
     lines.append(f"ok: {envelope.ok}")
@@ -173,6 +229,9 @@ def _validate_paths(cfg: Config, data: DnsmasqApplyData) -> EnvelopeError | None
             code="ansible_playbook_dir_missing",
             message=f"ansible.playbook_dir does not exist or is not a directory: {playbook_dir}",
         )
+    setup_playbook = playbook_dir / SETUP_PLAYBOOK
+    if not setup_playbook.is_file():
+        return EnvelopeError(code="ansible_playbook_missing", message=f"setup playbook not found: {setup_playbook}")
     playbook = playbook_dir / DEPLOY_PLAYBOOK
     if not playbook.is_file():
         return EnvelopeError(code="ansible_playbook_missing", message=f"deploy playbook not found: {playbook}")

@@ -45,10 +45,18 @@ same shape — the vocabulary is extensible per-op via `data`, not a closed enum
 `apply dnsmasq` currently adds:
 
 - `rendered` — the operation-specific configuration artifact was written.
-- `dry_run_completed` — the default Ansible check+diff run exited successfully.
-- `apply_started` / `apply_completed` — bracket the real Ansible run selected by `--yes`.
-- `failed` — rendering, validation, inventory resolution, or Ansible execution failed; followed by
-  the final `finished` record with `ok: false`.
+- `setup_started` / `setup_completed` — bracket the daemon-install playbook
+  (`playbooks/bootstrap/setup_dnsmasq.yml`) run selected by `--yes`; runs before the records
+  deploy on every apply so a fresh host gets the daemon installed first.
+- `setup_dry_run_completed` — the daemon-install playbook's default check+diff run exited
+  successfully (dry-run mode; no `setup_started` counterpart, mirroring `dry_run_completed` below).
+- `dry_run_completed` — the records-deploy playbook's default Ansible check+diff run exited
+  successfully.
+- `apply_started` / `apply_completed` — bracket the records-deploy playbook's real Ansible run
+  selected by `--yes`.
+- `failed` — rendering, validation, inventory resolution, or either Ansible run (setup or records
+  deploy) failed; a setup failure aborts before the records deploy runs. Followed by the final
+  `finished` record with `ok: false`.
 
 ## `nctl reconcile` event vocabulary (Phase 4)
 

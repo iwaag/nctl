@@ -13,6 +13,9 @@ from nctl_core.output import Envelope
 
 def _config(tmp_path):
     ansible_dir = tmp_path / "ansible_agdev"
+    setup_playbook = ansible_dir / "playbooks/bootstrap/setup_dnsmasq.yml"
+    setup_playbook.parent.mkdir(parents=True)
+    setup_playbook.write_text("---\n")
     playbook = ansible_dir / "playbooks/dnsmasq/deploy_dnsmasq_records.yml"
     playbook.parent.mkdir(parents=True)
     playbook.write_text("---\n")
@@ -86,14 +89,16 @@ def test_dry_run_renders_artifact_invokes_check_diff_and_emits_events(tmp_path, 
     assert envelope.ok is True
     assert envelope.data.mode == "dry-run"
     assert envelope.data.target_hosts == ["agdnsmasq"]
+    assert envelope.data.setup.exit_code == 0
     assert envelope.data.ansible.exit_code == 0
     assert envelope.data.ansible.recap["agdnsmasq"]["changed"] == 1
     assert calls[1][0][-2:] == ["--check", "--diff"]
+    assert calls[2][0][-2:] == ["--check", "--diff"]
     artifact = cfg.events.resolved_log_dir() / envelope.data.operation_id / "artifacts/dnsmasq-records.conf"
     assert artifact.is_file()
     assert f"# operation_id: {envelope.data.operation_id}" in artifact.read_text()
     events = [json.loads(line)["event"] for line in (cfg.events.resolved_log_dir() / f"{envelope.data.operation_id}.jsonl").read_text().splitlines()]
-    assert events == ["started", "rendered", "dry_run_completed", "finished"]
+    assert events == ["started", "rendered", "setup_dry_run_completed", "dry_run_completed", "finished"]
 
 
 def test_yes_runs_real_apply_without_check_flags(tmp_path, monkeypatch):
@@ -115,8 +120,18 @@ def test_yes_runs_real_apply_without_check_flags(tmp_path, monkeypatch):
     assert envelope.data.mode == "apply"
     assert "--check" not in calls[1]
     assert "--diff" not in calls[1]
+    assert "--check" not in calls[2]
+    assert "--diff" not in calls[2]
     events = [json.loads(line)["event"] for line in (cfg.events.resolved_log_dir() / f"{envelope.data.operation_id}.jsonl").read_text().splitlines()]
-    assert events == ["started", "rendered", "apply_started", "apply_completed", "finished"]
+    assert events == [
+        "started",
+        "rendered",
+        "setup_started",
+        "setup_completed",
+        "apply_started",
+        "apply_completed",
+        "finished",
+    ]
 
 
 def test_empty_dnsmasq_group_is_a_pointed_failure(tmp_path, monkeypatch):
@@ -156,6 +171,8 @@ def test_ansible_failure_is_returned_with_exit_code_and_recap(tmp_path, monkeypa
     def fake_run(args, cwd, timeout):
         if args[0] == "ansible-inventory":
             return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload()), "")
+        if "setup_dnsmasq.yml" in args[3]:
+            return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
         return subprocess.CompletedProcess(
             args,
             2,
@@ -169,8 +186,34 @@ def test_ansible_failure_is_returned_with_exit_code_and_recap(tmp_path, monkeypa
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "ansible_dry_run_failed"
+    assert envelope.data.setup.exit_code == 0
     assert envelope.data.ansible.exit_code == 2
     assert envelope.data.ansible.recap["agdnsmasq"]["unreachable"] == 1
+
+
+def test_setup_failure_aborts_before_records_deploy(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(args)
+        if args[0] == "ansible-inventory":
+            return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload()), "")
+        return subprocess.CompletedProcess(
+            args, 1, "agdnsmasq : ok=0 changed=0 unreachable=1 failed=1\n", "setup failed"
+        )
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg)
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "ansible_setup_dry_run_failed"
+    assert envelope.data.setup.exit_code == 1
+    assert envelope.data.ansible is None
+    assert len(calls) == 2, "the records deploy playbook must not run after a setup failure"
 
 
 def test_inventory_group_hosts_includes_child_groups():

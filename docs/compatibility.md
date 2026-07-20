@@ -32,7 +32,8 @@ bump; new names may be added freely):
 
 - Core (any operation): `started`, `step_started`, `step_completed`, `warning`, `failed`,
   `finished`.
-- `apply dnsmasq`: `rendered`, `dry_run_completed`, `apply_started`, `apply_completed`.
+- `apply dnsmasq`: `rendered`, `setup_started`, `setup_completed`, `setup_dry_run_completed`,
+  `dry_run_completed`, `apply_started`, `apply_completed`.
 - `reconcile` (Phase 4): `plan_created`, `round_started`, `action_started`, `action_completed`,
   `actuation_completed`, `observation_completed`, `drift_resolved`, `non_converged`.
 - observation/collection (shared by `reconcile` and `status`-adjacent flows):
