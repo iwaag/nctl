@@ -710,3 +710,24 @@ def test_max_rounds_reached_with_a_known_local_blocker_reports_manual_interventi
     assert not any(e.code == "max_rounds_reached" for e in envelope.errors)
     assert len(envelope.data.rounds) == 1
     assert envelope.data.progress_made is True
+
+
+def test_dry_plan_succeeds_despite_a_local_composition_error(tmp_path, monkeypatch):
+    # Step 1.6 orchestration case 1: "one local composition error and no
+    # actions -> dry plan succeeds". Plan mode never checks blocking
+    # findings -- it always reports the plan for the operator to read.
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node("agblocked")
+    diff = DiffRecord(
+        target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
+        code="missing_operational_config", severity=Severity.ERROR, message="x",
+    )
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
+
+    envelope = run_reconcile(cfg, apply_changes=False)
+
+    assert envelope.data.state == "planned"
+    assert envelope.ok
+    assert len(envelope.data.manual_review) == 1
+    assert envelope.data.manual_review[0]["code"] == "missing_operational_config"

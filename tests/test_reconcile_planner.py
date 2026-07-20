@@ -521,3 +521,19 @@ def test_host_scoped_reconcile_selects_only_that_host_blocker():
 
     plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agblocked"))
     assert [r.code for r in plan.manual_review] == ["unresolved_connection_path"]
+
+
+def test_every_phase1_local_code_reaches_planning_without_unclassified_error():
+    from nctl_core.production.composer import PHASE1_LOCAL_CODES
+
+    node = _node("n1", "agx")
+    snapshot = _snapshot(nodes=[node])
+    for code in sorted(PHASE1_LOCAL_CODES):
+        severity = Severity.WARNING if code == "active_placement_not_applied" else Severity.ERROR
+        diff = DiffRecord(
+            target=Target(kind="node", slug="agx", name="agx", id="n1"),
+            code=code, severity=severity, message=f"agx: {code}",
+        )
+        plan = _build(snapshot, [diff])  # must not raise UnclassifiedDiffCodeError
+        assert [r.code for r in plan.manual_review] == [code]
+        assert plan.actions == []
