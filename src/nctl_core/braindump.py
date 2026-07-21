@@ -612,14 +612,22 @@ def build_braindump_show(cfg: Config, braindump_id: str) -> Envelope[BraindumpSh
 
 
 def build_braindump_create(
-    cfg: Config, *, title: str, authorship: str, body: str
+    cfg: Config,
+    *,
+    title: str,
+    authorship: str,
+    body: str | None = None,
+    body_file: Path | None = None,
 ) -> Envelope[BraindumpCreateData]:
     client, token_error = _client_from_config(cfg)
     if client is None:
         return Envelope.build(CREATE_SCHEMA, BraindumpCreateData(), [token_error])  # type: ignore[list-item]
 
     try:
-        record, changed = create_braindump(client, title=title, authorship=authorship, body=body)
+        resolved_body = resolve_text_input(field_name="body", literal=body, file=body_file)
+        record, changed = create_braindump(
+            client, title=title, authorship=authorship, body=resolved_body
+        )
     except BraindumpError as exc:
         return Envelope.build(
             CREATE_SCHEMA, BraindumpCreateData(), [EnvelopeError(code=exc.code, message=str(exc), detail=exc.detail)]
@@ -641,14 +649,20 @@ def build_braindump_update(
     title: str | None = None,
     authorship: str | None = None,
     body: str | None = None,
+    body_file: Path | None = None,
 ) -> Envelope[BraindumpUpdateData]:
     client, token_error = _client_from_config(cfg)
     if client is None:
         return Envelope.build(UPDATE_SCHEMA, BraindumpUpdateData(), [token_error])  # type: ignore[list-item]
 
     try:
+        resolved_body = (
+            resolve_text_input(field_name="body", literal=body, file=body_file)
+            if body is not None or body_file is not None
+            else None
+        )
         record, changed = update_braindump(
-            client, braindump_id, title=title, authorship=authorship, body=body
+            client, braindump_id, title=title, authorship=authorship, body=resolved_body
         )
     except BraindumpError as exc:
         return Envelope.build(
@@ -688,13 +702,20 @@ def build_braindump_delete(cfg: Config, braindump_id: str) -> Envelope[Braindump
     )
 
 
-def build_braindump_review(cfg: Config, braindump_id: str, *, summary: str) -> Envelope[BraindumpReviewData]:
+def build_braindump_review(
+    cfg: Config,
+    braindump_id: str,
+    *,
+    summary: str | None = None,
+    summary_file: Path | None = None,
+) -> Envelope[BraindumpReviewData]:
     client, token_error = _client_from_config(cfg)
     if client is None:
         return Envelope.build(REVIEW_SCHEMA, BraindumpReviewData(), [token_error])  # type: ignore[list-item]
 
     try:
-        record, action = create_or_replace_review(client, braindump_id, summary=summary)
+        resolved_summary = resolve_text_input(field_name="summary", literal=summary, file=summary_file)
+        record, action = create_or_replace_review(client, braindump_id, summary=resolved_summary)
     except BraindumpError as exc:
         return Envelope.build(
             REVIEW_SCHEMA, BraindumpReviewData(), [EnvelopeError(code=exc.code, message=str(exc), detail=exc.detail)]
@@ -736,3 +757,102 @@ def build_braindump_review_delete(cfg: Config, braindump_id: str) -> Envelope[Br
         REVIEW_DELETE_SCHEMA,
         BraindumpReviewDeleteData(braindump=record, deleted=deleted, review_id=review_id),
     )
+
+
+# -- human renderers ------------------------------------------------------------------------------
+
+
+def _error_lines(envelope: Envelope) -> list[str]:
+    return [f"error[{error.code}]: {error.message}" for error in envelope.errors]
+
+
+def render_braindump_list_text(envelope: Envelope[BraindumpListData]) -> str:
+    if not envelope.ok:
+        return "\n".join(_error_lines(envelope))
+    data = envelope.data
+    lines = [f"braindumps: {data.count}"]
+    for item in data.items:
+        review = "Unreviewed" if not item.review_present else f"review updated {item.review_last_updated}"
+        lines.append(
+            f"  {item.id}  {item.title!r:<30} {item.authorship:<17} updated {item.last_updated}"
+            f"  {review}  [{item.attention}]"
+        )
+    return "\n".join(lines)
+
+
+def render_braindump_show_text(envelope: Envelope[BraindumpShowData]) -> str:
+    if not envelope.ok:
+        return "\n".join(_error_lines(envelope))
+    braindump = envelope.data.braindump
+    if braindump is None:
+        return "no Braindump"
+
+    lines = [
+        "User-originated Braindump",
+        f"  id: {braindump.id}",
+        f"  title: {braindump.title}",
+        f"  authorship: {braindump.authorship}",
+        f"  created: {braindump.created}",
+        f"  last_updated: {braindump.last_updated}",
+        f"  attention: {braindump.attention}",
+        "  body:",
+        braindump.body,
+        "",
+        "AI Alignment Review",
+    ]
+    review = braindump.alignment_review
+    if review is None:
+        lines.append("  Unreviewed")
+    else:
+        lines += [
+            f"  id: {review.id}",
+            f"  created: {review.created}",
+            f"  last_updated: {review.last_updated}",
+            "  summary:",
+            review.summary,
+        ]
+    return "\n".join(lines)
+
+
+def render_braindump_create_text(envelope: Envelope[BraindumpCreateData]) -> str:
+    if not envelope.ok:
+        return "\n".join(_error_lines(envelope))
+    record = envelope.data.braindump
+    return f"created braindump {record.id} ({record.title!r}, {record.authorship}) at {record.last_updated}"
+
+
+def render_braindump_update_text(envelope: Envelope[BraindumpUpdateData]) -> str:
+    if not envelope.ok:
+        return "\n".join(_error_lines(envelope))
+    data = envelope.data
+    record = data.braindump
+    if not data.changed:
+        return f"braindump {record.id} ({record.title!r}): no change (already up to date)"
+    return f"updated braindump {record.id} ({record.title!r}) at {record.last_updated}"
+
+
+def render_braindump_delete_text(envelope: Envelope[BraindumpDeleteData]) -> str:
+    if not envelope.ok:
+        return "\n".join(_error_lines(envelope))
+    data = envelope.data
+    cascade = "review also deleted" if data.review_deleted else "no review was present"
+    return f"deleted braindump {data.id} ({data.title!r}): {cascade}"
+
+
+def render_braindump_review_text(envelope: Envelope[BraindumpReviewData]) -> str:
+    if not envelope.ok:
+        return "\n".join(_error_lines(envelope))
+    data = envelope.data
+    record = data.braindump
+    review = record.alignment_review
+    return f"{data.action} review for braindump {record.id} ({record.title!r}) at {review.last_updated}"
+
+
+def render_braindump_review_delete_text(envelope: Envelope[BraindumpReviewDeleteData]) -> str:
+    if not envelope.ok:
+        return "\n".join(_error_lines(envelope))
+    data = envelope.data
+    braindump_id = data.braindump.id if data.braindump is not None else "?"
+    if not data.deleted:
+        return f"braindump {braindump_id}: no review present (no change)"
+    return f"deleted review {data.review_id} for braindump {braindump_id}; braindump is now Unreviewed"

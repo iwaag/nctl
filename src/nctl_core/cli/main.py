@@ -7,12 +7,29 @@ No business logic lives in this module.
 from __future__ import annotations
 
 import sys
+from enum import Enum
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 from pydantic import ValidationError
 
+from nctl_core.braindump import (
+    build_braindump_create,
+    build_braindump_delete,
+    build_braindump_list,
+    build_braindump_review,
+    build_braindump_review_delete,
+    build_braindump_show,
+    build_braindump_update,
+    render_braindump_create_text,
+    render_braindump_delete_text,
+    render_braindump_list_text,
+    render_braindump_review_delete_text,
+    render_braindump_review_text,
+    render_braindump_show_text,
+    render_braindump_update_text,
+)
 from nctl_core.config import Config, ConfigError, ConfigInvalidError, ServeConfig
 from nctl_core.dashboard_render import build_dashboard, render_dashboard_text
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
@@ -41,9 +58,11 @@ app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflow
 render_app = typer.Typer(help="Deterministic renders of desired state into consumer formats.")
 apply_app = typer.Typer(help="Apply rendered desired state through deployment automation.")
 ops_app = typer.Typer(help="Inspect past and running operations from the event-log directory.")
+braindump_app = typer.Typer(help="Read and update the Braindump/Alignment Review exchange diary.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
 app.add_typer(ops_app, name="ops")
+app.add_typer(braindump_app, name="braindump")
 
 
 @app.callback()
@@ -408,6 +427,193 @@ def serve(
     envelope = build_serve_startup(cfg)
     emit(envelope, json_output, render_serve_text)
     run_server(cfg)
+
+
+class AuthorshipChoice(str, Enum):
+    user_direct = "user_direct"
+    agent_transcribed = "agent_transcribed"
+
+
+BRAINDUMP_USAGE_CODES = (
+    "invalid_braindump_id",
+    "invalid_authorship",
+    "invalid_text",
+    "input_conflict",
+    "no_update_fields",
+    "input_file_error",
+    "input_file_invalid_utf8",
+    "braindump_not_found",
+)
+
+
+def _braindump_exit_code(envelope) -> int:
+    if envelope.ok:
+        return EXIT_OK
+    if any(error.code in BRAINDUMP_USAGE_CODES for error in envelope.errors):
+        return EXIT_USAGE
+    return EXIT_FAILURE
+
+
+def _confirm_destructive(prompt: str, *, yes: bool, json_output: bool) -> None:
+    """Shared confirmation gate for `braindump delete`/`review-delete` (plan.md Decision 7).
+
+    `--json` is non-interactive: destructive commands require `--yes` or fail as a usage error
+    before contacting Nautobot. In human mode, omitting `--yes` prompts; declining or EOF performs
+    no request.
+    """
+    if json_output:
+        if not yes:
+            typer.echo("error: --json requires --yes for destructive commands", err=True)
+            raise typer.Exit(EXIT_USAGE)
+        return
+    if yes:
+        return
+    try:
+        confirmed = typer.confirm(prompt)
+    except (typer.Abort, EOFError):
+        confirmed = False
+    if not confirmed:
+        typer.echo("aborted: not deleted", err=True)
+        raise typer.Exit(EXIT_USAGE)
+
+
+BraindumpJsonOption = Annotated[
+    bool, typer.Option("--json", help="Print the corresponding nctl.braindump.*.v1 envelope as JSON.")
+]
+BraindumpIdArgument = Annotated[str, typer.Argument(help="Braindump UUID.")]
+BraindumpTitleOption = Annotated[str, typer.Option("--title", help="Braindump title.")]
+BraindumpUpdateTitleOption = Annotated[Optional[str], typer.Option("--title", help="New title.")]
+BraindumpAuthorshipOption = Annotated[
+    AuthorshipChoice, typer.Option("--authorship", help="user_direct or agent_transcribed.")
+]
+BraindumpUpdateAuthorshipOption = Annotated[
+    Optional[AuthorshipChoice], typer.Option("--authorship", help="New authorship.")
+]
+BraindumpBodyOption = Annotated[Optional[str], typer.Option("--body", help="Literal Braindump body text.")]
+BraindumpFileOption = Annotated[
+    Optional[Path], typer.Option("--file", help="Read the body from this UTF-8 file instead of --body.")
+]
+BraindumpSummaryOption = Annotated[
+    Optional[str], typer.Option("--summary", help="Literal Alignment Review summary text.")
+]
+BraindumpSummaryFileOption = Annotated[
+    Optional[Path], typer.Option("--file", help="Read the summary from this UTF-8 file instead of --summary.")
+]
+BraindumpYesOption = Annotated[bool, typer.Option("--yes", help="Confirm the delete non-interactively.")]
+
+
+@braindump_app.command("list")
+def braindump_list(config: ConfigOption = None, json_output: BraindumpJsonOption = False) -> None:
+    """List Braindumps with review presence, timestamps, and the attention hint."""
+    cfg = _load_config(config)
+    envelope = build_braindump_list(cfg)
+    emit(envelope, json_output, render_braindump_list_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("show")
+def braindump_show(
+    braindump_id: BraindumpIdArgument, config: ConfigOption = None, json_output: BraindumpJsonOption = False
+) -> None:
+    """Show one Braindump and its current Alignment Review."""
+    cfg = _load_config(config)
+    envelope = build_braindump_show(cfg, braindump_id)
+    emit(envelope, json_output, render_braindump_show_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("create")
+def braindump_create(
+    title: BraindumpTitleOption,
+    authorship: BraindumpAuthorshipOption,
+    config: ConfigOption = None,
+    body: BraindumpBodyOption = None,
+    file: BraindumpFileOption = None,
+    json_output: BraindumpJsonOption = False,
+) -> None:
+    """Create a Braindump from literal text (`--body`) or a UTF-8 file (`--file`)."""
+    cfg = _load_config(config)
+    envelope = build_braindump_create(cfg, title=title, authorship=authorship.value, body=body, body_file=file)
+    emit(envelope, json_output, render_braindump_create_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("update")
+def braindump_update(
+    braindump_id: BraindumpIdArgument,
+    config: ConfigOption = None,
+    title: BraindumpUpdateTitleOption = None,
+    authorship: BraindumpUpdateAuthorshipOption = None,
+    body: BraindumpBodyOption = None,
+    file: BraindumpFileOption = None,
+    json_output: BraindumpJsonOption = False,
+) -> None:
+    """Update title, authorship, and/or body; omitted fields are preserved unchanged."""
+    cfg = _load_config(config)
+    envelope = build_braindump_update(
+        cfg,
+        braindump_id,
+        title=title,
+        authorship=authorship.value if authorship is not None else None,
+        body=body,
+        body_file=file,
+    )
+    emit(envelope, json_output, render_braindump_update_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("delete")
+def braindump_delete(
+    braindump_id: BraindumpIdArgument,
+    config: ConfigOption = None,
+    yes: BraindumpYesOption = False,
+    json_output: BraindumpJsonOption = False,
+) -> None:
+    """Delete a Braindump; its current review, if any, is cascade-deleted with it."""
+    cfg = _load_config(config)
+    _confirm_destructive(
+        f"Delete Braindump {braindump_id}? Its current review, if any, will also be deleted.",
+        yes=yes,
+        json_output=json_output,
+    )
+    envelope = build_braindump_delete(cfg, braindump_id)
+    emit(envelope, json_output, render_braindump_delete_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("review")
+def braindump_review(
+    braindump_id: BraindumpIdArgument,
+    config: ConfigOption = None,
+    summary: BraindumpSummaryOption = None,
+    file: BraindumpSummaryFileOption = None,
+    json_output: BraindumpJsonOption = False,
+) -> None:
+    """Create or replace the current Alignment Review for a Braindump (at most one current row)."""
+    cfg = _load_config(config)
+    envelope = build_braindump_review(cfg, braindump_id, summary=summary, summary_file=file)
+    emit(envelope, json_output, render_braindump_review_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("review-delete")
+def braindump_review_delete(
+    braindump_id: BraindumpIdArgument,
+    config: ConfigOption = None,
+    yes: BraindumpYesOption = False,
+    json_output: BraindumpJsonOption = False,
+) -> None:
+    """Delete only the current review, returning the Braindump to the unreviewed state."""
+    cfg = _load_config(config)
+    _confirm_destructive(
+        f"Delete the current review for Braindump {braindump_id}? "
+        "The Braindump itself will remain, but become unreviewed.",
+        yes=yes,
+        json_output=json_output,
+    )
+    envelope = build_braindump_review_delete(cfg, braindump_id)
+    emit(envelope, json_output, render_braindump_review_delete_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
 
 
 def main() -> None:
