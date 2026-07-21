@@ -466,6 +466,21 @@ per-object "(view dashboard)" links point at the same place. The two settings ar
 nctl does not read nintent's plugin config, and nintent does not read `nctl.toml` — keep them in
 sync by hand when `out_dir`'s serving location changes.
 
+## SSH trust configuration
+
+```toml
+[ssh]
+known_hosts_file = "~/.local/state/nctl/ssh/known_hosts" # default
+keyscan_timeout_seconds = 10                              # default
+lock_path = "~/.local/state/nctl/ssh.lock"                # default
+```
+
+`known_hosts_file` is a dedicated, nctl-managed known_hosts store keyed by the stable
+`nctl-node-<DesiredNode UUID>` `HostKeyAlias` (see `devdocs/small/fix_sshkey/plan.md`), not a
+credential and not a generated repo artifact: it is never committed, copied into an operation
+artifact, or written to Nautobot/nintent. `[ssh]` is optional; all three keys default as shown when
+the section is absent. See `nctl ssh enroll --help` for how entries are added.
+
 ## Conventions
 
 - **Config**: `nctl.toml`, resolved as `--config` → `$NCTL_CONFIG` → `./nctl.toml` → parent-repo root.

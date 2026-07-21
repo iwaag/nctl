@@ -115,6 +115,20 @@ class ReconcileConfig(StrictModel):
         return self.lock_path.expanduser()
 
 
+class SshConfig(StrictModel):
+    # Local controller trust state, not a generated repo artifact or nintent
+    # desired/actual state: see devdocs/small/fix_sshkey/plan.md Design Decision 2.
+    known_hosts_file: Path = Path("~/.local/state/nctl/ssh/known_hosts")
+    keyscan_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    lock_path: Path = Path("~/.local/state/nctl/ssh.lock")
+
+    def resolved_known_hosts_file(self) -> Path:
+        return self.known_hosts_file.expanduser()
+
+    def resolved_lock_path(self) -> Path:
+        return self.lock_path.expanduser()
+
+
 class ServeConfig(StrictModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8300, ge=1, le=65535)
@@ -159,6 +173,7 @@ class Config(StrictModel):
     dashboard: DashboardConfig = DashboardConfig()
     reconcile: ReconcileConfig = ReconcileConfig()
     serve: ServeConfig = ServeConfig()
+    ssh: SshConfig = SshConfig()
 
     # Where the config file was loaded from; relative paths resolve against its parent.
     source_path: Path

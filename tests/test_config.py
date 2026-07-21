@@ -183,6 +183,42 @@ def test_serve_resolve_token_from_env_or_file(tmp_path, monkeypatch):
     assert serve.resolve_token() == "serve-file"
 
 
+def test_ssh_config_defaults_when_section_absent(tmp_path):
+    cfg = Config.load(write_config(tmp_path))
+    assert cfg.ssh.known_hosts_file == Path("~/.local/state/nctl/ssh/known_hosts")
+    assert cfg.ssh.keyscan_timeout_seconds == 10.0
+    assert cfg.ssh.lock_path == Path("~/.local/state/nctl/ssh.lock")
+    assert cfg.ssh.resolved_known_hosts_file() == Path("~/.local/state/nctl/ssh/known_hosts").expanduser()
+    assert cfg.ssh.resolved_lock_path() == Path("~/.local/state/nctl/ssh.lock").expanduser()
+
+
+def test_ssh_config_overrides_and_path_expansion(tmp_path):
+    cfg = Config.load(
+        write_config(
+            tmp_path,
+            VALID
+            + '\n[ssh]\nknown_hosts_file = "~/custom/known_hosts"\n'
+            + "keyscan_timeout_seconds = 30\n"
+            + 'lock_path = "~/custom/ssh.lock"\n',
+        )
+    )
+    assert cfg.ssh.keyscan_timeout_seconds == 30
+    assert cfg.ssh.resolved_known_hosts_file() == Path("~/custom/known_hosts").expanduser()
+    assert cfg.ssh.resolved_lock_path() == Path("~/custom/ssh.lock").expanduser()
+
+
+def test_ssh_config_rejects_bad_timeout_bounds(tmp_path):
+    with pytest.raises(ConfigInvalidError, match="keyscan_timeout_seconds"):
+        Config.load(write_config(tmp_path, VALID + "\n[ssh]\nkeyscan_timeout_seconds = 0\n"))
+    with pytest.raises(ConfigInvalidError, match="keyscan_timeout_seconds"):
+        Config.load(write_config(tmp_path, VALID + "\n[ssh]\nkeyscan_timeout_seconds = 121\n"))
+
+
+def test_ssh_config_rejects_unknown_key(tmp_path):
+    with pytest.raises(ConfigInvalidError, match="unknown"):
+        Config.load(write_config(tmp_path, VALID + "\n[ssh]\nunknown = true\n"))
+
+
 def test_resolve_token_from_env(tmp_path, monkeypatch):
     cfg = Config.load(write_config(tmp_path))
     monkeypatch.setenv("NAUTOBOT_TOKEN", "tok123")

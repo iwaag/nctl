@@ -41,6 +41,14 @@ out_dir = "~/.local/state/nctl/dashboard"
 # surfaced in output and used as the nintent dashboard link target).
 # url = "http://example.lan/nctl-dashboard/"
 
+[ssh]
+# Local controller SSH trust store, keyed by the immutable DesiredNode UUID
+# (see devdocs/small/fix_sshkey/plan.md). Not a credential and not a generated
+# repo artifact -- never commit this file or copy it into an operation artifact.
+known_hosts_file = "~/.local/state/nctl/ssh/known_hosts"
+keyscan_timeout_seconds = 10
+lock_path = "~/.local/state/nctl/ssh.lock"
+
 [serve]
 # `nctl serve` (requires the optional `serve` extra: `uv sync --extra serve`).
 host = "127.0.0.1"       # loopback default; set explicitly to expose on the LAN
