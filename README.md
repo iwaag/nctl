@@ -500,7 +500,71 @@ lock_path = "~/.local/state/nctl/ssh.lock"                # default
 `nctl-node-<DesiredNode UUID>` `HostKeyAlias` (see `devdocs/small/fix_sshkey/plan.md`), not a
 credential and not a generated repo artifact: it is never committed, copied into an operation
 artifact, or written to Nautobot/nintent. `[ssh]` is optional; all three keys default as shown when
-the section is absent. See `nctl ssh enroll --help` for how entries are added.
+the section is absent.
+
+### Lifecycle
+
+```text
+discover by mDNS
+  -> verify fingerprint / promote existing trusted .local key
+  -> nctl ssh enroll
+  -> observe and reconcile IPAM/DNS/DHCP
+  -> connect by DNS/IP/Tailscale under the same HostKeyAlias
+```
+
+A node is first reached as `<hostname>.local` over mDNS. Before enrolling, its offered key must be
+backed by one of two verified sources -- an unverified `ssh-keyscan` result is never sufficient on
+its own, even with `--yes`:
+
+- `nctl ssh enroll <slug> --from-known-hosts` -- promotes an already-trusted `.local` entry from
+  your (or the operator's) ordinary OpenSSH user known_hosts files. This is the migration path for
+  a cluster that already has trusted `.local` entries from manual `ssh` use.
+- `nctl ssh enroll <slug> --fingerprint SHA256:...` -- the clean path for a brand-new machine with
+  no prior entry. The fingerprint must come from a trusted out-of-band channel (machine console,
+  provisioning output, an administrator reading it off the device) -- never from an unverified
+  network scan. Repeat `--fingerprint` if you deliberately pin more than one key algorithm.
+
+Once enrolled, `nctl reconcile --yes` observes the node and reconciles IPAM/DNS/DHCP; from then on,
+bootstrap inventory, production inventory, `apply dnsmasq`, and direct `ansible-playbook`/`ansible`
+invocations against either generated inventory all connect under the identical `HostKeyAlias` no
+matter which of `.local`, `.home.arpa`, a reserved/static IP, or a Tailscale address `ansible_host`
+currently resolves to. Changing only the endpoint never requires another enrollment and never adds
+an endpoint-keyed trust entry.
+
+### Hardware replacement and key rotation
+
+Reusing a DesiredNode slot for replacement hardware intentionally produces a key mismatch --
+`ssh_host_key_conflict` from `nctl ssh enroll`, or `ssh_host_key_mismatch` from `nctl reconcile
+--yes`'s preflight -- rather than silently inheriting trust because the new machine acquired the
+old IP or DNS name. To knowingly replace the key for an existing alias:
+
+```bash
+nctl ssh enroll <slug> --replace --fingerprint SHA256:<new-machine's-verified-fingerprint> --yes
+```
+
+`--replace` requires **all** of: `--replace` itself, a verified source (`--from-known-hosts` or a
+matching `--fingerprint`), and `--yes`. Only the exact managed alias entry changes; unrelated
+entries and comments in the managed file are preserved untouched.
+
+### Recovering from a lost or corrupted managed file
+
+If `[ssh].known_hosts_file` is lost, corrupted, or reset, the only supported recovery is
+re-enrolling each node (`nctl ssh enroll <slug> --from-known-hosts` or `--fingerprint ...`, per
+node, through the same verified-source rules above). Do not "fix" a missing/broken managed file by
+setting `StrictHostKeyChecking=no`, using `accept-new`, or copying in an unverified `ssh-keyscan`
+result -- none of those are a substitute for a verified source, and all of them defeat the fail-closed
+guarantee this store exists to provide.
+
+### Direct Ansible use
+
+Both generated inventories (`hosts_intent.yml` and `production.yml`) carry the same closed, strict
+host variables (`nctl_ssh_host_key_alias`, `ansible_ssh_common_args` with
+`StrictHostKeyChecking=yes`), so a direct `ansible`/`ansible-playbook` invocation against either one
+fails closed exactly like `nctl` does, just with OpenSSH's generic `Host key verification failed`
+instead of a structured nctl error code. A hand-written or otherwise-sourced inventory that lacks
+these variables is outside the supported operational path: `nctl apply dnsmasq --inventory PATH`
+explicitly rejects one (`dnsmasq_inventory_untrusted_host`) rather than silently falling back to
+endpoint-keyed verification, and nothing else in nctl accepts an arbitrary inventory at all.
 
 ## Conventions
 
