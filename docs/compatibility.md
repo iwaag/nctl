@@ -61,6 +61,13 @@ at its current field set and may only gain fields:
 | `nctl.ops.list.v1` | `OpsListData` (`nctl_core.ops_render`) |
 | `nctl.ops.show.v1` | `OpsShowData` (`nctl_core.ops_render`) |
 | `nctl.serve.v1` | `ServeData` (`nctl_core.serve.runtime`) |
+| `nctl.braindump.list.v1` | `BraindumpListData` (`nctl_core.braindump`) |
+| `nctl.braindump.show.v1` | `BraindumpShowData` (`nctl_core.braindump`) |
+| `nctl.braindump.create.v1` | `BraindumpCreateData` (`nctl_core.braindump`) |
+| `nctl.braindump.update.v1` | `BraindumpUpdateData` (`nctl_core.braindump`) |
+| `nctl.braindump.delete.v1` | `BraindumpDeleteData` (`nctl_core.braindump`) |
+| `nctl.braindump.review.v1` | `BraindumpReviewData` (`nctl_core.braindump`) |
+| `nctl.braindump.review_delete.v1` | `BraindumpReviewDeleteData` (`nctl_core.braindump`) |
 
 A breaking change to any `data` shape above mints `nctl.<command>.v2` and keeps `v1` emitting
 its current shape for a deprecation window; it does not alter `v1` in place.

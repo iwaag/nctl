@@ -46,6 +46,14 @@ uv run nctl ops list
 uv run nctl ops list --limit 5 --json
 uv run nctl ops show 01KXPYQRJ8GTNND0PC3KZSMPXC
 uv run nctl ops show 01KXPYQRJ8GTNND0PC3KZSMPXC --after-seq 3 --json
+uv run nctl braindump list
+uv run nctl braindump show <braindump-id>
+uv run nctl braindump create --title "Home lab" --authorship user_direct --body "Keep Ollama on agpc."
+uv run nctl braindump create --title "Home lab" --authorship user_direct --file wish.txt
+uv run nctl braindump update <braindump-id> --title "Home lab v2"
+uv run nctl braindump review <braindump-id> --summary "agpc already runs Ollama; no drift."
+uv run nctl braindump review-delete <braindump-id> --yes
+uv run nctl braindump delete <braindump-id> --yes
 uv run --extra serve nctl serve
 uv run --extra serve nctl serve --host 0.0.0.0 --port 8300
 ```
@@ -261,6 +269,61 @@ truncated or partially written final line is reported via `corrupt_lines`, not r
 This module (`nctl_core.operations_index`) is what both the CLI and `nctl serve`'s
 `/api/v1/operations*` endpoints are built on, so `nctl ops show` and the equivalent HTTP call
 return the same data.
+
+### `braindump`
+
+`nctl braindump {list,show,create,update,delete,review,review-delete}` is the deterministic,
+typed interface to the exchange diary described in `devdocs/big/braindump/roadmap.md`: a
+**Braindump** is the user's free-form wish, and its at-most-one current **Alignment Review** is the
+AI agent's latest natural-language reply. Neither is executable input, and this command surface has
+no import path into `drift`, `reconcile`, dashboard, `serve`, Jobs, nodeutils, or Ansible — reading
+or writing the diary never changes convergence status or triggers actuation.
+
+- `list [--json]` / `show ID [--json]` read through GraphQL only and never write. `list` returns a
+  compact `id`/`title`/`authorship`/timestamps/review-presence/attention projection; `show` returns
+  the full record including `body` and, if present, the review's `summary`.
+- `create --title TITLE --authorship AUTHOR (--body TEXT | --file PATH)` and
+  `update ID [--title TITLE] [--authorship AUTHOR] [--body TEXT | --file PATH]` write through REST
+  and always confirm the result via a fresh GraphQL refetch before reporting success; a mismatch is
+  a command-scoped `*_confirmation_mismatch` failure, never a fabricated success. `AUTHOR` is
+  exactly `user_direct` or `agent_transcribed` — there is no default, so provenance is never
+  misstated. `update` preserves every omitted field and requires at least one supplied change.
+- `--file PATH` reads the file as `Path.read_text(encoding="utf-8", errors="strict")` — the exact
+  bytes are stored, with no trailing-newline stripping, line-ending normalization, BOM removal,
+  Markdown rendering, variable interpolation, or shell/prompt interpretation. Prefer `--file` over
+  `--body` for multiline or shell-sensitive prose, and never embed secrets in either — command-line
+  arguments and stored Braindump text both end up in process lists, reports, and Git history.
+- `review ID (--summary TEXT | --file PATH)` creates the review when none exists and replaces the
+  one current row when it does — it never appends a second row. Replacement always advances
+  `last_updated`, even when the new summary text is byte-identical to the old one, because invoking
+  `review` records a new evaluation. A rare create/create race (two writers, no existing review) is
+  recovered automatically by refetching once and replacing the row the other writer created; any
+  other rejection is a genuine validation failure and is reported as such.
+- `delete ID [--yes]` deletes a Braindump and, by database cascade, its current review with it.
+  `review-delete ID [--yes]` deletes only the review, returning the Braindump to the unreviewed
+  state; deleting an already-unreviewed Braindump's review is an idempotent no-op
+  (`deleted: false`), not an error. Both destructive commands prompt for the exact target UUID
+  without `--yes` in human mode; `--json` is non-interactive and requires `--yes` or fails as a
+  usage error (exit 2) before contacting Nautobot. `--yes` never broadens the target — there is no
+  bulk, title-based, or wildcard delete.
+- Attention is a non-persisted, three-state hint computed only from the two diary timestamps:
+  `unreviewed` (no review row), `needs_attention` (the review is older than its Braindump), or
+  `review_present` (a review exists and is not older than its Braindump). `review_present` does
+  **not** mean aligned, valid, or converged — it says only that a current review row exists.
+  Braindump/review timestamps are never compared against desired/actual freshness here; run `nctl
+  drift --json` separately and read its evidence before writing a grounded review.
+
+A safe external-agent interaction over this surface: read `braindump list --json` and the relevant
+`show --json` calls, read `nctl drift --json` separately for desired/actual evidence, ask the user
+about ambiguity or any proposed structured change, write only the user's confirmed words to a
+Braindump, publish the agent's own prose with `braindump review`, and use the established
+desired-state/`reconcile` commands separately — only after the user has actually granted that
+authority, never inferred from Braindump/review text alone.
+
+Each command emits its own frozen `nctl.braindump.<command>.v1` envelope (see
+[`docs/output-format.md`](docs/output-format.md)); human output renders **User-originated
+Braindump** and **AI Alignment Review** as visually separate sections so AI-derived text is never
+mistaken for the user's own words.
 
 ## Serve (realtime API)
 
