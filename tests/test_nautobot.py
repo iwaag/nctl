@@ -132,3 +132,116 @@ def test_graphql_connection_error():
     client = NautobotClient(BASE_URL, "tok")
     with pytest.raises(NautobotConnectionError):
         client.graphql("query { devices { id } }")
+
+
+# -- rest_post/rest_patch/rest_delete: consistent 401/403 handling (Phase 2 Step 2.3/2.4) ----------
+
+
+@respx.mock
+def test_rest_post_returns_response_on_success():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/").mock(
+        return_value=httpx.Response(201, json={"id": "bd-1"})
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    response = client.rest_post("/api/plugins/intent-catalog/braindumps/", {"title": "t"})
+    assert response.status_code == 201
+
+
+@respx.mock
+def test_rest_post_raises_auth_error_on_401():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/").mock(return_value=httpx.Response(401))
+    client = NautobotClient(BASE_URL, "bad-token")
+    with pytest.raises(NautobotAuthError):
+        client.rest_post("/api/plugins/intent-catalog/braindumps/", {"title": "t"})
+
+
+@respx.mock
+def test_rest_post_raises_auth_error_on_403():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/").mock(return_value=httpx.Response(403))
+    client = NautobotClient(BASE_URL, "tok")
+    with pytest.raises(NautobotAuthError):
+        client.rest_post("/api/plugins/intent-catalog/braindumps/", {"title": "t"})
+
+
+@respx.mock
+def test_rest_post_connection_error():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/").mock(
+        side_effect=httpx.ConnectError("refused")
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    with pytest.raises(NautobotConnectionError):
+        client.rest_post("/api/plugins/intent-catalog/braindumps/", {"title": "t"})
+
+
+@respx.mock
+def test_rest_patch_returns_response_on_success():
+    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/bd-1/").mock(
+        return_value=httpx.Response(200, json={"id": "bd-1"})
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    response = client.rest_patch("/api/plugins/intent-catalog/braindumps/bd-1/", {"title": "t"})
+    assert response.status_code == 200
+
+
+@respx.mock
+def test_rest_patch_raises_auth_error():
+    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/bd-1/").mock(return_value=httpx.Response(403))
+    client = NautobotClient(BASE_URL, "tok")
+    with pytest.raises(NautobotAuthError):
+        client.rest_patch("/api/plugins/intent-catalog/braindumps/bd-1/", {"title": "t"})
+
+
+@respx.mock
+def test_rest_patch_connection_error():
+    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/bd-1/").mock(
+        side_effect=httpx.ConnectError("refused")
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    with pytest.raises(NautobotConnectionError):
+        client.rest_patch("/api/plugins/intent-catalog/braindumps/bd-1/", {"title": "t"})
+
+
+@respx.mock
+def test_rest_delete_returns_response_on_success():
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/bd-1/").mock(
+        return_value=httpx.Response(204)
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    response = client.rest_delete("/api/plugins/intent-catalog/braindumps/bd-1/")
+    assert response.status_code == 204
+
+
+@respx.mock
+def test_rest_delete_raises_auth_error_on_401():
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/bd-1/").mock(return_value=httpx.Response(401))
+    client = NautobotClient(BASE_URL, "bad-token")
+    with pytest.raises(NautobotAuthError):
+        client.rest_delete("/api/plugins/intent-catalog/braindumps/bd-1/")
+
+
+@respx.mock
+def test_rest_delete_raises_auth_error_on_403():
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/bd-1/").mock(return_value=httpx.Response(403))
+    client = NautobotClient(BASE_URL, "tok")
+    with pytest.raises(NautobotAuthError):
+        client.rest_delete("/api/plugins/intent-catalog/braindumps/bd-1/")
+
+
+@respx.mock
+def test_rest_delete_connection_error():
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/bd-1/").mock(
+        side_effect=httpx.ConnectError("refused")
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    with pytest.raises(NautobotConnectionError):
+        client.rest_delete("/api/plugins/intent-catalog/braindumps/bd-1/")
+
+
+@respx.mock
+def test_rest_delete_returns_4xx_response_without_raising_when_not_auth():
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/bd-1/").mock(
+        return_value=httpx.Response(404, json={"detail": "not found"})
+    )
+    client = NautobotClient(BASE_URL, "tok")
+    response = client.rest_delete("/api/plugins/intent-catalog/braindumps/bd-1/")
+    assert response.status_code == 404

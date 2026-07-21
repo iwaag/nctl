@@ -13,6 +13,15 @@ from pathlib import Path
 import httpx
 from fastapi.openapi.utils import get_openapi
 
+from nctl_core.braindump import (
+    BraindumpCreateData,
+    BraindumpDeleteData,
+    BraindumpListData,
+    BraindumpReviewData,
+    BraindumpReviewDeleteData,
+    BraindumpShowData,
+    BraindumpUpdateData,
+)
 from nctl_core.config import Config
 from nctl_core.dashboard_render import DashboardData
 from nctl_core.dnsmasq_apply import DnsmasqApplyData
@@ -120,6 +129,16 @@ FROZEN_DATA_FIELDS = {
     "nctl.ops.list.v1": (OpsListData, {"log_dir", "operations"}),
     "nctl.ops.show.v1": (OpsShowData, {"log_dir", "operation", "events"}),
     "nctl.serve.v1": (ServeData, {"host", "port", "auth", "dashboard_url"}),
+    "nctl.braindump.list.v1": (BraindumpListData, {"items", "count"}),
+    "nctl.braindump.show.v1": (BraindumpShowData, {"braindump"}),
+    "nctl.braindump.create.v1": (BraindumpCreateData, {"braindump", "changed"}),
+    "nctl.braindump.update.v1": (BraindumpUpdateData, {"braindump", "changed"}),
+    "nctl.braindump.delete.v1": (BraindumpDeleteData, {"id", "title", "deleted", "review_deleted"}),
+    "nctl.braindump.review.v1": (BraindumpReviewData, {"braindump", "action"}),
+    "nctl.braindump.review_delete.v1": (
+        BraindumpReviewDeleteData,
+        {"braindump", "deleted", "review_id"},
+    ),
 }
 
 # 4. HTTP surface under /api/v1 -- docs/compatibility.md section 4 (WS is out-of-band, see below).
