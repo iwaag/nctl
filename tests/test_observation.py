@@ -165,7 +165,19 @@ def test_observation_collects_caches_and_ingests_all_hosts(tmp_path: Path) -> No
     assert jobs.data["dry_run"] is False
     assert jobs.data["max_report_bytes"] == 4096
     assert commands.calls[0][0] == "ansible-playbook"
+    assert commands.calls[0][1:5] == [
+        "-i",
+        str(artifacts.root / "bootstrap/hosts_intent.yml"),
+        "-i",
+        str(tmp_path / "ansible/unused.yml"),
+    ]
     assert commands.calls[1][0] == "ansible"
+    assert commands.calls[1][1:5] == [
+        "-i",
+        str(artifacts.root / "bootstrap/hosts_intent.yml"),
+        "-i",
+        str(tmp_path / "ansible/unused.yml"),
+    ]
 
 
 def test_observation_ingests_available_hosts_but_reports_partial_failure(tmp_path: Path) -> None:

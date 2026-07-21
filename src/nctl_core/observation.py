@@ -119,12 +119,18 @@ def run_observation(
         artifacts=artifacts,
         command_runner=command_runner,
     )
+    # ``inventory_path`` deliberately contains the operation-scoped bootstrap hosts only.
+    # It lives under the event artifact directory, so Ansible cannot discover the normal
+    # generated inventory's adjacent ``group_vars`` (including vaulted connection/become
+    # variables) from that source alone. Keep it first so its fresh host selection remains
+    # authoritative, then add the configured inventory as the shared variable source.
+    shared_inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
     limit = ",".join(targets)
     playbook = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent) / "playbooks/nautobot/run_nodeutils_collect.yml"
     operation_log.emit("collection_started", "nodeutils collection started", hosts=targets)
     collection = runner.run(
         [
-            "ansible-playbook", "-i", str(inventory_path), str(playbook),
+            "ansible-playbook", "-i", str(inventory_path), "-i", str(shared_inventory), str(playbook),
             "--limit", limit, "-e", "target_hosts=ssh_hosts",
             "-e", f"nodeutils_probe_config_dir={probe_dir}",
         ],
@@ -135,7 +141,7 @@ def run_observation(
     slurp_dir = artifacts.directory("slurp")
     retrieval = runner.run(
         [
-            "ansible", "-i", str(inventory_path), "ssh_hosts", "--limit", limit,
+            "ansible", "-i", str(inventory_path), "-i", str(shared_inventory), "ssh_hosts", "--limit", limit,
             "-m", "ansible.builtin.slurp",
             "-a", f"src={cfg.reconcile.remote_report_path}", "--tree", str(slurp_dir),
         ],
