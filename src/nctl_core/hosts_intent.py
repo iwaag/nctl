@@ -91,7 +91,7 @@ def export_hosts_intent(
     for node in sorted(nodes_list, key=_node_sort_key):
         total_nodes += 1
         node_skip_reasons = _node_skip_reasons(node)
-        endpoint = _select_mdns_endpoint(endpoints_by_node.get(node.id, []))
+        endpoint = select_mdns_endpoint(endpoints_by_node.get(node.id, []))
         if endpoint is None:
             node_skip_reasons.append("missing_mdns_name")
 
@@ -204,7 +204,7 @@ def _node_skip_reasons(node: DesiredNode) -> list[str]:
     return reasons
 
 
-def _select_mdns_endpoint(endpoints: list[DesiredEndpoint]) -> DesiredEndpoint | None:
+def select_mdns_endpoint(endpoints: list[DesiredEndpoint]) -> DesiredEndpoint | None:
     candidates = [endpoint for endpoint in endpoints if _text(endpoint.mdns_name)]
     if not candidates:
         return None

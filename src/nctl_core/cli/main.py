@@ -53,16 +53,19 @@ from nctl_core.production_render import (
 from nctl_core.reconcile.executor import render_reconcile_text, run_reconcile
 from nctl_core.status import build_status, render_status_text
 from nctl_core.serve.runtime import build_serve_startup, render_serve_text, run_server
+from nctl_core.ssh_enroll import build_ssh_enroll, render_ssh_enroll_text
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
 render_app = typer.Typer(help="Deterministic renders of desired state into consumer formats.")
 apply_app = typer.Typer(help="Apply rendered desired state through deployment automation.")
 ops_app = typer.Typer(help="Inspect past and running operations from the event-log directory.")
 braindump_app = typer.Typer(help="Read and update the Braindump/Alignment Review exchange diary.")
+ssh_app = typer.Typer(help="Manage the local, alias-keyed SSH trust store nctl uses for actuation.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
 app.add_typer(ops_app, name="ops")
 app.add_typer(braindump_app, name="braindump")
+app.add_typer(ssh_app, name="ssh")
 
 
 @app.callback()
@@ -614,6 +617,62 @@ def braindump_review_delete(
     envelope = build_braindump_review_delete(cfg, braindump_id)
     emit(envelope, json_output, render_braindump_review_delete_text)
     raise typer.Exit(_braindump_exit_code(envelope))
+
+
+SshHostArgument = Annotated[str, typer.Argument(help="Desired-node slug to enroll (its mDNS endpoint is used).")]
+SshFromKnownHostsOption = Annotated[
+    bool,
+    typer.Option(
+        "--from-known-hosts",
+        help="Verify the offered key against an already-trusted entry for the mDNS endpoint.",
+    ),
+]
+SshFingerprintOption = Annotated[
+    Optional[list[str]],
+    typer.Option(
+        "--fingerprint",
+        help="Accept an offered key with this exact SHA256:... fingerprint (repeatable).",
+    ),
+]
+SshReplaceOption = Annotated[
+    bool, typer.Option("--replace", help="Allow replacing an already-enrolled, different key.")
+]
+SshYesOption = Annotated[bool, typer.Option("--yes", help="Write the managed known_hosts entry instead of a dry plan.")]
+SshJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.ssh.enroll.v1 envelope as JSON.")]
+
+SSH_ENROLL_USAGE_CODES = ("unknown_host", "node_without_mdns")
+
+
+@ssh_app.command("enroll")
+def ssh_enroll(
+    host: SshHostArgument,
+    config: ConfigOption = None,
+    from_known_hosts: SshFromKnownHostsOption = False,
+    fingerprint: SshFingerprintOption = None,
+    replace: SshReplaceOption = False,
+    yes: SshYesOption = False,
+    json_output: SshJsonOption = False,
+) -> None:
+    """Enroll or replace the managed SSH host key for one DesiredNode's stable alias.
+
+    Without `--yes`, only inspects: resolves the node/endpoint/alias, scans currently offered
+    keys, and reports the proposed action with no write. Requires `--from-known-hosts` and/or a
+    matching `--fingerprint`; an unverified scan is never sufficient to create trust, even with
+    `--yes`.
+    """
+    cfg = _load_config(config)
+    envelope = build_ssh_enroll(
+        cfg,
+        host,
+        from_known_hosts=from_known_hosts,
+        fingerprints=fingerprint,
+        replace=replace,
+        apply_changes=yes,
+    )
+    emit(envelope, json_output, render_ssh_enroll_text)
+    if any(error.code in SSH_ENROLL_USAGE_CODES for error in envelope.errors):
+        raise typer.Exit(EXIT_USAGE)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
 def main() -> None:
