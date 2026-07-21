@@ -8,6 +8,7 @@ helpers returning nintent's `ActualFacts` to `nctl_core.sources.actual.ActualFac
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 import yaml
@@ -33,6 +34,12 @@ GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 GENERATED_AT = "2026-06-27T12:00:00+00:00"
 DIGEST = "a" * 64
 FRESH = "2026-06-27T00:00:00+00:00"
+SSH_KNOWN_HOSTS_FILE = "/home/user/.local/state/nctl/ssh/known_hosts"
+
+
+def _node_id(slug: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"nctl-test-node:{slug}"))
+
 
 PROFILES = {
     "web": {
@@ -83,7 +90,7 @@ def linux_node(slug, *, placements=(), power="none", facts=None, realized_type="
             nautobot_device_id=device_id or f"dev-{slug}",
         )
     return NodeInput(
-        id=f"node-{slug}",
+        id=_node_id(slug),
         slug=slug,
         name=slug,
         lifecycle="active",
@@ -113,7 +120,7 @@ def haos_node(slug="aghaos", *, placements=()):
         ansible_port=2222,
     )
     return NodeInput(
-        id="node-haos",
+        id=_node_id("aghaos"),
         slug=slug,
         name="HAOS",
         lifecycle="active",
@@ -132,6 +139,7 @@ def compose(nodes):
         generation_id=GENERATION_ID,
         generated_at=GENERATED_AT,
         deployment_profile_digest=DIGEST,
+        ssh_known_hosts_file=SSH_KNOWN_HOSTS_FILE,
     )
 
 
@@ -249,6 +257,68 @@ def test_linux_node_joins_actual_facts_and_service_group():
     assert operational_values["ansible_port"]["source"] == "default"
 
 
+def test_ssh_trust_vars_are_absent_when_known_hosts_file_omitted():
+    node = linux_node("agweb")
+    result = compose_production_inventory(
+        [node],
+        PROFILES,
+        generation_id=GENERATION_ID,
+        generated_at=GENERATED_AT,
+        deployment_profile_digest=DIGEST,
+    )
+    host = ssh_host(result, "agweb")
+    assert "nctl_ssh_host_key_alias" not in host
+    assert "ansible_ssh_common_args" not in host
+
+
+def test_ssh_trust_vars_derive_from_node_id_and_carry_strict_options():
+    from nctl_core.ssh_trust import derive_host_key_alias
+
+    node = linux_node("agweb")
+    result = compose([node])
+    host = ssh_host(result, "agweb")
+
+    expected_alias = derive_host_key_alias(node.id)
+    assert host["nctl_ssh_host_key_alias"] == expected_alias
+    args = host["ansible_ssh_common_args"]
+    assert f"HostKeyAlias={expected_alias}" in args
+    assert f"UserKnownHostsFile={SSH_KNOWN_HOSTS_FILE}" in args
+    assert "StrictHostKeyChecking=yes" in args
+    assert "CheckHostIP=no" in args
+    assert "UpdateHostKeys=no" in args
+
+
+def test_ssh_trust_vars_are_identical_to_bootstrap_for_the_same_node_id_even_when_ansible_host_selects_an_ip():
+    """Regression for plan.md Step 4: changing the connection path/selected route must
+    never change the stable alias -- production may select an IP while bootstrap
+    selects mDNS, but both must carry byte-identical SSH trust host vars."""
+    from nctl_core.hosts_intent import export_hosts_intent
+    from nctl_core.sources.desired import DesiredEndpoint, DesiredNode
+
+    node = linux_node("agweb")  # connection_path="local", resolves ansible_host to an IP
+    production_result = compose([node])
+    production_host = ssh_host(production_result, "agweb")
+
+    bootstrap_export = export_hosts_intent(
+        [DesiredNode(id=node.id, slug="agweb", name="agweb", lifecycle="active", node_type="device")],
+        [
+            DesiredEndpoint(
+                id="endpoint-agweb-mdns",
+                name="primary",
+                endpoint_type="primary",
+                node_id=node.id,
+                node_slug="agweb",
+                mdns_name="agweb.local",
+            )
+        ],
+        ssh_known_hosts_file=SSH_KNOWN_HOSTS_FILE,
+    )
+    bootstrap_host = bootstrap_export.inventory["all"]["children"]["ssh_hosts"]["hosts"]["agweb"]
+
+    assert production_host["nctl_ssh_host_key_alias"] == bootstrap_host["nctl_ssh_host_key_alias"]
+    assert production_host["ansible_ssh_common_args"] == bootstrap_host["ansible_ssh_common_args"]
+
+
 def test_selector_groups_use_observed_system_directly():
     node = linux_node("agmac", power="none", facts=linux_facts(system="Darwin"))
     result = compose([node])
@@ -274,7 +344,7 @@ def test_tailscale_connection_exports_tailscale_ip():
         tailscale_endpoint_id=endpoint.id,
     )
     node = NodeInput(
-        "node-ts", "agts", "agts", "active", "device",
+        _node_id("agts"), "agts", "agts", "active", "device",
         endpoints=(endpoint,), operational_override=override,
         realized=RealizedState("device", linux_facts(), "dev-ts"),
     )
@@ -385,7 +455,7 @@ def test_skipped_host_placement_does_not_create_dangling_group():
 
 def test_missing_connection_endpoint_skips_only_that_node():
     node = NodeInput(
-        id="node-x", slug="agx", name="agx", lifecycle="active", node_type="device",
+        id=_node_id("agx"), slug="agx", name="agx", lifecycle="active", node_type="device",
         realized=RealizedState("device", linux_facts(), "dev-x"),
     )
     result = compose([node])
@@ -530,9 +600,9 @@ def test_renderers_are_schema_versioned_and_parseable():
     result = compose([linux_node("agweb")])
 
     rendered_yaml = render_production_inventory_yml(result)
-    assert "# schema_version: 2.0\n" in rendered_yaml
+    assert "# schema_version: 3.0\n" in rendered_yaml
     loaded = yaml.safe_load(rendered_yaml)
-    assert loaded["all"]["vars"]["nintent_inventory_schema_version"] == "2.0"
+    assert loaded["all"]["vars"]["nintent_inventory_schema_version"] == "3.0"
 
     rendered_json = render_production_report_json(result)
     assert rendered_json.endswith("\n")
@@ -570,7 +640,7 @@ def _custom_node(slug, *, override_kwargs=None, endpoints=None, placements=(), r
     if realized_type is not None:
         realized = RealizedState(realized_type=realized_type, facts=facts or linux_facts(), nautobot_device_id=f"dev-{slug}")
     return NodeInput(
-        id=f"node-{slug}", slug=slug, name=slug, lifecycle="active", node_type="device",
+        id=_node_id(slug), slug=slug, name=slug, lifecycle="active", node_type="device",
         endpoints=tuple(endpoints), operational_override=override,
         placements=tuple(placements), realized=realized,
     )
@@ -640,6 +710,7 @@ def test_invalid_placement_config_is_localized_when_raised(monkeypatch):
     result = compose_production_inventory(
         [good, bad], PROFILES,
         generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+        ssh_known_hosts_file=SSH_KNOWN_HOSTS_FILE,
     )
 
     assert "aggood" in result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
@@ -704,6 +775,7 @@ def test_group_c_failure_skips_only_the_bad_node(code):
     result = compose_production_inventory(
         [good, bad], profiles,
         generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+        ssh_known_hosts_file=SSH_KNOWN_HOSTS_FILE,
     )
 
     ssh_hosts = result.inventory["all"]["children"]["ssh_hosts"]["hosts"]
@@ -735,10 +807,12 @@ def test_group_c_output_is_byte_stable_across_runs():
     first = compose_production_inventory(
         [good, bad], PROFILES,
         generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+        ssh_known_hosts_file=SSH_KNOWN_HOSTS_FILE,
     )
     second = compose_production_inventory(
         [good, bad], PROFILES,
         generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+        ssh_known_hosts_file=SSH_KNOWN_HOSTS_FILE,
     )
     assert render_production_report_json(first) == render_production_report_json(second)
 
@@ -754,6 +828,7 @@ def test_invalid_connection_address_per_node_call_site_is_local_not_global():
     result = compose_production_inventory(
         [_bad_invalid_connection_address()], PROFILES,
         generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+        ssh_known_hosts_file=SSH_KNOWN_HOSTS_FILE,
     )
     assert local_findings(result, "agbad")[0]["code"] == "invalid_connection_address"
     assert local_findings(result, "agbad")[0]["stage"] == "operational_derivation"
@@ -765,6 +840,7 @@ def test_group_a_shared_profile_error_still_aborts_globally():
             [linux_node("agweb")],
             {"web": {"group": "web_server", "config_schema_version": "1", "variables": "not-an-object"}},
             generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+            ssh_known_hosts_file=SSH_KNOWN_HOSTS_FILE,
         )
     assert caught.value.code == "invalid_profile_variables"
 
@@ -786,7 +862,7 @@ def test_group_b_final_output_error_still_aborts_globally(monkeypatch):
 
 def _planned_node(slug, *, lifecycle="planned", placements=(), node_type="device"):
     return NodeInput(
-        id=f"node-{slug}", slug=slug, name=slug, lifecycle=lifecycle, node_type=node_type,
+        id=_node_id(slug), slug=slug, name=slug, lifecycle=lifecycle, node_type=node_type,
         placements=tuple(placements), realized=None,
     )
 

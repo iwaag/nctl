@@ -77,6 +77,7 @@ def build_production_render(cfg: Config) -> Envelope[ProductionRenderData]:
             generation_id=generation_id,
             generated_at=generated_at,
             deployment_profile_digest=digest,
+            ssh_known_hosts_file=str(cfg.ssh.resolved_known_hosts_file()),
         )
     except ContractError as exc:
         return _failed(data, EnvelopeError(code=exc.code, message=str(exc)))

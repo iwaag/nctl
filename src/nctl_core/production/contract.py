@@ -10,8 +10,13 @@ Ported unchanged: `PRODUCTION_INVENTORY_SCHEMA_VERSION`, `ContractError`,
 
 Phase 4 Decision 3 replaced the ported schema-2.0 `validate_production_report` with
 `validate_production_report_v3` (`PRODUCTION_REPORT_SCHEMA_VERSION = "3.0"`), independent of
-`PRODUCTION_INVENTORY_SCHEMA_VERSION`, which stays `"2.0"` and unchanged for the inventory
-document itself.
+`PRODUCTION_INVENTORY_SCHEMA_VERSION`.
+
+fix_sshkey Step 4 bumps `PRODUCTION_INVENTORY_SCHEMA_VERSION` to `"3.0"`: every `ssh_hosts`
+member now also carries `nctl_ssh_host_key_alias` and `ansible_ssh_common_args`, derived only
+from the immutable DesiredNode UUID (see `devdocs/small/fix_sshkey/plan.md`), so production and
+bootstrap inventories share byte-identical SSH trust host vars for the same node even when
+`ansible_host` differs (mDNS vs `.home.arpa` vs IP vs Tailscale).
 
 **Not ported** (see `profiles.py`'s docstring): `parse_profile_job_input` and
 `_raise_invalid_constant` (the Job-input byte-contract transport, replaced by
@@ -32,7 +37,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
-PRODUCTION_INVENTORY_SCHEMA_VERSION = "2.0"
+PRODUCTION_INVENTORY_SCHEMA_VERSION = "3.0"
 # Phase 4 Decision 3: the companion report's schema advances independently of the
 # Ansible inventory document/variables, which stay 2.0 and byte-stable for equal
 # inputs. `nctl.render.production.v1`'s envelope also does not change.
@@ -66,6 +71,8 @@ _BASE_HOST_VARIABLES = {
     "nintent_desired_node_id",
     "nautobot_device_id",
     "nintent_active_placement_ids",
+    "nctl_ssh_host_key_alias",
+    "ansible_ssh_common_args",
 }
 _REPORT_V3_KEYS = {
     "schema_version",

@@ -30,6 +30,7 @@ from typing import Any, Iterable, Mapping
 import yaml
 
 from nctl_core.sources.actual import ActualFacts
+from nctl_core.ssh_trust import build_ansible_ssh_common_args, derive_host_key_alias
 
 from .contract import (
     PRODUCTION_INVENTORY_SCHEMA_VERSION,
@@ -261,8 +262,17 @@ def compose_production_inventory(
     generation_id: str,
     generated_at: str,
     deployment_profile_digest: str,
+    ssh_known_hosts_file: str | None = None,
 ) -> ProductionComposition:
-    """Compose a deterministic schema 2.0 production inventory plus a schema 3.0 report.
+    """Compose a deterministic schema 3.0 production inventory plus a schema 3.0 report.
+
+    ``ssh_known_hosts_file`` is the resolved managed known_hosts path
+    (``cfg.ssh.resolved_known_hosts_file()``); when given, every eligible
+    ``ssh_hosts`` member gets ``nctl_ssh_host_key_alias`` and
+    ``ansible_ssh_common_args`` derived from its DesiredNode UUID. The real
+    `nctl render production` caller (`production_render.py`) must always
+    supply it; the drift comparator's internal composition (which never
+    renders to disk) and tests unconcerned with SSH trust vars may omit it.
 
     Global contract violations raise :class:`ContractError` and abort the whole
     run (the caller preserves the previous inventory).  Host-specific actual
@@ -335,7 +345,7 @@ def compose_production_inventory(
             continue
 
         try:
-            host_vars, host_os = _compose_host(node, effective, validated_profiles)
+            host_vars, host_os = _compose_host(node, effective, validated_profiles, ssh_known_hosts_file)
         except LocalCompositionError as local_error:
             outcomes[node.id] = NodeOutcome(
                 state="skipped",
@@ -596,6 +606,7 @@ def _compose_host(
     node: NodeInput,
     effective: EffectiveOperationalValues,
     profiles: Mapping[str, Any],
+    ssh_known_hosts_file: str | None,
 ) -> tuple[dict[str, Any], str]:
     """Build the ssh_hosts host variables for one included node."""
 
@@ -629,6 +640,10 @@ def _compose_host(
         "is_laptop": effective.is_laptop.value,
         "nintent_desired_node_id": node.id,
     }
+    if ssh_known_hosts_file is not None:
+        ssh_alias = derive_host_key_alias(node.id)
+        base_vars["nctl_ssh_host_key_alias"] = ssh_alias
+        base_vars["ansible_ssh_common_args"] = build_ansible_ssh_common_args(ssh_alias, ssh_known_hosts_file)
     base_vars.update(connection)
     if effective.ansible_port.value is not None:
         base_vars["ansible_port"] = effective.ansible_port.value

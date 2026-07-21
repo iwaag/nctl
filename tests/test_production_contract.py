@@ -141,7 +141,7 @@ def test_production_inventory_schema_is_closed():
     inventory = {
         "all": {
             "vars": {
-                "nintent_inventory_schema_version": "2.0",
+                "nintent_inventory_schema_version": "3.0",
                 "nintent_generation_id": generation_id,
                 "nintent_generated_at": "2026-06-27T12:00:00+00:00",
                 "nintent_report_path": f"production.reports/{generation_id}.json",
