@@ -18,6 +18,14 @@ playbooks can target a service group (e.g. `dnsmasq_server`) over mDNS before
 any production inventory exists. A placement whose profile is unknown or
 whose node was not exported to `ssh_hosts` is reported in `skipped`
 (`item_type: desired_service_placement`) rather than silently dropped.
+
+Schema bumped to 5.0 (fix_sshkey Step 3): every `ssh_hosts` member also
+carries `nctl_ssh_host_key_alias` and `ansible_ssh_common_args`, derived only
+from the immutable DesiredNode UUID (see
+`devdocs/small/fix_sshkey/plan.md`), when the caller supplies
+`ssh_known_hosts_file`. This makes bootstrap SSH trust follow the node's
+identity across mDNS/`.home.arpa`/IP/Tailscale routes instead of the
+currently selected endpoint spelling.
 """
 
 from __future__ import annotations
@@ -30,8 +38,9 @@ from typing import Any, Iterable
 import yaml
 
 from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredServicePlacement
+from nctl_core.ssh_trust import build_ansible_ssh_common_args, derive_host_key_alias
 
-HOSTS_INTENT_SCHEMA_VERSION = "4.0"
+HOSTS_INTENT_SCHEMA_VERSION = "5.0"
 ELIGIBLE_NODE_LIFECYCLES = frozenset({"planned", "approved", "active"})
 # service_host represents a host whose eventual Nautobot object may be either a
 # device or a virtual machine, so it is eligible for bootstrap discovery too.
@@ -63,8 +72,16 @@ def export_hosts_intent(
     placements: Iterable[DesiredServicePlacement] = (),
     profile_groups: dict[str, str] | None = None,
     include_skipped: bool = True,
+    ssh_known_hosts_file: str | None = None,
 ) -> HostsIntentExport:
     """Return a deterministic minimal Ansible inventory from desired nodes.
+
+    ``ssh_known_hosts_file`` is the resolved managed known_hosts path
+    (``cfg.ssh.resolved_known_hosts_file()``); when given, every eligible
+    ``ssh_hosts`` member gets ``nctl_ssh_host_key_alias`` and
+    ``ansible_ssh_common_args`` derived from its DesiredNode UUID. Real
+    callers (`hosts_intent_render.py`, `observation.py`) must always supply
+    it; omitting it is only for tests unconcerned with the SSH trust vars.
 
     ``profile_groups`` maps ``deployment_profile`` name to Ansible group name
     (the same mapping ``production/composer.py`` derives from
@@ -106,7 +123,7 @@ def export_hosts_intent(
             continue
 
         exported_nodes += 1
-        host_vars = _host_vars(node, endpoint)
+        host_vars = _host_vars(node, endpoint, ssh_known_hosts_file)
         hosts.append(
             {
                 "inventory_hostname": inventory_hostname,
@@ -219,8 +236,8 @@ def select_mdns_endpoint(endpoints: list[DesiredEndpoint]) -> DesiredEndpoint | 
     return sorted(candidates, key=_endpoint_sort_key)[0]
 
 
-def _host_vars(node: DesiredNode, endpoint: DesiredEndpoint) -> dict[str, Any]:
-    return {
+def _host_vars(node: DesiredNode, endpoint: DesiredEndpoint, ssh_known_hosts_file: str | None) -> dict[str, Any]:
+    host_vars = {
         "ansible_host": _text(endpoint.mdns_name),
         "mdns_hostname": _text(endpoint.mdns_name),
         "nintent_inventory_stage": "reserved_name",
@@ -231,6 +248,11 @@ def _host_vars(node: DesiredNode, endpoint: DesiredEndpoint) -> dict[str, Any]:
         "nintent_desired_endpoint_id": _text(endpoint.id),
         "name_reserved_only": True,
     }
+    if ssh_known_hosts_file is not None:
+        alias = derive_host_key_alias(node.id)
+        host_vars["nctl_ssh_host_key_alias"] = alias
+        host_vars["ansible_ssh_common_args"] = build_ansible_ssh_common_args(alias, ssh_known_hosts_file)
+    return host_vars
 
 
 def _inventory(hosts: list[dict[str, Any]], group_members: dict[str, set[str]]) -> dict[str, Any]:

@@ -203,20 +203,22 @@ def _read_raw_lines(path: Path) -> list[str]:
     return path.read_text().splitlines()
 
 
-def _entries_for_alias(lines: list[str], alias: str) -> list[ManagedEntry]:
+def _entries_for_lookup_name(lines: list[str], lookup_name: str) -> list[ManagedEntry]:
     entries = []
     for line in lines:
         try:
             parsed = parse_known_hosts_line(line)
         except SshTrustError:
             continue
-        if parsed is not None and parsed.names == (alias,):
-            entries.append(ManagedEntry(alias=alias, key_type=parsed.key_type, key_blob_b64=parsed.key_blob_b64))
+        if parsed is not None and parsed.names == (lookup_name,):
+            entries.append(
+                ManagedEntry(alias=lookup_name, key_type=parsed.key_type, key_blob_b64=parsed.key_blob_b64)
+            )
     return entries
 
 
-def _lines_excluding_alias(lines: list[str], alias: str) -> list[str]:
-    """Keep every line except ordinary entries for `alias` -- comments and other aliases untouched."""
+def _lines_excluding_lookup_name(lines: list[str], lookup_name: str) -> list[str]:
+    """Keep every line except ordinary entries for `lookup_name` -- comments/other aliases untouched."""
     kept = []
     for line in lines:
         try:
@@ -224,16 +226,18 @@ def _lines_excluding_alias(lines: list[str], alias: str) -> list[str]:
         except SshTrustError:
             kept.append(line)
             continue
-        if parsed is not None and parsed.names == (alias,):
+        if parsed is not None and parsed.names == (lookup_name,):
             continue
         kept.append(line)
     return kept
 
 
-def _write_managed_file(path: Path, lines_without_alias: list[str], alias: str, slug: str, keys: list[ParsedHostKeyLine]) -> None:
-    output_lines = list(lines_without_alias)
+def _write_managed_file(
+    path: Path, lines_without_entry: list[str], lookup_name: str, slug: str, keys: list[ParsedHostKeyLine]
+) -> None:
+    output_lines = list(lines_without_entry)
     for key in keys:
-        output_lines.append(f"{alias} {key.key_type} {key.key_blob_b64} nctl:{slug}")
+        output_lines.append(f"{lookup_name} {key.key_type} {key.key_blob_b64} nctl:{slug}")
     content = "\n".join(output_lines)
     if content:
         content += "\n"
@@ -328,7 +332,7 @@ def build_ssh_enroll(
             data.verified_source = "fingerprint"
 
         raw_lines = _read_raw_lines(known_hosts_path)
-        existing = _entries_for_alias(raw_lines, alias)
+        existing = _entries_for_lookup_name(raw_lines, lookup_name)
         data.managed_keys = [f"{e.key_type} {compute_sha256_fingerprint(e.key_blob_b64)}" for e in existing]
 
         existing_pairs = {(e.key_type, e.key_blob_b64) for e in existing}
@@ -366,9 +370,9 @@ def build_ssh_enroll(
             op.emit("planned", "dry plan only, no write", action=action)
             return Envelope.build(SSH_ENROLL_SCHEMA, data)
 
-        lines_without_alias = _lines_excluding_alias(raw_lines, alias)
+        lines_without_entry = _lines_excluding_lookup_name(raw_lines, lookup_name)
         try:
-            _write_managed_file(known_hosts_path, lines_without_alias, alias, node.slug, verified_keys)
+            _write_managed_file(known_hosts_path, lines_without_entry, lookup_name, node.slug, verified_keys)
         except OSError as exc:
             return _fail(op, data, "ssh_store_write_failed", str(exc))
 

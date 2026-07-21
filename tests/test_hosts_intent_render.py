@@ -18,18 +18,22 @@ from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredSnaps
 SCHEMA = "nctl.render.hosts_intent.v1"
 
 
+NODE_1_ID = "11111111-1111-1111-1111-111111111111"
+NODE_2_ID = "22222222-2222-2222-2222-222222222222"
+
+
 def _snapshot() -> DesiredSnapshot:
     return DesiredSnapshot(
         nodes=[
-            DesiredNode(id="node-1", slug="agnode", name="ag Node", lifecycle="active", node_type="device"),
-            DesiredNode(id="node-2", slug="no-mdns", name="No mDNS", lifecycle="active", node_type="device"),
+            DesiredNode(id=NODE_1_ID, slug="agnode", name="ag Node", lifecycle="active", node_type="device"),
+            DesiredNode(id=NODE_2_ID, slug="no-mdns", name="No mDNS", lifecycle="active", node_type="device"),
         ],
         endpoints=[
             DesiredEndpoint(
                 id="endpoint-1",
                 name="primary",
                 endpoint_type="primary",
-                node_id="node-1",
+                node_id=NODE_1_ID,
                 node_slug="agnode",
                 mdns_name="agnode.local",
             ),
@@ -41,6 +45,7 @@ def _fake_config() -> SimpleNamespace:
     return SimpleNamespace(
         nautobot=SimpleNamespace(url="http://nautobot.test", resolve_token=lambda: "token"),
         ansible=SimpleNamespace(resolved_playbook_dir=lambda config_dir: Path("/fake/playbook-dir")),
+        ssh=SimpleNamespace(resolved_known_hosts_file=lambda: Path("/fake/state/ssh/known_hosts")),
         source_path=Path("/fake/nctl.toml"),
     )
 
@@ -54,12 +59,16 @@ def test_build_hosts_intent_render_produces_inventory_and_skips(monkeypatch):
 
     assert envelope.ok
     assert envelope.schema_name == SCHEMA
-    assert envelope.data.schema_version == "4.0"
+    assert envelope.data.schema_version == "5.0"
     assert envelope.data.summary["exported_hosts"] == 1
     assert envelope.data.summary["skipped_nodes"] == 1
     assert envelope.data.skipped[0]["reasons"] == ["missing_mdns_name"]
     loaded = yaml.safe_load(envelope.data.inventory_yaml)
-    assert loaded["all"]["children"]["ssh_hosts"]["hosts"]["agnode"]["mdns_hostname"] == "agnode.local"
+    agnode = loaded["all"]["children"]["ssh_hosts"]["hosts"]["agnode"]
+    assert agnode["mdns_hostname"] == "agnode.local"
+    assert agnode["nctl_ssh_host_key_alias"] == f"nctl-node-{NODE_1_ID}"
+    assert "HostKeyAlias=nctl-node-" + NODE_1_ID in agnode["ansible_ssh_common_args"]
+    assert "/fake/state/ssh/known_hosts" in agnode["ansible_ssh_common_args"]
 
 
 def test_build_hosts_intent_render_fails_on_invalid_deployment_profiles(monkeypatch):

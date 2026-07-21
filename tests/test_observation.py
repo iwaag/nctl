@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,15 +23,19 @@ from nctl_core.sources.desired import (
 )
 
 
+def _node_id(host: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"nctl-test-node:{host}"))
+
+
 def _snapshot(*hosts: str) -> DesiredSnapshot:
     nodes = [
-        DesiredNode(id=f"node-{host}", slug=host, name=host, lifecycle="active", node_type="device")
+        DesiredNode(id=_node_id(host), slug=host, name=host, lifecycle="active", node_type="device")
         for host in hosts
     ]
     endpoints = [
         DesiredEndpoint(
             id=f"endpoint-{host}", name="primary", endpoint_type="primary",
-            node_id=f"node-{host}", node_slug=host, mdns_name=f"{host}.local",
+            node_id=_node_id(host), node_slug=host, mdns_name=f"{host}.local",
         )
         for host in hosts
     ]
@@ -132,16 +137,16 @@ def test_probe_hints_are_active_authoritative_service_names() -> None:
     ]
     snapshot.placements = [
         DesiredServicePlacement(
-            id="p1", service_id="svc-dns", node_id="node-node-a", instance_name="dns",
+            id="p1", service_id="svc-dns", node_id=_node_id("node-a"), instance_name="dns",
             deployment_profile="systemd", config_schema_version="v1",
         ),
         DesiredServicePlacement(
-            id="p2", service_id="svc-old", node_id="node-node-a", instance_name="old",
+            id="p2", service_id="svc-old", node_id=_node_id("node-a"), instance_name="old",
             desired_state="absent", deployment_profile="systemd", config_schema_version="v1",
         ),
     ]
 
-    assert yaml.safe_load(render_probe_hints(snapshot, "node-node-a")) == {
+    assert yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"))) == {
         "service_probe_hints": {"dnsmasq": {}}
     }
 

@@ -291,6 +291,20 @@ def test_non_default_port_is_used_in_lookup_name(tmp_path, monkeypatch):
     assert envelope.data.lookup_name == f"[{envelope.data.alias}]:2222"
 
 
+def test_non_default_port_writes_bracketed_lookup_name(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _patch_snapshot(monkeypatch, port=2222)
+    fingerprint = compute_sha256_fingerprint(KEY_BLOB)
+    probe = _probe(keyscan_stdout=_keyscan_line())
+    envelope = build_ssh_enroll(cfg, "agdnsmasq", fingerprints=[fingerprint], apply_changes=True, probe=probe)
+    assert envelope.ok, envelope.errors
+    alias = derive_host_key_alias(NODE_ID)
+    lookup_name = f"[{alias}]:2222"
+    content = cfg.ssh.resolved_known_hosts_file().read_text()
+    assert lookup_name in content
+    assert content.count(alias) == 1  # only inside the bracketed lookup name, not as a bare entry
+
+
 def test_keyscan_timeout_is_reported(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     _patch_snapshot(monkeypatch)
