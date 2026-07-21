@@ -66,7 +66,14 @@ def _render(operation_id=None):
 def _inventory_payload():
     return {
         "dnsmasq_server": {"hosts": ["agdnsmasq"]},
-        "_meta": {"hostvars": {"agdnsmasq": {}}},
+        "_meta": {
+            "hostvars": {
+                "agdnsmasq": {
+                    "nintent_desired_node_id": "27818c12-fe15-4c9f-83d0-7949523f6c33",
+                    "nctl_ssh_host_key_alias": "nctl-node-27818c12-fe15-4c9f-83d0-7949523f6c33",
+                }
+            }
+        },
     }
 
 
@@ -259,6 +266,50 @@ def test_inventory_override_missing_file_is_a_pointed_failure(tmp_path, monkeypa
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "ansible_inventory_missing"
+
+
+def test_inventory_override_rejects_host_without_ssh_trust_vars(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    override_inventory = tmp_path / "bootstrap" / "hosts_intent.yml"
+    override_inventory.parent.mkdir(parents=True)
+    override_inventory.write_text("all: {}\n")
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(args, cwd, timeout):
+        if args[0] == "ansible-inventory":
+            # A hand-written/legacy inventory with no SSH trust host vars at all.
+            payload = {"dnsmasq_server": {"hosts": ["agdnsmasq"]}, "_meta": {"hostvars": {"agdnsmasq": {}}}}
+            return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, inventory=override_inventory)
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "dnsmasq_inventory_untrusted_host"
+    assert "agdnsmasq" in envelope.errors[0].message
+
+
+def test_default_configured_inventory_is_not_subject_to_the_trust_var_guard(tmp_path, monkeypatch):
+    # The guard only applies to an explicit --inventory override; the normally
+    # configured ansible.inventory is trusted implicitly (nctl generates it).
+    cfg = _config(tmp_path)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(args, cwd, timeout):
+        if args[0] == "ansible-inventory":
+            payload = {"dnsmasq_server": {"hosts": ["agdnsmasq"]}, "_meta": {"hostvars": {"agdnsmasq": {}}}}
+            return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg)
+
+    assert envelope.ok is True
 
 
 def test_setup_failure_aborts_before_records_deploy(tmp_path, monkeypatch):

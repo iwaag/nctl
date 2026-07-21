@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 import yaml
 
 from nctl_core.artifacts import OperationArtifacts
@@ -14,6 +15,7 @@ from nctl_core.config import Config
 from nctl_core.events import OperationLog
 from nctl_core.jobs import NautobotJobResult
 from nctl_core.observation import render_probe_hints, run_observation
+from nctl_core.ssh_trust import derive_host_key_alias
 from nctl_core.sources.desired import (
     DesiredEndpoint,
     DesiredNode,
@@ -42,18 +44,33 @@ def _snapshot(*hosts: str) -> DesiredSnapshot:
     return DesiredSnapshot(nodes=nodes, endpoints=endpoints)
 
 
+# Every host slug any test in this file passes to run_observation, pre-enrolled
+# by _config() below so these tests exercise post-enrollment behavior, not the
+# fix_sshkey Step 5 defense-in-depth guard (covered separately).
+_ALL_TEST_HOSTS = ("node-a", "node-b", "node", "node.local")
+
+
 def _config(tmp_path: Path) -> Config:
     playbook_dir = tmp_path / "ansible"
     playbook_dir.mkdir()
-    return Config.model_validate(
+    known_hosts_file = tmp_path / "ssh" / "known_hosts"
+    cfg = Config.model_validate(
         {
             "nautobot": {"url": "http://nautobot.invalid"},
             "inventory": {"dumps_dir": tmp_path / "dumps"},
             "ansible": {"playbook_dir": playbook_dir, "inventory": "unused.yml"},
             "reconcile": {"max_report_age_hours": 72, "max_report_bytes": 4096},
+            "ssh": {"known_hosts_file": known_hosts_file},
             "source_path": tmp_path / "nctl.toml",
         }
     )
+    known_hosts_file.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"{derive_host_key_alias(_node_id(host))} ssh-ed25519 dGVzdC1vYnNlcnZhdGlvbi1maXh0dXJlLWtleQ== nctl:test\n"
+        for host in _ALL_TEST_HOSTS
+    ]
+    known_hosts_file.write_text("".join(lines))
+    return cfg
 
 
 def _report(host: str, collected_at: datetime) -> str:
@@ -254,3 +271,20 @@ def test_observation_rejects_duplicate_canonical_identity(tmp_path: Path) -> Non
     assert result.ok is False
     assert all("duplicate" in row.error for row in result.hosts)
     assert not (tmp_path / "dumps").exists()
+
+
+def test_run_observation_rejects_unenrolled_host_before_any_ansible_call(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 16, 1, tzinfo=timezone.utc)
+    artifacts, log = _operation(tmp_path)
+    cfg = _config(tmp_path)
+    # Not one of _ALL_TEST_HOSTS: _config() never enrolled it.
+    snapshot = _snapshot("node-unenrolled")
+    commands = FakeCommands({"node-unenrolled": _report("node-unenrolled", now)})
+
+    with pytest.raises(ValueError, match="ssh_host_key_unenrolled"):
+        run_observation(
+            cfg, snapshot, ["node-unenrolled"], artifacts, log,
+            command_runner=commands, job_runner=FakeJobRunner(artifacts), now=now,
+        )
+
+    assert commands.calls == []

@@ -21,6 +21,7 @@ from nctl_core.hosts_intent import export_hosts_intent, render_hosts_intent_yml
 from nctl_core.jobs import NautobotJobResult, NautobotJobRunner
 from nctl_core.names import canonical_node_name
 from nctl_core.nautobot import NautobotClient
+from nctl_core.reconcile.ssh_preflight import STATUS_READY, check_ssh_enrollment
 from nctl_core.sources.desired import DesiredSnapshot
 from nctl_core.sources.actual import ActualSnapshot, fetch_actual_snapshot
 
@@ -103,6 +104,15 @@ def run_observation(
     if not targets or unknown:
         detail = "no target hosts" if not targets else f"hosts are not bootstrap-eligible: {', '.join(unknown)}"
         raise ValueError(detail)
+
+    # fix_sshkey Step 5: narrow defense-in-depth guard, in addition to
+    # reconcile/executor.py's whole-round preflight -- a direct/standalone
+    # caller of run_observation must still fail before any Ansible subprocess
+    # runs rather than hit a bare OpenSSH "Host key verification failed".
+    unenrolled = [entry for entry in check_ssh_enrollment(cfg, targets, snapshot) if entry.status != STATUS_READY]
+    if unenrolled:
+        slugs = ", ".join(sorted(entry.slug for entry in unenrolled))
+        raise ValueError(f"ssh_host_key_unenrolled: {slugs}; run `nctl ssh enroll <slug>` for each")
 
     generated_at = now.isoformat().replace("+00:00", "Z")
     inventory_path = artifacts.write_text(

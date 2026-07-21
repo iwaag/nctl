@@ -205,7 +205,7 @@ The `nctl.reconcile.v1` envelope's `data` carries `operation_id`, `mode`, `scope
 (`planned | already_converged | converged | manual_intervention_required | non_converged | failed`),
 `event_log_path`, `artifact_dir`, `plan_path`, initial/final drift paths, per-round action results
 (`rounds`), `manual_review`/`unsupported` records (target + diff code + evidence), scope/global
-status summaries, and the `dashboard` result. The plan itself
+status summaries, `ssh_preflight` (below), and the `dashboard` result. The plan itself
 (`<events.log_dir>/<operation_id>/plan.json`, schema `nctl.reconcile.plan.v1`) is both embedded in
 plan-mode output and persisted standalone; it never contains a Nautobot token, raw report content,
 or arbitrary shell text — actions carry typed parameters and claimed diff codes, not prose. Neither
@@ -228,6 +228,18 @@ ingest_policy_file = "seed/nodeutils_ingest.yaml"
 service_observation_max_age_hours = 24
 lock_path = "~/.local/state/nctl/reconcile.lock"
 ```
+
+**SSH trust preflight** (`devdocs/small/fix_sshkey/plan.md` Step 5): every round, before observation,
+Nautobot Jobs, inventory writes, or playbooks run, nctl checks that every node touched by an
+SSH-requiring action (`observe_node`, `service_profile`, `dnsmasq_config`) has at least one entry
+under its stable alias in `[ssh].known_hosts_file`. A missing entry fails the whole round with
+`ssh_host_key_unenrolled` and the exact `nctl ssh enroll <slug>` remediation, before any write --
+this is what prevented the original incident (`agdnsmasq`'s observation/IPAM succeeding, then
+failing on the production dnsmasq SSH connection). Ledger-only actions (`link_actual_node`,
+`reconcile_ipam`) never require enrollment, so an unrelated unenrolled host never blocks them. The
+per-host `ready`/`unenrolled` result is always surfaced in `data.ssh_preflight`, even in a dry plan
+(where it is informational only and never blocks). OpenSSH itself, with `StrictHostKeyChecking=yes`
+and `HostKeyAlias`, remains the final verifier of the actual connection.
 
 `nctl reconcile --yes` is the routine entry point that replaces the old
 `bootstrap-inventory` → `collect_nodeutils_and_ingest_nautobot.yml` → `production-inventory`

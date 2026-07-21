@@ -42,6 +42,7 @@ from nctl_core.production.adapter import build_production_node_inputs
 from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
 from nctl_core.production_render import build_production_render, write_production_artifacts
+from nctl_core.ssh_enroll import SshProbeRunner, default_ssh_probe_runner
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .classify import UnclassifiedDiffCodeError
@@ -50,6 +51,14 @@ from .lock import ReconcileLockError, acquire_reconcile_lock
 from .model import PlanScope, ReconcileAction, ReconcilePlan
 from .planner import HostScopeError, build_plan
 from .profiles import ProfileReconciliationError, load_profile_reconciliation
+from .ssh_preflight import (
+    STATUS_MISMATCH,
+    STATUS_READY,
+    STATUS_UNREACHABLE,
+    check_ssh_enrollment,
+    ssh_required_host_slugs,
+    verify_offered_keys,
+)
 
 RECONCILE_SCHEMA = "nctl.reconcile.v1"
 
@@ -89,6 +98,10 @@ class ReconcileData(BaseModel):
     scope_summary: dict[str, int] = Field(default_factory=dict)
     dashboard: DashboardData | None = None
     progress_made: bool = False
+    # Controller-local SSH trust readiness (fix_sshkey Step 5, Design Decision 5/6):
+    # informational alongside drift/action state, never itself a drift code or
+    # Nautobot status. Each entry is one nctl_core.reconcile.ssh_preflight.SshPreflightEntry.
+    ssh_preflight: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class _Interrupted(Exception):
@@ -104,6 +117,7 @@ def run_reconcile(
     now: Callable[[], datetime] | None = None,
     command_runner: CommandRunner | None = None,
     operation_id: str | None = None,
+    ssh_probe: SshProbeRunner | None = None,
 ) -> Envelope[ReconcileData]:
     now = now or (lambda: datetime.now(timezone.utc))
     scope = PlanScope(kind="host", host_slug=host) if host else PlanScope(kind="cluster")
@@ -128,7 +142,9 @@ def run_reconcile(
     try:
         with acquire_reconcile_lock(cfg.reconcile.resolved_lock_path()):
             with _InterruptFlag() as interrupted:
-                return _run_apply(cfg, op, data, artifacts, scope, max_rounds, now, command_runner, interrupted)
+                return _run_apply(
+                    cfg, op, data, artifacts, scope, max_rounds, now, command_runner, interrupted, ssh_probe
+                )
     except ReconcileLockError as exc:
         return _finish(op, data, "failed", [EnvelopeError(code="reconcile_lock_contention", message=str(exc))])
 
@@ -158,6 +174,11 @@ def _run_plan_only(
     data.unsupported = [record.model_dump(mode="json") for record in plan.unsupported]
     data.summary = drift_data.summary
     data.scope_summary = _scope_summary(drift_result.targets, scope, snapshot)
+    required = ssh_required_host_slugs(plan)
+    if required:
+        data.ssh_preflight = [
+            entry.model_dump() for entry in check_ssh_enrollment(cfg, required, snapshot.desired)
+        ]
     return _finish(op, data, "planned", [])
 
 
@@ -171,6 +192,7 @@ def _run_apply(
     now: Callable[[], datetime],
     command_runner: CommandRunner | None,
     interrupted: "_InterruptFlag",
+    ssh_probe: SshProbeRunner | None,
 ) -> Envelope[ReconcileData]:
     rounds_limit = max_rounds or cfg.reconcile.max_rounds
     previous_fingerprint: str | None = None
@@ -233,6 +255,57 @@ def _run_apply(
             errors = [EnvelopeError(code="no_progress", message="drift fingerprint did not change between rounds")]
             break
         previous_fingerprint = plan.drift_fingerprint
+
+        # fix_sshkey Step 5 (Design Decision 5): a predictable missing enrollment
+        # must block this round's writes before observation, Nautobot Jobs,
+        # inventory writes, or playbooks run -- not surface only after they
+        # already succeeded. Ledger-only actions on unrelated hosts are excluded
+        # by ssh_required_host_slugs, so they are never blocked by this gate.
+        required = ssh_required_host_slugs(plan)
+        if required:
+            enrollment = check_ssh_enrollment(cfg, required, snapshot.desired)
+            data.ssh_preflight = [entry.model_dump() for entry in enrollment]
+            unenrolled = [entry for entry in enrollment if entry.status != STATUS_READY]
+            if unenrolled:
+                slugs = ", ".join(sorted(entry.slug for entry in unenrolled))
+                state = "failed"
+                errors = [
+                    EnvelopeError(
+                        code="ssh_host_key_unenrolled",
+                        message=f"unenrolled SSH host(s): {slugs}; run `nctl ssh enroll <slug>` for each",
+                        detail={"hosts": [entry.model_dump() for entry in unenrolled]},
+                    )
+                ]
+                break
+
+            # Presence in the trust file is not proof the current route offers
+            # that key. Scan only observe_node targets over mDNS here -- a
+            # service-phase host may have production select a different route
+            # entirely, so scanning it over mDNS before regeneration could
+            # produce a false unreachable. Live scanning is opt-in (pass
+            # ssh_probe=...): the default keeps `nctl reconcile --yes` free of
+            # extra network round trips and lets the enrollment gate above
+            # carry the primary guarantee (Design Decision 5's main scenario:
+            # a missing key, not a changed one).
+            scan_targets = ssh_required_host_slugs(plan, reconciler_ids=frozenset({"observe_node"}))
+            if ssh_probe is not None and scan_targets:
+                verified = verify_offered_keys(cfg, scan_targets, snapshot.desired, ssh_probe)
+                bad = [entry for entry in verified if entry.status != STATUS_READY]
+                if bad:
+                    state = "failed"
+                    errors = []
+                    for status, code in ((STATUS_MISMATCH, "ssh_host_key_mismatch"), (STATUS_UNREACHABLE, "ssh_host_key_unreachable")):
+                        matching = [entry for entry in bad if entry.status == status]
+                        if matching:
+                            slugs = ", ".join(sorted(entry.slug for entry in matching))
+                            errors.append(
+                                EnvelopeError(
+                                    code=code,
+                                    message=f"{code}: {slugs}",
+                                    detail={"hosts": [entry.model_dump() for entry in matching]},
+                                )
+                            )
+                    break
 
         op.emit("round_started", f"reconcile round {round_index} started", round=round_index)
         try:
@@ -745,6 +818,12 @@ def render_reconcile_text(envelope: Envelope[ReconcileData]) -> str:
         lines.append(f"manual_review: {len(data.manual_review)} finding(s)")
     if data.unsupported:
         lines.append(f"unsupported: {len(data.unsupported)} finding(s)")
+    if data.ssh_preflight:
+        by_status: dict[str, list[str]] = {}
+        for entry in data.ssh_preflight:
+            by_status.setdefault(entry["status"], []).append(entry["slug"])
+        parts = [f"{status}=[{', '.join(sorted(slugs))}]" for status, slugs in sorted(by_status.items())]
+        lines.append(f"ssh_preflight: {' '.join(parts)}")
     for round_summary in data.rounds:
         lines.append(f"round {round_summary.round}: {len(round_summary.actions)} action(s)")
         for action in round_summary.actions:

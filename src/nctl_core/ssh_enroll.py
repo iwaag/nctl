@@ -197,13 +197,13 @@ def select_verified_offered_keys(
     return verified
 
 
-def _read_raw_lines(path: Path) -> list[str]:
+def read_raw_lines(path: Path) -> list[str]:
     if not path.is_file():
         return []
     return path.read_text().splitlines()
 
 
-def _entries_for_lookup_name(lines: list[str], lookup_name: str) -> list[ManagedEntry]:
+def entries_for_lookup_name(lines: list[str], lookup_name: str) -> list[ManagedEntry]:
     entries = []
     for line in lines:
         try:
@@ -331,8 +331,8 @@ def build_ssh_enroll(
         elif fingerprints:
             data.verified_source = "fingerprint"
 
-        raw_lines = _read_raw_lines(known_hosts_path)
-        existing = _entries_for_lookup_name(raw_lines, lookup_name)
+        raw_lines = read_raw_lines(known_hosts_path)
+        existing = entries_for_lookup_name(raw_lines, lookup_name)
         data.managed_keys = [f"{e.key_type} {compute_sha256_fingerprint(e.key_blob_b64)}" for e in existing]
 
         existing_pairs = {(e.key_type, e.key_blob_b64) for e in existing}

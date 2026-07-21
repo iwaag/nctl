@@ -18,6 +18,10 @@ from nctl_core.reconcile.model import ReconcileAction
 from nctl_core.sources.actual import ActualDevice, ActualSnapshot
 from nctl_core.sources.desired import DesiredNode, DesiredSnapshot
 from nctl_core.sources.snapshot import SourceSnapshot
+from nctl_core.ssh_trust import derive_host_key_alias
+
+# Every _node() below shares this fixed DesiredNode UUID regardless of slug.
+NODE_ID = "11111111-1111-1111-1111-111111111111"
 
 
 def _config(tmp_path):
@@ -27,6 +31,7 @@ def _config(tmp_path):
     inventory.parent.mkdir(parents=True)
     inventory.write_text("all: {}\n")
     config_path = tmp_path / "nctl.toml"
+    known_hosts_file = tmp_path / "ssh" / "known_hosts"
     config_path.write_text(
         f"""
 [nautobot]
@@ -48,9 +53,21 @@ lock_path = "{tmp_path / 'reconcile.lock'}"
 
 [repo]
 root = "{tmp_path}"
+
+[ssh]
+known_hosts_file = "{known_hosts_file}"
+lock_path = "{tmp_path / 'ssh.lock'}"
 """
     )
-    return Config.load(config_path)
+    cfg = Config.load(config_path)
+    # Every reconcile-executor test fixture's node shares NODE_ID; enroll it by
+    # default so existing tests exercise post-enrollment behavior, not the new
+    # fix_sshkey Step 5 gate. Tests for the gate itself enroll a *different*
+    # node explicitly instead of reusing this default.
+    known_hosts_file.parent.mkdir(parents=True, exist_ok=True)
+    alias = derive_host_key_alias(NODE_ID)
+    known_hosts_file.write_text(f"{alias} ssh-ed25519 dGVzdC1yZWNvbmNpbGUtZml4dHVyZS1rZXktYnl0ZXM= nctl:test\n")
+    return cfg
 
 
 def _snapshot(nodes=()) -> SourceSnapshot:
@@ -76,8 +93,8 @@ def _target_status(target, status, diffs=()) -> TargetStatus:
     return TargetStatus(target=target, status=status, diffs=list(diffs))
 
 
-def _drift(targets, *, generated_at="2026-07-17T00:00:00+00:00") -> tuple[SourceSnapshot, DriftResult, str]:
-    snapshot = _snapshot(nodes=[_node()])
+def _drift(targets, *, generated_at="2026-07-17T00:00:00+00:00", nodes=None) -> tuple[SourceSnapshot, DriftResult, str]:
+    snapshot = _snapshot(nodes=nodes if nodes is not None else [_node()])
     summary: dict[str, int] = {}
     for t in targets:
         summary[t.status.value] = summary.get(t.status.value, 0) + 1
@@ -182,6 +199,93 @@ def test_operation_id_can_be_pre_assigned_by_a_caller(tmp_path, monkeypatch):
 
     assert envelope.data.operation_id == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     assert (tmp_path / "events" / "01ARZ3NDEKTSV4RRFFQ69G5FAV.jsonl").is_file()
+
+
+# --- SSH preflight (fix_sshkey Step 5) ---------------------------------------
+
+UNENROLLED_NODE_ID = "99999999-9999-9999-9999-999999999999"
+
+
+def _unenrolled_node(slug="agunenrolled") -> DesiredNode:
+    return DesiredNode(
+        id=UNENROLLED_NODE_ID, slug=slug, name=slug, lifecycle="active", node_type="device",
+        accepted_actual_types=["device"],
+    )
+
+
+def test_apply_blocks_on_unenrolled_ssh_host_before_any_action_executes(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _unenrolled_node()
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="missing_actual_data", severity=Severity.ERROR, message="x")
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])], nodes=[node])])
+    _stub_dashboard(monkeypatch)
+    observation_calls = {"n": 0}
+    monkeypatch.setattr(
+        executor_module,
+        "run_observation",
+        lambda *a, **k: observation_calls.__setitem__("n", observation_calls["n"] + 1)
+        or executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
+    )
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert not envelope.ok
+    assert any(e.code == "ssh_host_key_unenrolled" for e in envelope.errors)
+    assert observation_calls["n"] == 0
+    assert envelope.data.rounds == []
+    assert envelope.data.ssh_preflight == [
+        {"slug": "agunenrolled", "alias": derive_host_key_alias(UNENROLLED_NODE_ID), "status": "unenrolled", "detail": ""}
+    ]
+
+
+def test_dry_plan_reports_ssh_preflight_without_blocking(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _unenrolled_node()
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="missing_actual_data", severity=Severity.ERROR, message="x")
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])], nodes=[node])])
+
+    envelope = run_reconcile(cfg, apply_changes=False)
+
+    assert envelope.ok
+    assert envelope.data.state == "planned"
+    assert envelope.data.ssh_preflight[0]["status"] == "unenrolled"
+    assert envelope.data.ssh_preflight[0]["slug"] == "agunenrolled"
+
+
+def test_ledger_only_plan_not_blocked_by_unenrolled_host(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _unenrolled_node()
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="actual_node_not_linked", severity=Severity.ERROR, message="x")
+
+    def snapshot_with_candidate():
+        snapshot = _snapshot(nodes=[node])
+        snapshot.actual = ActualSnapshot(devices=[ActualDevice(id="dev-1", name=node.name)])
+        return snapshot
+
+    def make_drift(status, diffs):
+        targets = [_target_status(diff.target, status, diffs)]
+        summary = {targets[0].status.value: 1}
+        return snapshot_with_candidate(), DriftResult(summary=summary, targets=targets), "2026-07-17T00:00:00+00:00"
+
+    drifting = make_drift(Status.DRIFTING, [diff])
+    converged = make_drift(Status.CONVERGED, [])
+    _sequence(monkeypatch, [drifting, converged])
+    _stub_dashboard(monkeypatch)
+    called = {"n": 0}
+    monkeypatch.setattr(
+        executor_module,
+        "execute_link_actual_node",
+        lambda client, action: called.__setitem__("n", called["n"] + 1)
+        or LinkActualNodeResult(node_id=node.id, node_slug=node.slug, field="realized_device", candidate_id="dev-1"),
+    )
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert called["n"] == 1
+    assert envelope.data.ssh_preflight == []
 
 
 # --- already converged -------------------------------------------------------
@@ -296,7 +400,7 @@ def test_observe_node_action_only_receives_node_slugs_for_service_diffs(tmp_path
         message="dnsmasq: service_observation_missing",
         desired={"expected": {"node_slug": node.slug, "node_id": node.id}},
     )
-    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])])])
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])], nodes=[node])])
     _stub_dashboard(monkeypatch)
 
     captured = {}
