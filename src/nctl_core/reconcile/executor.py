@@ -55,7 +55,9 @@ from .ssh_preflight import (
     STATUS_MISMATCH,
     STATUS_READY,
     STATUS_UNREACHABLE,
+    SshPreflightEntry,
     check_ssh_enrollment,
+    resolve_production_routes,
     ssh_required_host_slugs,
     verify_offered_keys,
 )
@@ -108,6 +110,32 @@ class _Interrupted(Exception):
     pass
 
 
+class _SshPostRegenScanFailed(Exception):
+    """A post-production-regeneration offered-key scan found a mismatch/unreachable host."""
+
+    def __init__(self, errors: list[EnvelopeError]) -> None:
+        super().__init__("ssh post-regeneration scan failed")
+        self.errors = errors
+
+
+def _ssh_scan_errors(entries: list["SshPreflightEntry"]) -> list[EnvelopeError]:
+    """Turn non-ready `verify_offered_keys` entries into structured envelope errors."""
+    bad = [entry for entry in entries if entry.status != STATUS_READY]
+    errors: list[EnvelopeError] = []
+    for status, code in ((STATUS_MISMATCH, "ssh_host_key_mismatch"), (STATUS_UNREACHABLE, "ssh_host_key_unreachable")):
+        matching = [entry for entry in bad if entry.status == status]
+        if matching:
+            slugs = ", ".join(sorted(entry.slug for entry in matching))
+            errors.append(
+                EnvelopeError(
+                    code=code,
+                    message=f"{code}: {slugs}",
+                    detail={"hosts": [entry.model_dump() for entry in matching]},
+                )
+            )
+    return errors
+
+
 def run_reconcile(
     cfg: Config,
     *,
@@ -120,6 +148,7 @@ def run_reconcile(
     ssh_probe: SshProbeRunner | None = None,
 ) -> Envelope[ReconcileData]:
     now = now or (lambda: datetime.now(timezone.utc))
+    ssh_probe = ssh_probe or default_ssh_probe_runner()
     scope = PlanScope(kind="host", host_slug=host) if host else PlanScope(kind="cluster")
     op = OperationLog("reconcile", cfg.events.resolved_log_dir(), operation_id=operation_id)
     op.emit("started", "reconcile started")
@@ -279,42 +308,31 @@ def _run_apply(
                 break
 
             # Presence in the trust file is not proof the current route offers
-            # that key. Scan only observe_node targets over mDNS here -- a
-            # service-phase host may have production select a different route
-            # entirely, so scanning it over mDNS before regeneration could
-            # produce a false unreachable. Live scanning is opt-in (pass
-            # ssh_probe=...): the default keeps `nctl reconcile --yes` free of
-            # extra network round trips and lets the enrollment gate above
-            # carry the primary guarantee (Design Decision 5's main scenario:
-            # a missing key, not a changed one).
+            # that key. Scan only observe_node targets over mDNS here -- the
+            # bootstrap phase always connects that way. Service-phase targets
+            # (service_profile/dnsmasq_config) are scanned again inside
+            # _execute_round, after production regeneration, over whatever
+            # route production actually resolved -- not mDNS, which a
+            # service-phase host may not even answer on.
             scan_targets = ssh_required_host_slugs(plan, reconciler_ids=frozenset({"observe_node"}))
-            if ssh_probe is not None and scan_targets:
+            if scan_targets:
                 verified = verify_offered_keys(cfg, scan_targets, snapshot.desired, ssh_probe)
-                bad = [entry for entry in verified if entry.status != STATUS_READY]
-                if bad:
-                    state = "failed"
-                    errors = []
-                    for status, code in ((STATUS_MISMATCH, "ssh_host_key_mismatch"), (STATUS_UNREACHABLE, "ssh_host_key_unreachable")):
-                        matching = [entry for entry in bad if entry.status == status]
-                        if matching:
-                            slugs = ", ".join(sorted(entry.slug for entry in matching))
-                            errors.append(
-                                EnvelopeError(
-                                    code=code,
-                                    message=f"{code}: {slugs}",
-                                    detail={"hosts": [entry.model_dump() for entry in matching]},
-                                )
-                            )
+                bad_errors = _ssh_scan_errors(verified)
+                if bad_errors:
+                    state, errors = "failed", bad_errors
                     break
 
         op.emit("round_started", f"reconcile round {round_index} started", round=round_index)
         try:
             round_summary = _execute_round(
-                cfg, op, artifacts, round_index, plan, snapshot, now, command_runner, interrupted
+                cfg, op, artifacts, round_index, plan, snapshot, now, command_runner, interrupted, ssh_probe
             )
         except _Interrupted:
             state = "failed"
             errors = [EnvelopeError(code="interrupted", message="reconcile was interrupted during action execution")]
+            break
+        except _SshPostRegenScanFailed as exc:
+            state, errors = "failed", exc.errors
             break
         except (ConfigError, NautobotError) as exc:
             state = "failed"
@@ -357,6 +375,7 @@ def _execute_round(
     now: Callable[[], datetime],
     command_runner: CommandRunner | None,
     interrupted: "_InterruptFlag",
+    ssh_probe: SshProbeRunner,
 ) -> RoundSummary:
     summary = RoundSummary(round=round_index, drift_fingerprint=plan.drift_fingerprint)
     operation_generated_at = plan.drift_generated_at or snapshot.fetched_at.isoformat()
@@ -378,6 +397,19 @@ def _execute_round(
         client.close()
 
     summary.actions.append(_regenerate_production_inventory(cfg))
+
+    # fix_sshkey Step 5 (Design Decision 5): a route created only by an IPAM
+    # action just above may not have been testable until now. Re-verify the
+    # production-resolved route for every service-phase SSH target before the
+    # first production playbook runs -- presence in the trust store proved
+    # nothing about which key the *newly selected* route actually offers.
+    service_scan_targets = ssh_required_host_slugs(plan, reconciler_ids=frozenset({"service_profile", "dnsmasq_config"}))
+    if service_scan_targets:
+        routes = resolve_production_routes(snapshot, service_scan_targets, operation_generated_at)
+        verified = verify_offered_keys(cfg, service_scan_targets, snapshot.desired, ssh_probe, route_overrides=routes)
+        scan_errors = _ssh_scan_errors(verified)
+        if scan_errors:
+            raise _SshPostRegenScanFailed(scan_errors)
 
     for action in service_actions:
         if interrupted.is_set():

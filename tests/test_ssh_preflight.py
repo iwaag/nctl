@@ -13,12 +13,20 @@ from nctl_core.reconcile.ssh_preflight import (
     STATUS_UNENROLLED,
     STATUS_UNREACHABLE,
     check_ssh_enrollment,
+    resolve_production_routes,
     ssh_required_host_slugs,
     verify_offered_keys,
 )
 from nctl_core.ssh_enroll import SshProbeRunner
 from nctl_core.ssh_trust import compute_sha256_fingerprint, derive_host_key_alias
-from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredSnapshot
+from nctl_core.sources.actual import ActualSnapshot
+from nctl_core.sources.desired import (
+    DesiredEndpoint,
+    DesiredNode,
+    DesiredNodeOperationalOverride,
+    DesiredSnapshot,
+)
+from nctl_core.sources.snapshot import SourceSnapshot
 
 NODE_ID = "27818c12-fe15-4c9f-83d0-7949523f6c33"
 LEDGER_NODE_ID = "00000000-0000-0000-0000-000000000002"
@@ -95,6 +103,30 @@ def _action(reconciler_id: str, action_kind: str, slug: str) -> ReconcileAction:
         mutates=True,
         requires_observation=False,
     )
+
+
+def _service_action(reconciler_id: str, action_kind: str, service_slug: str, host_slugs: list[str]) -> ReconcileAction:
+    """Mirrors reconcilers.plan_service_profile: targets are the *service*
+    (kind="service"), and the actual node slugs live in parameters["host_slugs"]."""
+    return ReconcileAction(
+        id=f"action-{service_slug}",
+        reconciler_id=reconciler_id,
+        action_kind=action_kind,
+        targets=[Target(kind="service", slug=service_slug)],
+        claimed_diff_codes=[],
+        reason="test",
+        mutates=True,
+        requires_observation=False,
+        parameters={"host_slugs": host_slugs},
+    )
+
+
+def test_ssh_required_host_slugs_reads_host_slugs_param_for_service_actions():
+    plan = _plan(
+        _service_action("service_profile", "playbook", "web", ["agweb"]),
+        _service_action("dnsmasq_config", "dnsmasq_config", "dnsmasq", ["agdnsmasq"]),
+    )
+    assert ssh_required_host_slugs(plan) == {"agweb", "agdnsmasq"}
 
 
 def test_ssh_required_host_slugs_includes_observe_and_playbook_actions():
@@ -192,3 +224,64 @@ def test_verify_offered_keys_skips_scan_when_unenrolled(tmp_path):
     probe = _probe(keyscan_raises=AssertionError("should not be called"))
     entries = verify_offered_keys(cfg, ["agdnsmasq"], _snapshot(), probe)
     assert entries[0].status == STATUS_UNENROLLED
+
+
+def _haos_source_snapshot() -> SourceSnapshot:
+    """A node whose production route resolves to an IP distinct from its mDNS name."""
+    node = DesiredNode(id=NODE_ID, slug="agdnsmasq", name="agdnsmasq", lifecycle="active", node_type="device")
+    endpoint = DesiredEndpoint(
+        id="endpoint-1", name="primary", endpoint_type="primary", node_id=NODE_ID, node_slug="agdnsmasq",
+        ip_address="192.168.0.2/24", mdns_name="agdnsmasq.local",
+    )
+    override = DesiredNodeOperationalOverride(id="override-1", node_id=NODE_ID, declared_host_os="haos")
+    return SourceSnapshot(
+        desired=DesiredSnapshot(nodes=[node], endpoints=[endpoint], operational_overrides=[override]),
+        actual=ActualSnapshot(),
+        fetched_at=datetime(2026, 7, 22, tzinfo=timezone.utc),
+    )
+
+
+def test_resolve_production_routes_uses_the_same_pipeline_as_composer():
+    source_snapshot = _haos_source_snapshot()
+    routes = resolve_production_routes(source_snapshot, ["agdnsmasq"], "2026-07-22T00:00:00+00:00")
+    assert routes == {"agdnsmasq": "192.168.0.2"}
+
+
+def test_resolve_production_routes_omits_unresolvable_nodes():
+    source_snapshot = _haos_source_snapshot()
+    routes = resolve_production_routes(source_snapshot, ["does-not-exist"], "2026-07-22T00:00:00+00:00")
+    assert routes == {}
+
+
+def test_verify_offered_keys_scans_route_override_instead_of_mdns(tmp_path):
+    cfg = _config(tmp_path)
+    alias = derive_host_key_alias(NODE_ID)
+    _write_managed_entry(cfg, alias)
+    scanned_hosts = []
+
+    def keyscan(host, port, timeout):
+        scanned_hosts.append(host)
+        return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {KEY_BLOB}\n", stderr="")
+
+    probe = SshProbeRunner(keyscan=keyscan, known_hosts_files_for=lambda h: [], keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+
+    entries = verify_offered_keys(
+        cfg, ["agdnsmasq"], _snapshot(), probe, route_overrides={"agdnsmasq": "192.168.0.2"}
+    )
+
+    assert scanned_hosts == ["192.168.0.2"]
+    assert entries[0].status == STATUS_READY
+
+
+def test_verify_offered_keys_unreachable_when_route_override_missing_and_no_mdns(tmp_path):
+    cfg = _config(tmp_path)
+    alias = derive_host_key_alias(NODE_ID)
+    _write_managed_entry(cfg, alias)
+    node = DesiredNode(id=NODE_ID, slug="agdnsmasq", name="agdnsmasq", lifecycle="active", node_type="device")
+    snapshot = DesiredSnapshot(nodes=[node])  # no endpoints at all
+    probe = _probe(keyscan_raises=AssertionError("should not be called"))
+
+    entries = verify_offered_keys(cfg, ["agdnsmasq"], snapshot, probe, route_overrides={})
+
+    assert entries[0].status == STATUS_UNREACHABLE
+    assert entries[0].detail == "no_resolvable_route"

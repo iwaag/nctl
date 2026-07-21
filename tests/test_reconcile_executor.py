@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -16,12 +17,38 @@ from nctl_core.reconcile.ledger import IpamReconcileResult, LinkActualNodeResult
 from nctl_core.reconcile.lock import acquire_reconcile_lock
 from nctl_core.reconcile.model import ReconcileAction
 from nctl_core.sources.actual import ActualDevice, ActualSnapshot
-from nctl_core.sources.desired import DesiredNode, DesiredSnapshot
+from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredSnapshot
 from nctl_core.sources.snapshot import SourceSnapshot
+from nctl_core.ssh_enroll import SshProbeRunner
 from nctl_core.ssh_trust import derive_host_key_alias
 
 # Every _node() below shares this fixed DesiredNode UUID regardless of slug.
 NODE_ID = "11111111-1111-1111-1111-111111111111"
+# The key _config() enrolls for NODE_ID and the default fake ssh_probe both offer.
+FIXTURE_KEY_BLOB = "dGVzdC1yZWNvbmNpbGUtZml4dHVyZS1rZXktYnl0ZXM="
+
+
+@pytest.fixture(autouse=True)
+def _fake_ssh_probe(monkeypatch):
+    """Default every test to a fake ssh-keyscan offering FIXTURE_KEY_BLOB.
+
+    Without this, the fix_sshkey Step 5 round-start/post-regen scans would
+    shell out to a real `ssh-keyscan` against fixture hostnames that don't
+    exist. Tests that want to exercise a mismatch/unreachable scan result
+    inject their own probe via run_reconcile(ssh_probe=...) instead.
+    """
+
+    def keyscan(host: str, port: int, timeout: float) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {FIXTURE_KEY_BLOB}\n", stderr=""
+        )
+
+    fake = SshProbeRunner(
+        keyscan=keyscan,
+        known_hosts_files_for=lambda host: [],
+        keygen_find=lambda path, host: subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(executor_module, "default_ssh_probe_runner", lambda: fake)
 
 
 def _config(tmp_path):
@@ -66,13 +93,21 @@ lock_path = "{tmp_path / 'ssh.lock'}"
     # node explicitly instead of reusing this default.
     known_hosts_file.parent.mkdir(parents=True, exist_ok=True)
     alias = derive_host_key_alias(NODE_ID)
-    known_hosts_file.write_text(f"{alias} ssh-ed25519 dGVzdC1yZWNvbmNpbGUtZml4dHVyZS1rZXktYnl0ZXM= nctl:test\n")
+    known_hosts_file.write_text(f"{alias} ssh-ed25519 {FIXTURE_KEY_BLOB} nctl:test\n")
     return cfg
 
 
 def _snapshot(nodes=()) -> SourceSnapshot:
+    nodes = list(nodes)
+    endpoints = [
+        DesiredEndpoint(
+            id=f"endpoint-{node.slug}", name="primary", endpoint_type="primary",
+            node_id=node.id, node_slug=node.slug, mdns_name=f"{node.slug}.local",
+        )
+        for node in nodes
+    ]
     return SourceSnapshot(
-        desired=DesiredSnapshot(nodes=list(nodes)),
+        desired=DesiredSnapshot(nodes=nodes, endpoints=endpoints),
         actual=ActualSnapshot(),
         fetched_at=datetime.now(timezone.utc),
     )
@@ -286,6 +321,39 @@ def test_ledger_only_plan_not_blocked_by_unenrolled_host(tmp_path, monkeypatch):
 
     assert called["n"] == 1
     assert envelope.data.ssh_preflight == []
+
+
+def test_apply_blocks_on_mismatched_offered_key_before_observation_runs(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()  # enrolled by _config() with FIXTURE_KEY_BLOB
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="missing_actual_data", severity=Severity.ERROR, message="x")
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])])])
+    _stub_dashboard(monkeypatch)
+    observation_calls = {"n": 0}
+    monkeypatch.setattr(
+        executor_module,
+        "run_observation",
+        lambda *a, **k: observation_calls.__setitem__("n", observation_calls["n"] + 1)
+        or executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
+    )
+
+    def keyscan(host, port, timeout):
+        import subprocess as sp
+
+        return sp.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {OTHER_KEY_BLOB}\n", stderr="")
+
+    bad_probe = SshProbeRunner(keyscan=keyscan, known_hosts_files_for=lambda h: [], keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+
+    envelope = run_reconcile(cfg, apply_changes=True, ssh_probe=bad_probe)
+
+    assert not envelope.ok
+    assert any(e.code == "ssh_host_key_mismatch" for e in envelope.errors)
+    assert observation_calls["n"] == 0
+    assert envelope.data.rounds == []
+
+
+OTHER_KEY_BLOB = "dGVzdC1yZWNvbmNpbGUtb3RoZXIta2V5LWJ5dGVz"
 
 
 # --- already converged -------------------------------------------------------
@@ -505,6 +573,71 @@ def test_link_actual_node_action_executes_and_converges_next_round(tmp_path, mon
     assert len(envelope.data.rounds) == 1
     [action_result] = [a for a in envelope.data.rounds[0].actions if a.reconciler_id == "link_actual_node"]
     assert action_result.success is True
+
+
+# --- post-regeneration SSH route verification (fix_sshkey Step 5) -----------
+
+
+def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+
+    def fake_load_profiles(playbook_dir):
+        return ({"good": {"group": "good_server", "config_schema_version": "1", "variables": {}}}, "digest")
+
+    monkeypatch.setattr(executor_module, "load_deployment_profiles", fake_load_profiles)
+
+    from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
+
+    monkeypatch.setattr(
+        executor_module,
+        "load_profile_reconciliation",
+        lambda playbook_dir, names: {
+            "good": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/good.yml")),
+        },
+    )
+    from nctl_core.production_render import ProductionRenderData
+
+    monkeypatch.setattr(
+        executor_module, "build_production_render", lambda cfg: Envelope.build("nctl.render.production.v1", ProductionRenderData(), [])
+    )
+    monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
+    _stub_dashboard(monkeypatch)
+
+    playbook_run_calls = {"n": 0}
+    monkeypatch.setattr(
+        executor_module,
+        "AnsibleRunner",
+        lambda *a, **k: SimpleNamespace(run=lambda *a2, **k2: playbook_run_calls.__setitem__("n", playbook_run_calls["n"] + 1)),
+    )
+
+    node = _node()
+    good_service = _service_and_placement("good-svc", "good", node)
+    diff = DiffRecord(
+        target=Target(kind="service", slug="good-svc", name="good-svc", id="s-good"),
+        code="service_not_running",
+        severity=Severity.ERROR,
+        message="x",
+    )
+
+    def make_snapshot():
+        snapshot = _snapshot(nodes=[node])
+        snapshot.desired.services = [good_service[0]]
+        snapshot.desired.placements = [good_service[1]]
+        return snapshot
+
+    _sequence(monkeypatch, [(make_snapshot(), DriftResult(summary={"drifting": 1}, targets=[_target_status(diff.target, Status.DRIFTING, [diff])]), "2026-07-17T00:00:00+00:00")])
+
+    def keyscan(host, port, timeout):
+        return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {OTHER_KEY_BLOB}\n", stderr="")
+
+    bad_probe = SshProbeRunner(keyscan=keyscan, known_hosts_files_for=lambda h: [], keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+
+    envelope = run_reconcile(cfg, apply_changes=True, ssh_probe=bad_probe)
+
+    assert not envelope.ok
+    assert any(e.code == "ssh_host_key_mismatch" for e in envelope.errors)
+    assert playbook_run_calls["n"] == 0
+    assert envelope.data.rounds == []
 
 
 # --- independent partial failure among service actions -----------------------

@@ -27,8 +27,12 @@ from pydantic import BaseModel
 
 from nctl_core.config import Config
 from nctl_core.hosts_intent import select_mdns_endpoint
+from nctl_core.production.adapter import build_production_node_inputs
+from nctl_core.production.composer import resolve_effective_route, try_resolve_operational_values
+from nctl_core.production.contract import ContractError
 from nctl_core.reconcile.model import ReconcilePlan
 from nctl_core.sources.desired import DesiredSnapshot
+from nctl_core.sources.snapshot import SourceSnapshot
 from nctl_core.ssh_enroll import (
     SshProbeRunner,
     entries_for_lookup_name,
@@ -68,13 +72,21 @@ def ssh_required_host_slugs(
     so scanning it over mDNS could produce a false `unreachable`.
     """
     ids = reconciler_ids if reconciler_ids is not None else SSH_REQUIRING_RECONCILER_IDS
-    return {
-        target.slug
-        for action in plan.actions
-        if action.reconciler_id in ids
-        for target in action.targets
-        if target.kind == "node" and target.slug
-    }
+    slugs: set[str] = set()
+    for action in plan.actions:
+        if action.reconciler_id not in ids:
+            continue
+        # service_profile/dnsmasq_config actions target the *service* (their
+        # `targets` are kind="service"); the node slugs they actually touch
+        # live in parameters["host_slugs"] (reconcilers.plan_service_profile).
+        # observe_node's targets are the nodes themselves and it sets no
+        # host_slugs parameter, so this falls through to the target loop.
+        host_slugs = action.parameters.get("host_slugs")
+        if host_slugs:
+            slugs.update(host_slugs)
+            continue
+        slugs.update(target.slug for target in action.targets if target.kind == "node" and target.slug)
+    return slugs
 
 
 def _resolve_alias_and_lookup_name(
@@ -117,17 +129,54 @@ def check_ssh_enrollment(
     return entries
 
 
+def resolve_production_routes(
+    source_snapshot: SourceSnapshot, host_slugs: Iterable[str], generated_at: str
+) -> dict[str, str]:
+    """Resolve the `ansible_host` production would currently use for each of `host_slugs`.
+
+    Reuses `production.composer.resolve_effective_route` -- the exact same
+    connection-resolution pipeline `nctl render production` uses -- so this
+    never becomes a second, potentially disagreeing, route-selection
+    implementation. A slug whose route cannot be resolved (ineligible node,
+    missing facts, contract error) is simply absent from the returned map;
+    callers treat that as unreachable rather than raising.
+    """
+    wanted = set(host_slugs)
+    routes: dict[str, str] = {}
+    for node in build_production_node_inputs(source_snapshot):
+        if node.slug not in wanted:
+            continue
+        effective, finding = try_resolve_operational_values(node, generated_at)
+        if finding is not None or effective is None:
+            continue
+        try:
+            connection = resolve_effective_route(node, effective)
+        except ContractError:
+            continue
+        host = connection.get("ansible_host")
+        if host:
+            routes[node.slug] = host
+    return routes
+
+
 def verify_offered_keys(
     cfg: Config,
     host_slugs: Iterable[str],
     snapshot: DesiredSnapshot,
     probe: SshProbeRunner,
+    *,
+    route_overrides: dict[str, str] | None = None,
 ) -> list[SshPreflightEntry]:
-    """Scan each already-enrolled host's mDNS endpoint and compare against the managed key.
+    """Scan each already-enrolled host's current route and compare against the managed key.
 
+    Without `route_overrides`, the mDNS endpoint is used (the bootstrap-phase
+    route). With `route_overrides` (from `resolve_production_routes`), the
+    production-resolved `ansible_host` is scanned instead -- the service phase
+    may connect over an IP or `.home.arpa` name production selected, not mDNS.
     A scan can only prove a mismatch against an already-trusted key -- it never
     authorizes a new one. Unenrolled hosts are reported as such rather than scanned.
     """
+    route_overrides = route_overrides or {}
     known_hosts_path = cfg.ssh.resolved_known_hosts_file()
     raw_lines = read_raw_lines(known_hosts_path)
     entries = []
@@ -142,17 +191,20 @@ def verify_offered_keys(
             continue
 
         node = next((n for n in snapshot.nodes if n.slug == slug), None)
-        endpoints = [e for e in snapshot.endpoints if e.node_id == node.id]
-        endpoint = select_mdns_endpoint(endpoints)
-        if endpoint is None or not endpoint.mdns_name:
+        route = route_overrides.get(slug)
+        if route is None:
+            endpoints = [e for e in snapshot.endpoints if e.node_id == node.id]
+            endpoint = select_mdns_endpoint(endpoints)
+            route = endpoint.mdns_name if endpoint else None
+        if not route:
             entries.append(
-                SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail="no_mdns_endpoint")
+                SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail="no_resolvable_route")
             )
             continue
         override = next((o for o in snapshot.operational_overrides if o.node_id == node.id), None)
         port = override.ansible_port if override and override.ansible_port else 22
         try:
-            offered = scan_offered_keys(probe, endpoint.mdns_name, port, cfg.ssh.keyscan_timeout_seconds)
+            offered = scan_offered_keys(probe, route, port, cfg.ssh.keyscan_timeout_seconds)
         except SshTrustError as exc:
             entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail=str(exc)))
             continue

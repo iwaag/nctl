@@ -236,10 +236,19 @@ under its stable alias in `[ssh].known_hosts_file`. A missing entry fails the wh
 `ssh_host_key_unenrolled` and the exact `nctl ssh enroll <slug>` remediation, before any write --
 this is what prevented the original incident (`agdnsmasq`'s observation/IPAM succeeding, then
 failing on the production dnsmasq SSH connection). Ledger-only actions (`link_actual_node`,
-`reconcile_ipam`) never require enrollment, so an unrelated unenrolled host never blocks them. The
-per-host `ready`/`unenrolled` result is always surfaced in `data.ssh_preflight`, even in a dry plan
-(where it is informational only and never blocks). OpenSSH itself, with `StrictHostKeyChecking=yes`
-and `HostKeyAlias`, remains the final verifier of the actual connection.
+`reconcile_ipam`) never require enrollment, so an unrelated unenrolled host never blocks them.
+Presence in the trust store is re-verified against what a route currently offers, at two points:
+`observe_node` targets are scanned over mDNS before the bootstrap phase, and `service_profile`/
+`dnsmasq_config` targets are scanned again after production inventory regeneration, this time over
+whichever route `nctl render production`'s own connection resolution (`local_ip -> dns -> mdns ->
+inventory_hostname`) actually selected (`production.composer.resolve_effective_route`, shared by both
+so preflight never runs a second, disagreeing route-selection implementation). A mismatch or
+unreachable route fails with `ssh_host_key_mismatch`/`ssh_host_key_unreachable` before the first
+playbook using that route runs. A scan can only prove a mismatch against an already-trusted
+key -- it never authorizes a new one. The per-host `ready`/`unenrolled` result is always surfaced in
+`data.ssh_preflight`, even in a dry plan (where it is informational only, no scan runs, and it never
+blocks). OpenSSH itself, with `StrictHostKeyChecking=yes` and `HostKeyAlias`, remains the final
+verifier of the actual connection.
 
 `nctl reconcile --yes` is the routine entry point that replaces the old
 `bootstrap-inventory` → `collect_nodeutils_and_ingest_nautobot.yml` → `production-inventory`

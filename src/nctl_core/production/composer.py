@@ -446,6 +446,29 @@ class NodeOutcome:
     local_error: LocalCompositionError | None = None
 
 
+def resolve_effective_route(node: NodeInput, effective: EffectiveOperationalValues) -> dict[str, Any]:
+    """Resolve the connection variables (including `ansible_host`) production would use for `node`.
+
+    Extracted so `nctl_core.reconcile.ssh_preflight` can ask "what route would
+    production actually connect over right now" without duplicating this
+    resolution logic (fix_sshkey Step 5) -- the composed inventory itself
+    never exports `ansible_host` per host (see `_compose_host` below), so this
+    is the one place both call sites can get it from.
+    """
+    declared = effective.actual_state_policy.value == "declared"
+    realized = None if declared else node.realized
+    facts: ActualFacts | None = realized.facts if realized else None
+    selected = effective.selected_endpoint
+    return resolve_connection_variables(
+        inventory_hostname=node.slug,
+        actual_state_policy=effective.actual_state_policy.value,
+        connection_path=effective.connection_path.value,
+        actual_local_ip=facts.local_ip if facts else None,
+        local_endpoint=selected.evidence() if effective.connection_path.value == "local" else None,
+        tailscale_endpoint=selected.evidence() if effective.connection_path.value == "tailscale" else None,
+    )
+
+
 def try_resolve_operational_values(
     node: NodeInput, generated_at: str
 ) -> tuple[EffectiveOperationalValues | None, dict[str, Any] | None]:
@@ -613,17 +636,9 @@ def _compose_host(
     declared = effective.actual_state_policy.value == "declared"
     realized = None if declared else node.realized
     facts: ActualFacts | None = realized.facts if realized else None
-    selected = effective.selected_endpoint
 
     try:
-        connection = resolve_connection_variables(
-            inventory_hostname=node.slug,
-            actual_state_policy=effective.actual_state_policy.value,
-            connection_path=effective.connection_path.value,
-            actual_local_ip=facts.local_ip if facts else None,
-            local_endpoint=selected.evidence() if effective.connection_path.value == "local" else None,
-            tailscale_endpoint=selected.evidence() if effective.connection_path.value == "tailscale" else None,
-        )
+        connection = resolve_effective_route(node, effective)
     except ContractError as exc:
         _localize(
             exc,
