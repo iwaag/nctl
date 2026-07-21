@@ -68,15 +68,25 @@ class NautobotClient:
 
     def rest_patch(self, path: str, payload: dict[str, Any]) -> httpx.Response:
         try:
-            return self._client.patch(path, json=payload)
+            response = self._client.patch(path, json=payload)
         except httpx.RequestError as exc:
             raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        self._raise_for_auth(response)
+        return response
 
     def rest_post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
         try:
-            return self._client.post(path, json=payload)
+            response = self._client.post(path, json=payload)
         except httpx.RequestError as exc:
             raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        self._raise_for_auth(response)
+        return response
+
+    @staticmethod
+    def _raise_for_auth(response: httpx.Response) -> None:
+        """Consistent 401/403 handling for every write path, matching `graphql()`."""
+        if response.status_code in (401, 403):
+            raise NautobotAuthError(f"authentication failed ({response.status_code})")
 
     def rest_download(self, path: str) -> httpx.Response:
         try:
