@@ -82,6 +82,14 @@ class NautobotClient:
         self._raise_for_auth(response)
         return response
 
+    def rest_delete(self, path: str) -> httpx.Response:
+        try:
+            response = self._client.delete(path)
+        except httpx.RequestError as exc:
+            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        self._raise_for_auth(response)
+        return response
+
     @staticmethod
     def _raise_for_auth(response: httpx.Response) -> None:
         """Consistent 401/403 handling for every write path, matching `graphql()`."""

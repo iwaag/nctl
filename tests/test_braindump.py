@@ -1,9 +1,10 @@
-"""Operation-level tests for `nctl_core.braindump` create/update/list/show (Phase 2 Step 2.3).
+"""Operation-level tests for `nctl_core.braindump` (Phase 2 Steps 2.3-2.4: create/update/list/show,
+review create-or-replace, and both delete operations).
 
 Follows the `test_lifecycle_contract.py` pattern: GraphQL reads are monkeypatched at the
 `fetch_braindump_show`/`fetch_braindump_list` call sites (isolating REST contract assertions from
-GraphQL response shape, already covered by `test_sources_braindump.py`), while REST POST/PATCH are
-mocked with `respx` against the real `NautobotClient`.
+GraphQL response shape, already covered by `test_sources_braindump.py`), while REST
+POST/PATCH/DELETE are mocked with `respx` against the real `NautobotClient`.
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ import respx
 
 from nctl_core.braindump import (
     BraindumpConfirmationMismatchError,
+    BraindumpDeleteRejectedError,
     BraindumpNotFoundError,
     BraindumpValidationFailedError,
     BraindumpWriteRejectedError,
+    DeleteConfirmationMismatchError,
     InputConflictError,
     InputFileError,
     InputFileInvalidUtf8Error,
@@ -28,7 +31,14 @@ from nctl_core.braindump import (
     InvalidBraindumpIdError,
     InvalidTextError,
     NoUpdateFieldsError,
+    ReviewConfirmationMismatchError,
+    ReviewDeleteRejectedError,
+    ReviewValidationFailedError,
+    ReviewWriteRejectedError,
     create_braindump,
+    create_or_replace_review,
+    delete_braindump,
+    delete_review,
     list_braindumps,
     resolve_text_input,
     show_braindump,
@@ -375,3 +385,304 @@ def test_update_connection_failure_propagates(monkeypatch):
     with _client() as client:
         with pytest.raises(NautobotConnectionError):
             update_braindump(client, BD_ID, title="new")
+
+
+# -- review create-or-replace ---------------------------------------------------------------------
+
+REVIEW_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def _review(id: str = REVIEW_ID, summary: str = "s", last_updated: datetime = T0):
+    return AlignmentReviewRead(id=id, summary=summary, created=last_updated, last_updated=last_updated)
+
+
+@respx.mock
+def test_review_creates_when_absent(monkeypatch):
+    _patch_show(
+        monkeypatch,
+        [_read(review=None), _read(review=_review(summary="new summary"))],
+    )
+    post_route = respx.post(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/").mock(
+        return_value=httpx.Response(201, json={"id": REVIEW_ID})
+    )
+
+    with _client() as client:
+        record, action = create_or_replace_review(client, BD_ID, summary="new summary")
+
+    assert post_route.call_count == 1
+    assert json.loads(post_route.calls.last.request.content) == {
+        "braindump": BD_ID,
+        "summary": "new summary",
+    }
+    assert action == "created"
+    assert record.alignment_review.summary == "new summary"
+
+
+@respx.mock
+def test_review_replaces_when_present(monkeypatch):
+    _patch_show(
+        monkeypatch,
+        [_read(review=_review(summary="old")), _read(review=_review(summary="new"))],
+    )
+    patch_route = respx.patch(
+        f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/{REVIEW_ID}/"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    with _client() as client:
+        record, action = create_or_replace_review(client, BD_ID, summary="new")
+
+    assert patch_route.call_count == 1
+    assert json.loads(patch_route.calls.last.request.content) == {"summary": "new"}
+    assert action == "replaced"
+    assert record.alignment_review.summary == "new"
+
+
+@respx.mock
+def test_review_replace_refreshes_timestamp_even_with_identical_summary(monkeypatch):
+    _patch_show(
+        monkeypatch,
+        [
+            _read(review=_review(summary="same", last_updated=T0)),
+            _read(review=_review(summary="same", last_updated=T1)),
+        ],
+    )
+    patch_route = respx.patch(
+        f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/{REVIEW_ID}/"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    with _client() as client:
+        record, action = create_or_replace_review(client, BD_ID, summary="same")
+
+    assert patch_route.call_count == 1
+    assert action == "replaced"
+    assert record.alignment_review.last_updated == T1
+
+
+@respx.mock
+def test_review_rejects_blank_summary_before_any_request(monkeypatch):
+    def fail_show(client, braindump_id):
+        raise AssertionError("must not fetch for blank summary")
+
+    monkeypatch.setattr("nctl_core.braindump.fetch_braindump_show", fail_show)
+
+    with _client() as client:
+        with pytest.raises(InvalidTextError):
+            create_or_replace_review(client, BD_ID, summary="   ")
+
+
+@respx.mock
+def test_review_unknown_braindump_raises(monkeypatch):
+    _patch_show(monkeypatch, [None])
+
+    with _client() as client:
+        with pytest.raises(BraindumpNotFoundError):
+            create_or_replace_review(client, BD_ID, summary="s")
+
+
+@respx.mock
+def test_review_race_recovery_patches_now_current_review(monkeypatch):
+    # First show: no review. POST 400s (another writer won the race). Refetch shows a review
+    # that appeared in the meantime; recovery PATCHes it. Final refetch confirms the new summary.
+    _patch_show(
+        monkeypatch,
+        [
+            _read(review=None),
+            _read(review=_review(summary="racer's summary")),
+            _read(review=_review(summary="mine")),
+        ],
+    )
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/").mock(
+        return_value=httpx.Response(400, json={"braindump": ["already exists"]})
+    )
+    patch_route = respx.patch(
+        f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/{REVIEW_ID}/"
+    ).mock(return_value=httpx.Response(200, json={}))
+
+    with _client() as client:
+        record, action = create_or_replace_review(client, BD_ID, summary="mine")
+
+    assert patch_route.call_count == 1
+    assert action == "replaced"
+    assert record.alignment_review.summary == "mine"
+
+
+@respx.mock
+def test_review_genuine_validation_failure_is_not_treated_as_race(monkeypatch):
+    # No review before or after the failed POST -> a real validation failure, not a race.
+    _patch_show(monkeypatch, [_read(review=None), _read(review=None)])
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/").mock(
+        return_value=httpx.Response(400, json={"summary": ["required"]})
+    )
+
+    with _client() as client:
+        with pytest.raises(ReviewValidationFailedError):
+            create_or_replace_review(client, BD_ID, summary="s")
+
+
+@respx.mock
+def test_review_race_recovery_patch_failure_propagates(monkeypatch):
+    _patch_show(
+        monkeypatch,
+        [_read(review=None), _read(review=_review(summary="racer's summary"))],
+    )
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/").mock(
+        return_value=httpx.Response(400, json={"braindump": ["already exists"]})
+    )
+    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/{REVIEW_ID}/").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+
+    with _client() as client:
+        with pytest.raises(ReviewWriteRejectedError):
+            create_or_replace_review(client, BD_ID, summary="mine")
+
+
+@respx.mock
+def test_review_confirmation_mismatch_fails_closed(monkeypatch):
+    _patch_show(monkeypatch, [_read(review=None), _read(review=_review(summary="wrong"))])
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/").mock(
+        return_value=httpx.Response(201, json={"id": REVIEW_ID})
+    )
+
+    with _client() as client:
+        with pytest.raises(ReviewConfirmationMismatchError):
+            create_or_replace_review(client, BD_ID, summary="mine")
+
+
+@respx.mock
+def test_review_authorization_and_connection_failures_propagate(monkeypatch):
+    _patch_show(monkeypatch, [_read(review=None)])
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/").mock(
+        side_effect=httpx.ConnectError("refused")
+    )
+
+    with _client() as client:
+        with pytest.raises(NautobotConnectionError):
+            create_or_replace_review(client, BD_ID, summary="mine")
+
+
+# -- deletes ---------------------------------------------------------------------------------------
+
+
+@respx.mock
+def test_delete_braindump_cascades_review(monkeypatch):
+    _patch_show(monkeypatch, [_read(title="to delete", review=_review()), None])
+    delete_route = respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
+        return_value=httpx.Response(204)
+    )
+
+    with _client() as client:
+        title, deleted, review_deleted = delete_braindump(client, BD_ID)
+
+    assert delete_route.call_count == 1
+    assert title == "to delete"
+    assert deleted is True
+    assert review_deleted is True
+
+
+@respx.mock
+def test_delete_braindump_without_review(monkeypatch):
+    _patch_show(monkeypatch, [_read(title="to delete", review=None), None])
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
+        return_value=httpx.Response(204)
+    )
+
+    with _client() as client:
+        title, deleted, review_deleted = delete_braindump(client, BD_ID)
+
+    assert deleted is True
+    assert review_deleted is False
+
+
+def test_delete_braindump_unknown_id_raises(monkeypatch):
+    _patch_show(monkeypatch, [None])
+
+    with _client() as client:
+        with pytest.raises(BraindumpNotFoundError):
+            delete_braindump(client, BD_ID)
+
+
+@respx.mock
+def test_delete_braindump_rejected_raises(monkeypatch):
+    _patch_show(monkeypatch, [_read()])
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+
+    with _client() as client:
+        with pytest.raises(BraindumpDeleteRejectedError):
+            delete_braindump(client, BD_ID)
+
+
+@respx.mock
+def test_delete_braindump_confirmation_mismatch_fails_closed(monkeypatch):
+    _patch_show(monkeypatch, [_read(), _read()])
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
+        return_value=httpx.Response(204)
+    )
+
+    with _client() as client:
+        with pytest.raises(DeleteConfirmationMismatchError):
+            delete_braindump(client, BD_ID)
+
+
+@respx.mock
+def test_delete_review_only_preserves_braindump(monkeypatch):
+    _patch_show(monkeypatch, [_read(review=_review()), _read(review=None)])
+    delete_route = respx.delete(
+        f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/{REVIEW_ID}/"
+    ).mock(return_value=httpx.Response(204))
+
+    with _client() as client:
+        deleted, review_id = delete_review(client, BD_ID)
+
+    assert delete_route.call_count == 1
+    assert deleted is True
+    assert review_id == REVIEW_ID
+
+
+@respx.mock
+def test_delete_review_missing_review_is_idempotent_no_op(monkeypatch):
+    _patch_show(monkeypatch, [_read(review=None)])
+    delete_route = respx.delete(url__regex=r".*/alignment-reviews/.*").mock(
+        return_value=httpx.Response(204)
+    )
+
+    with _client() as client:
+        deleted, review_id = delete_review(client, BD_ID)
+
+    assert delete_route.call_count == 0
+    assert deleted is False
+    assert review_id is None
+
+
+def test_delete_review_unknown_braindump_raises(monkeypatch):
+    _patch_show(monkeypatch, [None])
+
+    with _client() as client:
+        with pytest.raises(BraindumpNotFoundError):
+            delete_review(client, BD_ID)
+
+
+@respx.mock
+def test_delete_review_rejected_raises(monkeypatch):
+    _patch_show(monkeypatch, [_read(review=_review())])
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/{REVIEW_ID}/").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+
+    with _client() as client:
+        with pytest.raises(ReviewDeleteRejectedError):
+            delete_review(client, BD_ID)
+
+
+@respx.mock
+def test_delete_review_confirmation_mismatch_fails_closed(monkeypatch):
+    _patch_show(monkeypatch, [_read(review=_review()), _read(review=_review())])
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/alignment-reviews/{REVIEW_ID}/").mock(
+        return_value=httpx.Response(204)
+    )
+
+    with _client() as client:
+        with pytest.raises(DeleteConfirmationMismatchError):
+            delete_review(client, BD_ID)

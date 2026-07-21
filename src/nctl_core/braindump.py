@@ -40,6 +40,9 @@ LIST_SCHEMA = "nctl.braindump.list.v1"
 SHOW_SCHEMA = "nctl.braindump.show.v1"
 CREATE_SCHEMA = "nctl.braindump.create.v1"
 UPDATE_SCHEMA = "nctl.braindump.update.v1"
+DELETE_SCHEMA = "nctl.braindump.delete.v1"
+REVIEW_SCHEMA = "nctl.braindump.review.v1"
+REVIEW_DELETE_SCHEMA = "nctl.braindump.review_delete.v1"
 
 
 class BraindumpError(NautobotError):
@@ -143,6 +146,60 @@ class BraindumpConfirmationMismatchError(BraindumpError):
         )
 
 
+class ReviewValidationFailedError(BraindumpError):
+    def __init__(self, status_code: int, detail_text: str) -> None:
+        super().__init__(
+            "review_validation_failed",
+            f"Alignment review write rejected as invalid: HTTP {status_code}",
+            {"status_code": status_code, "detail": detail_text[:200]},
+        )
+
+
+class ReviewWriteRejectedError(BraindumpError):
+    def __init__(self, status_code: int, detail_text: str) -> None:
+        super().__init__(
+            "review_write_rejected",
+            f"Alignment review write rejected: HTTP {status_code}",
+            {"status_code": status_code, "detail": detail_text[:200]},
+        )
+
+
+class ReviewConfirmationMismatchError(BraindumpError):
+    def __init__(self, braindump_id: str) -> None:
+        super().__init__(
+            "review_confirmation_mismatch",
+            f"GraphQL refetch of Braindump {braindump_id!r} did not show the requested review",
+            {"braindump_id": braindump_id},
+        )
+
+
+class BraindumpDeleteRejectedError(BraindumpError):
+    def __init__(self, status_code: int, detail_text: str) -> None:
+        super().__init__(
+            "braindump_delete_rejected",
+            f"Braindump delete rejected: HTTP {status_code}",
+            {"status_code": status_code, "detail": detail_text[:200]},
+        )
+
+
+class ReviewDeleteRejectedError(BraindumpError):
+    def __init__(self, status_code: int, detail_text: str) -> None:
+        super().__init__(
+            "review_delete_rejected",
+            f"Alignment review delete rejected: HTTP {status_code}",
+            {"status_code": status_code, "detail": detail_text[:200]},
+        )
+
+
+class DeleteConfirmationMismatchError(BraindumpError):
+    def __init__(self, target: str, target_id: str) -> None:
+        super().__init__(
+            "delete_confirmation_mismatch",
+            f"GraphQL refetch still shows {target} {target_id!r} after delete",
+            {"target": target, "target_id": target_id},
+        )
+
+
 # -- typed output record shapes (plan.md Decision 5) ------------------------------------------
 
 
@@ -194,6 +251,24 @@ class BraindumpCreateData(BaseModel):
 class BraindumpUpdateData(BaseModel):
     braindump: BrainDumpRecord | None = None
     changed: bool = False
+
+
+class BraindumpDeleteData(BaseModel):
+    id: str = ""
+    title: str = ""
+    deleted: bool = False
+    review_deleted: bool = False
+
+
+class BraindumpReviewData(BaseModel):
+    braindump: BrainDumpRecord | None = None
+    action: str = ""
+
+
+class BraindumpReviewDeleteData(BaseModel):
+    braindump: BrainDumpRecord | None = None
+    deleted: bool = False
+    review_id: str | None = None
 
 
 # -- input resolution/validation ----------------------------------------------------------------
@@ -332,6 +407,113 @@ def _write_error(status_code: int, detail_text: str) -> BraindumpError:
     if status_code == 400:
         return BraindumpValidationFailedError(status_code, detail_text)
     return BraindumpWriteRejectedError(status_code, detail_text)
+
+
+def _review_write_error(status_code: int, detail_text: str) -> BraindumpError:
+    if status_code == 400:
+        return ReviewValidationFailedError(status_code, detail_text)
+    return ReviewWriteRejectedError(status_code, detail_text)
+
+
+def create_or_replace_review(
+    client: NautobotClient, braindump_id: str, *, summary: str
+) -> tuple[BrainDumpRecord, str]:
+    """Create-or-replace the one current review for a Braindump (plan.md Decision 6).
+
+    Returns `(record, action)` where `action` is `"created"` or `"replaced"`. A POST that fails with
+    a validation error is retried as a PATCH exactly once, and only when a refetch shows another
+    writer won a uniqueness race in the interim (a review now exists that did not before); any other
+    400 is a genuine validation failure and is raised unchanged.
+    """
+    canonical_id = validate_braindump_id(braindump_id)
+    summary = _require_nonblank("summary", summary)
+
+    current = fetch_braindump_show(client, canonical_id)
+    if current is None:
+        raise BraindumpNotFoundError(canonical_id)
+
+    existing_review = current.alignment_review
+    if existing_review is not None:
+        action = "replaced"
+        response = client.rest_patch(
+            f"{ALIGNMENT_REVIEW_API_BASE}/{existing_review.id}/", {"summary": summary}
+        )
+        if not response.is_success:
+            raise _review_write_error(response.status_code, response.text)
+    else:
+        action = "created"
+        response = client.rest_post(
+            f"{ALIGNMENT_REVIEW_API_BASE}/", {"braindump": canonical_id, "summary": summary}
+        )
+        if response.status_code == 400:
+            raced = fetch_braindump_show(client, canonical_id)
+            raced_review = raced.alignment_review if raced is not None else None
+            if raced_review is None:
+                raise ReviewValidationFailedError(response.status_code, response.text)
+            action = "replaced"
+            response = client.rest_patch(
+                f"{ALIGNMENT_REVIEW_API_BASE}/{raced_review.id}/", {"summary": summary}
+            )
+            if not response.is_success:
+                raise _review_write_error(response.status_code, response.text)
+        elif not response.is_success:
+            raise _review_write_error(response.status_code, response.text)
+
+    confirmed = fetch_braindump_show(client, canonical_id)
+    if (
+        confirmed is None
+        or confirmed.alignment_review is None
+        or confirmed.alignment_review.summary != summary
+    ):
+        raise ReviewConfirmationMismatchError(canonical_id)
+
+    return _to_record(confirmed), action
+
+
+def delete_braindump(client: NautobotClient, braindump_id: str) -> tuple[str, bool, bool]:
+    """Delete a Braindump (and its review, via DB cascade). Returns `(title, deleted, review_deleted)`."""
+    canonical_id = validate_braindump_id(braindump_id)
+    current = fetch_braindump_show(client, canonical_id)
+    if current is None:
+        raise BraindumpNotFoundError(canonical_id)
+
+    title = current.title
+    review_existed = current.alignment_review is not None
+
+    response = client.rest_delete(f"{BRAINDUMP_API_BASE}/{canonical_id}/")
+    if not response.is_success:
+        raise BraindumpDeleteRejectedError(response.status_code, response.text)
+
+    confirmed = fetch_braindump_show(client, canonical_id)
+    if confirmed is not None:
+        raise DeleteConfirmationMismatchError("braindump", canonical_id)
+
+    return title, True, review_existed
+
+
+def delete_review(client: NautobotClient, braindump_id: str) -> tuple[bool, str | None]:
+    """Delete only the current review for a Braindump, leaving it unreviewed.
+
+    An absent review is an idempotent no-op: returns `(False, None)`, not an error.
+    """
+    canonical_id = validate_braindump_id(braindump_id)
+    current = fetch_braindump_show(client, canonical_id)
+    if current is None:
+        raise BraindumpNotFoundError(canonical_id)
+
+    review = current.alignment_review
+    if review is None:
+        return False, None
+
+    response = client.rest_delete(f"{ALIGNMENT_REVIEW_API_BASE}/{review.id}/")
+    if not response.is_success:
+        raise ReviewDeleteRejectedError(response.status_code, response.text)
+
+    confirmed = fetch_braindump_show(client, canonical_id)
+    if confirmed is None or confirmed.alignment_review is not None:
+        raise DeleteConfirmationMismatchError("review", review.id)
+
+    return True, review.id
 
 
 # -- record projection ---------------------------------------------------------------------------
@@ -480,3 +662,77 @@ def build_braindump_update(
         client.close()
 
     return Envelope.build(UPDATE_SCHEMA, BraindumpUpdateData(braindump=record, changed=changed))
+
+
+def build_braindump_delete(cfg: Config, braindump_id: str) -> Envelope[BraindumpDeleteData]:
+    client, token_error = _client_from_config(cfg)
+    if client is None:
+        return Envelope.build(DELETE_SCHEMA, BraindumpDeleteData(), [token_error])  # type: ignore[list-item]
+
+    try:
+        title, deleted, review_deleted = delete_braindump(client, braindump_id)
+    except BraindumpError as exc:
+        return Envelope.build(
+            DELETE_SCHEMA, BraindumpDeleteData(), [EnvelopeError(code=exc.code, message=str(exc), detail=exc.detail)]
+        )
+    except NautobotError as exc:
+        return Envelope.build(
+            DELETE_SCHEMA, BraindumpDeleteData(), [EnvelopeError(code="nautobot_connection_error", message=str(exc))]
+        )
+    finally:
+        client.close()
+
+    return Envelope.build(
+        DELETE_SCHEMA,
+        BraindumpDeleteData(id=braindump_id, title=title, deleted=deleted, review_deleted=review_deleted),
+    )
+
+
+def build_braindump_review(cfg: Config, braindump_id: str, *, summary: str) -> Envelope[BraindumpReviewData]:
+    client, token_error = _client_from_config(cfg)
+    if client is None:
+        return Envelope.build(REVIEW_SCHEMA, BraindumpReviewData(), [token_error])  # type: ignore[list-item]
+
+    try:
+        record, action = create_or_replace_review(client, braindump_id, summary=summary)
+    except BraindumpError as exc:
+        return Envelope.build(
+            REVIEW_SCHEMA, BraindumpReviewData(), [EnvelopeError(code=exc.code, message=str(exc), detail=exc.detail)]
+        )
+    except NautobotError as exc:
+        return Envelope.build(
+            REVIEW_SCHEMA, BraindumpReviewData(), [EnvelopeError(code="nautobot_connection_error", message=str(exc))]
+        )
+    finally:
+        client.close()
+
+    return Envelope.build(REVIEW_SCHEMA, BraindumpReviewData(braindump=record, action=action))
+
+
+def build_braindump_review_delete(cfg: Config, braindump_id: str) -> Envelope[BraindumpReviewDeleteData]:
+    client, token_error = _client_from_config(cfg)
+    if client is None:
+        return Envelope.build(REVIEW_DELETE_SCHEMA, BraindumpReviewDeleteData(), [token_error])  # type: ignore[list-item]
+
+    try:
+        deleted, review_id = delete_review(client, braindump_id)
+        record = show_braindump(client, braindump_id)
+    except BraindumpError as exc:
+        return Envelope.build(
+            REVIEW_DELETE_SCHEMA,
+            BraindumpReviewDeleteData(),
+            [EnvelopeError(code=exc.code, message=str(exc), detail=exc.detail)],
+        )
+    except NautobotError as exc:
+        return Envelope.build(
+            REVIEW_DELETE_SCHEMA,
+            BraindumpReviewDeleteData(),
+            [EnvelopeError(code="nautobot_connection_error", message=str(exc))],
+        )
+    finally:
+        client.close()
+
+    return Envelope.build(
+        REVIEW_DELETE_SCHEMA,
+        BraindumpReviewDeleteData(braindump=record, deleted=deleted, review_id=review_id),
+    )
