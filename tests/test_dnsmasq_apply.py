@@ -474,6 +474,53 @@ def test_production_style_host_vars_resolve_route_via_connection_path(tmp_path, 
     assert scanned == ["agdnsmasq.local"]
 
 
+def test_unrendered_jinja_ansible_host_falls_back_to_connection_path_chain(tmp_path, monkeypatch):
+    # Regression (caught live against real Nautobot data during Step 5
+    # verification): `ansible-inventory --host` reports every production
+    # host's `ansible_host` as inherited, *unrendered* from group_vars/all's
+    # Jinja template ("{{ tailscale_ip | default(...) }}"), not a resolved
+    # address -- ansible-inventory does not template variables. Using that
+    # string verbatim caused a real `ssh-keyscan ... getaddrinfo {{:`
+    # failure. The literal `{{...}}` string must never be treated as a route;
+    # it must fall through to the connection_path chain instead.
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    def fake_run(args, cwd, timeout):
+        if args[0] == "ansible-inventory":
+            host_vars = {
+                "nintent_desired_node_id": NODE_ID,
+                "nctl_ssh_host_key_alias": ALIAS,
+                "ansible_ssh_common_args": build_ansible_ssh_common_args(ALIAS, str(cfg.resolved_ssh_known_hosts_file())),
+                "ansible_host": (
+                    "{{\n  tailscale_ip | default(local_connection_host, true)\n"
+                    "  if connection_path == 'tailscale'\n  else local_connection_host\n}}"
+                ),
+                "connection_path": "local",
+                "local_ip": "192.168.0.2",
+                "mdns_hostname": "agdnsmasq.local",
+            }
+            return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload(cfg, host_vars=host_vars)), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    scanned = []
+
+    def keyscan(host, port, timeout):
+        scanned.append(host)
+        return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {KEY_BLOB}\n", stderr="")
+
+    probe = SshProbeRunner(keyscan=keyscan, effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+
+    envelope = build_dnsmasq_apply(cfg, probe=probe)
+
+    assert envelope.ok is True, envelope.errors
+    assert scanned == ["192.168.0.2"]  # local_ip wins over mdns_hostname, never the raw "{{...}}" string
+
+
 def test_non_empty_alias_differing_from_uuid_derived_value_is_rejected(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))

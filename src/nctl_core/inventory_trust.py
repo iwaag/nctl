@@ -88,15 +88,24 @@ def resolve_route_from_host_vars(host_vars: dict[str, Any], hostname: str) -> st
 
     A bootstrap inventory (`hosts_intent.yml`) exports `ansible_host`
     directly -- used verbatim. A production inventory never exports
-    `ansible_host` (the composer pops it: it is resolved from group_vars/all,
-    not per host) but does export the same `connection_path`/`local_ip`/
-    `local_dns_hostname`/`mdns_hostname`/`tailscale_ip` variables the
-    composer derived it from, so the identical priority chain
-    (`select_local_route`) reproduces the same route here. Returns `None`
-    (never a guess) when neither representation resolves.
+    `ansible_host` per host (the composer pops it: it is resolved from a
+    Jinja template in `group_vars/all.yml`, not per host) but `ansible-
+    inventory --host`/`--list` still reports one for every host, inherited
+    unrendered from that group var -- confirmed live: it comes back as the
+    literal string `"{{ tailscale_ip | default(local_connection_host, ...)
+    }}"`, not a resolved address, since `ansible-inventory` does not
+    template variables. Treating that string as a literal target caused a
+    real `ssh-keyscan ... getaddrinfo {{:` failure the first time this ran
+    against live data. Only a per-host `ansible_host` free of `{{` is used
+    verbatim; anything else falls through to the same
+    `connection_path`/`local_ip`/`local_dns_hostname`/`mdns_hostname`/
+    `tailscale_ip` variables the composer derived it from, so the identical
+    priority chain (`select_local_route`) reproduces the same route here
+    without needing a general Jinja evaluator (explicitly out of scope).
+    Returns `None` (never a guess) when neither representation resolves.
     """
     ansible_host = host_vars.get("ansible_host")
-    if isinstance(ansible_host, str) and ansible_host.strip():
+    if isinstance(ansible_host, str) and ansible_host.strip() and "{{" not in ansible_host:
         return ansible_host.strip()
 
     connection_path = host_vars.get("connection_path")
