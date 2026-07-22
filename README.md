@@ -105,7 +105,15 @@ human-readable `message`.
 `--check --diff` mode by default (a setup failure aborts before the records deploy runs). Review
 that output, then use `--yes` for the real apply. The configured inventory must resolve at least
 one host in `dnsmasq_server`; an existing inventory file with an empty or missing group is rejected
-instead of succeeding as a no-op.
+instead of succeeding as a no-op. Direct `apply dnsmasq` always targets the whole `dnsmasq_server`
+group; a `reconcile`-driven `dnsmasq_config` action instead scans, deploys, and re-observes only its
+exact planned host set (`fix_sshkey4` Step 3), so a host-scoped reconcile can never actuate a
+sibling placement it never scanned. The deployed destination path is resolved exactly once from
+validated `deployment_profile_reconciliation` metadata and passed to the playbook as a structured
+extra-vars payload -- it is never a literal the playbook constructs itself. Content drift also
+checks the observed managed-file path and digest algorithm, not only the digest
+(`service_config_observation_mismatch`): a digest match at the wrong reported path plans a fresh
+observation rather than a blind deploy.
 
 `apply dnsmasq --inventory PATH` overrides the configured `[ansible].inventory` for that one run —
 the bootstrap escape hatch for a freshly registered node that has no production inventory entry
@@ -518,6 +526,19 @@ the connection port entirely once `HostKeyAlias` is set, so a non-default-port n
 known_hosts promotion (`nctl ssh enroll --from-known-hosts`, searching your ordinary OpenSSH
 known_hosts files) ever uses a port-qualified `[host]:port` name, and only for that search -- never
 for the managed store itself.
+
+The store has one strict reader (`devdocs/small/fix_sshkey4/plan.md`): an absent file is a valid
+empty store (`unenrolled` for every host), and every other non-blank/non-comment line must be a
+supported bare-alias entry or it is corruption. A missing enrollment and an invalid managed store
+are always distinguishable -- corruption never falls back to `unenrolled` -- and every public
+boundary (`ssh enroll`, `apply dnsmasq`, reconcile's pre-round gate, bootstrap and post-actuation
+observation inside a started round) reports it as a structured `ssh_store_read_failed` result
+rather than an uncaught exception. A store failure that occurs after a round has already recorded
+progress never discards that progress: the round, its completed actions, and a freshly refreshed
+final drift are retained, with `final_drift_unknown` recorded if even that refresh fails. A
+syntactically valid historical `[nctl-node-UUID]:port` entry is recognized separately as migration
+residue -- it never satisfies current enrollment and is removed only by a subsequent verified
+enrollment/replacement write, never automatically.
 
 ### Lifecycle
 
