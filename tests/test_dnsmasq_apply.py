@@ -2,6 +2,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import yaml
+
 from nctl_core.config import Config
 from nctl_core.dnsmasq_apply import (
     _inventory_group_hosts,
@@ -18,6 +20,27 @@ NODE_ID = "27818c12-fe15-4c9f-83d0-7949523f6c33"
 ALIAS = derive_host_key_alias(NODE_ID)
 KEY_BLOB = "QUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUZmYWtlZWQyNTUxOWtleWJ5dGVzMDAwMDAwMDAwMDAwMDAwMA=="
 OTHER_KEY_BLOB = "QUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUZmYWtlZWQyNTUxOWRpZmZlcmVudGtleWJ5dGVzMDAwMDA="
+DNSMASQ_RECORDS_PATH = "/etc/dnsmasq.d/nintent-records.conf"
+
+
+def _write_deployment_profiles(ansible_dir: Path, *, records_path: str = DNSMASQ_RECORDS_PATH) -> None:
+    """fix_sshkey4 Step 3: `build_dnsmasq_apply` now resolves the deployed destination from here."""
+    vars_dir = ansible_dir / "vars"
+    vars_dir.mkdir(parents=True, exist_ok=True)
+    body = {
+        "deployment_profiles": {
+            "dnsmasq": {"group": "dnsmasq_server", "config_schema_version": "1", "variables": {}},
+        },
+        "deployment_profile_reconciliation": {
+            "dnsmasq": {
+                "action": {
+                    "kind": "dnsmasq_config",
+                    "managed_files": {"records": {"path": records_path, "digest": "sha256"}},
+                },
+            },
+        },
+    }
+    (vars_dir / "deployment_profiles.yml").write_text(yaml.safe_dump(body))
 
 
 def _config(tmp_path):
@@ -31,6 +54,7 @@ def _config(tmp_path):
     inventory = ansible_dir / "inventories/generated/hosts_intent.yml"
     inventory.parent.mkdir(parents=True)
     inventory.write_text("all: {}\n")
+    _write_deployment_profiles(ansible_dir)
     config_path = tmp_path / "nctl.toml"
     config_path.write_text(
         f"""
@@ -774,6 +798,163 @@ def test_setup_failure_aborts_before_records_deploy(tmp_path, monkeypatch):
     assert envelope.data.setup.exit_code == 1
     assert envelope.data.ansible is None
     assert len(calls) == 2, "the records deploy playbook must not run after a setup failure"
+
+
+# --- reconciliation-metadata-owned destination and host scoping (fix_sshkey4 Step 3) --------
+
+
+def _two_host_inventory_payload(cfg: Config) -> dict:
+    return {
+        "dnsmasq_server": {"hosts": ["agdnsmasq", "agdnsmasq2"]},
+        "_meta": {
+            "hostvars": {
+                "agdnsmasq": _valid_host_vars(cfg),
+                "agdnsmasq2": _valid_host_vars(cfg, ansible_host="192.0.2.11"),
+            }
+        },
+    }
+
+
+def test_missing_dnsmasq_reconciliation_metadata_blocks_before_ansible(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    # Overwrite with a deployment_profiles.yml that declares no dnsmasq_config action at all.
+    (cfg.ansible.resolved_playbook_dir(cfg.source_path.parent) / "vars" / "deployment_profiles.yml").write_text(
+        yaml.safe_dump({"deployment_profiles": {}, "deployment_profile_reconciliation": {}})
+    )
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload(cfg)), "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "dnsmasq_records_metadata_invalid"
+    assert not any(c[0] == "ansible-playbook" for c in calls)
+
+
+def test_metadata_path_change_flows_to_ansible_destination_without_playbook_edit(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    new_path = "/etc/dnsmasq.d/rotated-records.conf"
+    _write_deployment_profiles(cfg.ansible.resolved_playbook_dir(cfg.source_path.parent), records_path=new_path)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(args)
+        if args[0] == "ansible-inventory":
+            return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload(cfg)), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
+
+    assert envelope.ok is True
+    deploy_call = calls[2]
+    extra_vars = json.loads(deploy_call[deploy_call.index("-e") + 1])
+    assert extra_vars["dnsmasq_records_config_file"] == new_path
+    assert extra_vars["dnsmasq_records_src"] == envelope.data.artifact_path
+
+
+def test_host_limit_empty_is_rejected_before_ansible_playbook(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
+
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe(), host_limit=[])
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "dnsmasq_host_limit_empty"
+    assert not any(c[0] == "ansible-playbook" for c in calls)
+
+
+def test_host_limit_duplicated_is_rejected_before_ansible_playbook(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
+
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe(), host_limit=["agdnsmasq", "agdnsmasq"])
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "dnsmasq_host_limit_duplicated"
+    assert not any(c[0] == "ansible-playbook" for c in calls)
+
+
+def test_out_of_group_host_limit_is_rejected_before_ansible_playbook(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
+
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe(), host_limit=["not-in-group"])
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "dnsmasq_host_limit_not_in_group"
+    assert not any(c[0] == "ansible-playbook" for c in calls)
+
+
+def test_host_scoped_reconcile_targets_scans_and_deploys_only_the_requested_host(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(args)
+        if args[0] == "ansible-inventory":
+            return subprocess.CompletedProcess(args, 0, json.dumps(_two_host_inventory_payload(cfg)), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe(), host_limit=["agdnsmasq"])
+
+    assert envelope.ok is True
+    assert envelope.data.target_hosts == ["agdnsmasq"]
+    setup_call, deploy_call = calls[1], calls[2]
+    assert setup_call[-2:] == ["--limit", "agdnsmasq"]
+    assert deploy_call[deploy_call.index("--limit") + 1] == "agdnsmasq"
+
+
+def test_direct_apply_with_no_host_limit_still_targets_the_full_inventory_group(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(args)
+        if args[0] == "ansible-inventory":
+            return subprocess.CompletedProcess(args, 0, json.dumps(_two_host_inventory_payload(cfg)), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
+
+    assert envelope.ok is True
+    assert envelope.data.target_hosts == ["agdnsmasq", "agdnsmasq2"]
+    assert "--limit" not in calls[1]
+    assert "--limit" not in calls[2]
 
 
 def test_inventory_group_hosts_includes_child_groups():

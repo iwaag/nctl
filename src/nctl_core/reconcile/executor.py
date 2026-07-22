@@ -799,7 +799,14 @@ def _run_playbook_action(
 ) -> ActionResult:
     target_slugs = [t.slug for t in action.targets if t.slug]
     if action.action_kind == "dnsmasq_config":
-        envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=ssh_probe)
+        # fix_sshkey4 Step 3 (corrected contract 5): reconcile always
+        # supplies its exact planned host set, so a host-scoped action can
+        # never actuate a sibling host `TARGET_GROUP` membership alone
+        # would include -- the same `action.parameters["host_slugs"]`
+        # source `action_host_slugs`/production-preflight/post-actuation
+        # observation already use for this action.
+        host_limit = sorted(action.parameters.get("host_slugs") or [])
+        envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=ssh_probe, host_limit=host_limit)
         if envelope.ok:
             return _actuation_result(op, action, target_slugs, True, {}, requires_observation=action.requires_observation)
         return _failed_action_result(

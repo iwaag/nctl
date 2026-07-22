@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from nctl_core.reconcile.profiles import ProfileReconciliationError, load_profile_reconciliation
+from nctl_core.reconcile.profiles import (
+    ProfileReconciliationError,
+    load_profile_reconciliation,
+    resolve_dnsmasq_records_spec,
+)
 
 _REPO_PROFILE_NAMES = {
     "dnsmasq",
@@ -237,3 +241,70 @@ def test_managed_files_forbidden_on_playbook_actions(tmp_path):
 
     with pytest.raises(ProfileReconciliationError):
         load_profile_reconciliation(playbook_dir, {"grafana"})
+
+
+# --- resolve_dnsmasq_records_spec (fix_sshkey4 Step 3) -----------------------
+
+
+def test_resolve_dnsmasq_records_spec_returns_the_one_spec(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "dnsmasq": {
+                    "action": {
+                        "kind": "dnsmasq_config",
+                        "managed_files": {"records": {"path": "/etc/dnsmasq.d/nintent-records.conf"}},
+                    }
+                },
+                "grafana": {"action": {"kind": "playbook", "playbook": "playbooks/monitoring/setup_grafana.yml"}},
+            }
+        },
+    )
+    entries = load_profile_reconciliation(playbook_dir, {"dnsmasq", "grafana"})
+
+    spec = resolve_dnsmasq_records_spec(entries)
+
+    assert spec.path == "/etc/dnsmasq.d/nintent-records.conf"
+    assert spec.digest == "sha256"
+
+
+def test_resolve_dnsmasq_records_spec_missing_is_an_error(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "grafana": {"action": {"kind": "playbook", "playbook": "playbooks/monitoring/setup_grafana.yml"}},
+            }
+        },
+    )
+    entries = load_profile_reconciliation(playbook_dir, {"grafana"})
+
+    with pytest.raises(ProfileReconciliationError):
+        resolve_dnsmasq_records_spec(entries)
+
+
+def test_resolve_dnsmasq_records_spec_rejects_more_than_one_dnsmasq_profile(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "dnsmasq": {
+                    "action": {
+                        "kind": "dnsmasq_config",
+                        "managed_files": {"records": {"path": "/etc/dnsmasq.d/nintent-records.conf"}},
+                    }
+                },
+                "dnsmasq2": {
+                    "action": {
+                        "kind": "dnsmasq_config",
+                        "managed_files": {"records": {"path": "/etc/dnsmasq.d/other-records.conf"}},
+                    }
+                },
+            }
+        },
+    )
+    entries = load_profile_reconciliation(playbook_dir, {"dnsmasq", "dnsmasq2"})
+
+    with pytest.raises(ProfileReconciliationError):
+        resolve_dnsmasq_records_spec(entries)

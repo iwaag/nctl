@@ -28,6 +28,12 @@ class ContentSpec:
 
     managed_file_key: str
     desired_digest: str
+    # fix_sshkey4 Step 3 (corrected contract 4): the path/algorithm the
+    # active `deployment_profile_reconciliation` metadata currently names --
+    # a digest match alone is not sufficient if the stored observation was
+    # collected under a different (e.g. since-rotated) destination path.
+    expected_path: str
+    digest_algo: str = "sha256"
 
 
 def normalize_observed_os(value: Any) -> str | None:
@@ -56,10 +62,14 @@ def observed_service_entry(device_facts: dict[str, Any], observed_key: str) -> d
     return entry if isinstance(entry, dict) else None
 
 
+_MANAGED_FILE_IDENTIFIED_STATUSES = frozenset({"present", "missing"}) | _MANAGED_FILE_UNREADABLE_STATUSES
+
+
 def _evaluate_content_drift(report: dict[str, Any], entry: dict[str, Any] | None, content_spec: ContentSpec) -> None:
     """Append `service_config_*` gaps to `report` -- independent of the process-state gaps above."""
 
     report["desired_content_digest"] = content_spec.desired_digest
+    report["expected_content_path"] = content_spec.expected_path
     managed_files = entry.get("managed_files") if isinstance(entry, dict) else None
     file_result = (
         managed_files.get(content_spec.managed_file_key) if isinstance(managed_files, dict) else None
@@ -69,6 +79,19 @@ def _evaluate_content_drift(report: dict[str, Any], entry: dict[str, Any] | None
         return
     status = file_result.get("status")
     report["observed_content_status"] = status
+    observed_path = file_result.get("path")
+    report["observed_content_path"] = observed_path
+
+    # fix_sshkey4 Step 3 (corrected contract 4): a present/missing/unreadable
+    # result under the expected managed-file key whose *reported path*
+    # disagrees with the currently active metadata contract is stale
+    # observation identity, not correctness -- classified OBSERVATION so a
+    # fresh probe (using the current probe hint) runs before any deployment
+    # is planned from it, never a blind deploy.
+    if status in _MANAGED_FILE_IDENTIFIED_STATUSES and observed_path != content_spec.expected_path:
+        report["gaps"].append({"code": "service_config_observation_mismatch"})
+        return
+
     if status == "missing":
         report["gaps"].append({"code": "service_config_missing"})
     elif status in _MANAGED_FILE_UNREADABLE_STATUSES:

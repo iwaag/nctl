@@ -267,7 +267,13 @@ def _content_spec_by_service_id(
             desired_digest = compute_dnsmasq_render(snapshot).content_sha256
         # Only one managed_files key is supported in this phase (dnsmasq's "records").
         managed_file_key = next(iter(entry.action.managed_files))
-        result[service_id] = ContentSpec(managed_file_key=managed_file_key, desired_digest=desired_digest)
+        spec = entry.action.managed_files[managed_file_key]
+        result[service_id] = ContentSpec(
+            managed_file_key=managed_file_key,
+            desired_digest=desired_digest,
+            expected_path=spec.path,
+            digest_algo=spec.digest,
+        )
     return result
 
 

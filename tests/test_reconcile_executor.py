@@ -1549,7 +1549,7 @@ def test_post_actuation_observation_store_failure_retains_deployment_evidence(tm
     monkeypatch.setattr(
         executor_module,
         "build_dnsmasq_apply",
-        lambda cfg, apply_changes=False, probe=None: _Envelope.build(
+        lambda cfg, apply_changes=False, probe=None, host_limit=None: _Envelope.build(
             "nctl.dnsmasq.apply.v2",
             DnsmasqApplyData(operation_id="op-1", mode="apply", event_log_path="events/op-1.jsonl"),
             [],

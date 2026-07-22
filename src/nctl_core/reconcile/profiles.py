@@ -159,6 +159,44 @@ def load_profile_reconciliation(
     return entries
 
 
+def resolve_dnsmasq_records_spec(entries: dict[str, ProfileReconciliation]) -> ManagedFileSpec:
+    """Return the one validated dnsmasq records `ManagedFileSpec` (fix_sshkey4 Step 3).
+
+    The single metadata-owned source of the deployed dnsmasq destination --
+    used identically by nodeutils probe-hint rendering
+    (`observation.render_probe_hints`), drift evidence
+    (`evaluation_snapshot._content_spec_by_service_id`), and
+    `dnsmasq_apply.build_dnsmasq_apply`'s Ansible extra variables, so all
+    three can never independently drift. Requires exactly one
+    `deployment_profile_reconciliation` entry with `action.kind ==
+    "dnsmasq_config"`, and that entry's `managed_files` to be exactly
+    `{"records": ManagedFileSpec(...)}` (absolute path and `digest ==
+    "sha256"` are already enforced by `ManagedFileSpec` itself at load
+    time). Absence or any other shape is a structured configuration error,
+    never a fallback default.
+    """
+    matches = [
+        entry for entry in entries.values() if entry.action is not None and entry.action.kind == "dnsmasq_config"
+    ]
+    if not matches:
+        raise ProfileReconciliationError(
+            f"no {RECONCILIATION_KEY} entry declares an action.kind == 'dnsmasq_config'"
+        )
+    if len(matches) > 1:
+        raise ProfileReconciliationError(
+            f"exactly one dnsmasq_config {RECONCILIATION_KEY} entry is supported in this phase, "
+            f"found {len(matches)}"
+        )
+    action = matches[0].action
+    assert action is not None
+    if set(action.managed_files) != {"records"}:
+        raise ProfileReconciliationError(
+            f"a dnsmasq_config action must declare exactly one managed_files entry named 'records', "
+            f"got {sorted(action.managed_files)}"
+        )
+    return action.managed_files["records"]
+
+
 def is_supported(entries: dict[str, ProfileReconciliation], profile_name: str) -> bool:
     """A profile is reconcile-supported only if it declares an action or observe_only."""
 

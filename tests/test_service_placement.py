@@ -85,7 +85,10 @@ def test_observed_os_normalization_matches_nauto_contract():
 
 DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
-CONTENT_SPEC = {"s1": ContentSpec(managed_file_key="records", desired_digest=DIGEST_A)}
+EXPECTED_PATH = "/etc/dnsmasq.d/nintent-records.conf"
+CONTENT_SPEC = {
+    "s1": ContentSpec(managed_file_key="records", desired_digest=DIGEST_A, expected_path=EXPECTED_PATH)
+}
 
 
 def _device_with_managed_file(*, status="present", sha256=DIGEST_A, state="running"):
@@ -164,3 +167,54 @@ def test_two_targets_one_converged_one_mismatched():
 def test_content_spec_absent_never_produces_content_codes():
     report = evaluate(devices={"d1": _device_with_managed_file(sha256=DIGEST_B)})
     assert gap_codes(report) == set()
+
+
+# --- observed path is part of content evidence (fix_sshkey4 Step 3) ---------
+
+
+def _device_with_managed_file_at(path, *, status="present", sha256=DIGEST_A, state="running"):
+    return device(
+        observed_services={
+            "nomad": {
+                "state": state,
+                "source": "systemd",
+                "managed_files": {"records": {"path": path, "status": status, "sha256": sha256}},
+            }
+        }
+    )
+
+
+def test_stale_observed_path_is_observation_mismatch_even_with_matching_digest():
+    # A digest match is not sufficient if the stored observation names a
+    # different (e.g. since-rotated) path -- this must be OBSERVATION, never
+    # a silent converged/mismatch verdict.
+    report = evaluate(
+        devices={"d1": _device_with_managed_file_at("/etc/dnsmasq.d/old-records.conf", sha256=DIGEST_A)},
+        content_spec_by_service_id=CONTENT_SPEC,
+    )
+    assert gap_codes(report) == {"service_config_observation_mismatch"}
+    assert "service_config_mismatch" not in gap_codes(report)
+
+
+def test_stale_observed_path_with_missing_status_is_still_observation_mismatch():
+    report = evaluate(
+        devices={"d1": _device_with_managed_file_at("/etc/dnsmasq.d/old-records.conf", status="missing", sha256=None)},
+        content_spec_by_service_id=CONTENT_SPEC,
+    )
+    assert gap_codes(report) == {"service_config_observation_mismatch"}
+
+
+def test_matching_path_and_matching_digest_is_converged():
+    report = evaluate(
+        devices={"d1": _device_with_managed_file_at(EXPECTED_PATH, sha256=DIGEST_A)},
+        content_spec_by_service_id=CONTENT_SPEC,
+    )
+    assert report["status"] == "satisfied"
+
+
+def test_matching_path_with_different_digest_is_ordinary_content_mismatch():
+    report = evaluate(
+        devices={"d1": _device_with_managed_file_at(EXPECTED_PATH, sha256=DIGEST_B)},
+        content_spec_by_service_id=CONTENT_SPEC,
+    )
+    assert gap_codes(report) == {"service_config_mismatch"}

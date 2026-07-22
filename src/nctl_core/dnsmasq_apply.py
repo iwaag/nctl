@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,12 @@ from nctl_core.dnsmasq_render import build_dnsmasq_render
 from nctl_core.events import OperationLog
 from nctl_core.inventory_trust import check_inventory_ssh_preflight, validate_inventory_trust_contract
 from nctl_core.output import Envelope, EnvelopeError
+from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
+from nctl_core.reconcile.profiles import (
+    ProfileReconciliationError,
+    load_profile_reconciliation,
+    resolve_dnsmasq_records_spec,
+)
 from nctl_core.reconcile.ssh_preflight import (
     STATUS_MISMATCH,
     STATUS_READY,
@@ -56,6 +63,7 @@ def build_dnsmasq_apply(
     apply_changes: bool = False,
     inventory: Path | None = None,
     probe: SshProbeRunner | None = None,
+    host_limit: list[str] | None = None,
 ) -> Envelope[DnsmasqApplyData]:
     """Render an artifact, validate the SSH trust contract, and invoke the deploy playbook.
 
@@ -71,6 +79,11 @@ def build_dnsmasq_apply(
     explicit ``--inventory`` -- goes through the same closed trust-contract validation and
     offered-key preflight before any Ansible process starts, in both dry-run and apply mode
     (dry-run performs the identical read-only preflight and never mutates trust).
+
+    ``host_limit`` (fix_sshkey4 Step 3) is reconcile-only: when given, it replaces the full
+    `TARGET_GROUP` membership as the exact set scanned, deployed, and observed -- rejected if
+    empty, internally duplicated, or not a subset of the inventory group. Direct `nctl apply
+    dnsmasq` never passes it, so it keeps defaulting to the complete inventory group.
     """
     probe = probe or default_ssh_probe_runner()
     op = OperationLog.start("apply dnsmasq", cfg.events.resolved_log_dir())
@@ -128,8 +141,8 @@ def build_dnsmasq_apply(
         return _failure(op, data, [inventory_error], inventory_error.message)
 
     target_hosts = sorted(inventory_group_hosts(inventory_result, TARGET_GROUP))
-    data.target_hosts = target_hosts
     if not target_hosts:
+        data.target_hosts = target_hosts
         error = EnvelopeError(
             code="dnsmasq_inventory_group_empty",
             message=(
@@ -137,6 +150,46 @@ def build_dnsmasq_apply(
                 "generate or select a deployment inventory that defines the dnsmasq target"
             ),
         )
+        return _failure(op, data, [error], error.message)
+
+    if host_limit is not None:
+        if not host_limit:
+            data.target_hosts = target_hosts
+            error = EnvelopeError(code="dnsmasq_host_limit_empty", message="host_limit must not be empty when given")
+            return _failure(op, data, [error], error.message)
+        if len(set(host_limit)) != len(host_limit):
+            data.target_hosts = target_hosts
+            error = EnvelopeError(
+                code="dnsmasq_host_limit_duplicated",
+                message=f"host_limit contains duplicate host(s): {', '.join(sorted(host_limit))}",
+            )
+            return _failure(op, data, [error], error.message)
+        out_of_group = sorted(set(host_limit) - set(target_hosts))
+        if out_of_group:
+            data.target_hosts = target_hosts
+            error = EnvelopeError(
+                code="dnsmasq_host_limit_not_in_group",
+                message=(
+                    f"host_limit host(s) not in {TARGET_GROUP!r}: {', '.join(out_of_group)}"
+                ),
+            )
+            return _failure(op, data, [error], error.message)
+        target_hosts = sorted(host_limit)
+
+    data.target_hosts = target_hosts
+
+    # fix_sshkey4 Step 3 (corrected contract 3): the deployed destination is
+    # sourced once from validated reconciliation metadata, never a playbook
+    # default -- resolved before Ansible starts so a missing/invalid/extra
+    # dnsmasq managed-file contract blocks here, identically to an untrusted
+    # inventory host below.
+    playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
+    try:
+        profiles, _digest = load_deployment_profiles(playbook_dir)
+        reconciliation = load_profile_reconciliation(playbook_dir, set(profiles))
+        records_spec = resolve_dnsmasq_records_spec(reconciliation)
+    except (DeploymentProfilesError, ProfileReconciliationError) as exc:
+        error = EnvelopeError(code="dnsmasq_records_metadata_invalid", message=str(exc))
         return _failure(op, data, [error], error.message)
 
     # fix_sshkey2 Step 4 (bug #4): every target host -- the normally
@@ -192,6 +245,8 @@ def build_dnsmasq_apply(
         str(resolved_inventory),
         str(playbook_dir / SETUP_PLAYBOOK),
     ]
+    if host_limit is not None:
+        setup_args.extend(["--limit", ",".join(target_hosts)])
     if not apply_changes:
         setup_args.extend(["--check", "--diff"])
 
@@ -230,14 +285,24 @@ def build_dnsmasq_apply(
         )
 
     playbook_path = playbook_dir / DEPLOY_PLAYBOOK
+    # fix_sshkey4 Step 3: source and destination travel together as one
+    # structured JSON extra-vars payload -- never shell-like `key=value`
+    # concatenation, which cannot safely carry an artifact path containing
+    # spaces or shell metacharacters.
+    extra_vars = {
+        "dnsmasq_records_src": str(artifact_path),
+        "dnsmasq_records_config_file": records_spec.path,
+    }
     args = [
         "ansible-playbook",
         "-i",
         str(resolved_inventory),
         str(playbook_path),
         "-e",
-        f"dnsmasq_records_src={artifact_path}",
+        json.dumps(extra_vars),
     ]
+    if host_limit is not None:
+        args.extend(["--limit", ",".join(target_hosts)])
     if not apply_changes:
         args.extend(["--check", "--diff"])
 

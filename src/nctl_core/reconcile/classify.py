@@ -48,6 +48,11 @@ _OBSERVATION_CODES = frozenset(
         # result -- observe again before concluding content drift one way
         # or the other.
         "service_config_observation_missing",
+        # fix_sshkey4 Step 3 (corrected contract 4): the stored observation
+        # names a managed-file path that disagrees with the current
+        # reconciliation metadata -- re-observe under the current probe hint
+        # before concluding content drift one way or the other.
+        "service_config_observation_mismatch",
         # Dead under the current evaluator (evaluate_all_services always
         # passes observed_facts={}, never None) but kept classified rather
         # than silently unreachable, matching this table's fail-closed intent.
