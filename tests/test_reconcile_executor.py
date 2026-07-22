@@ -25,7 +25,7 @@ from nctl_core.sources.desired import (
 )
 from nctl_core.sources.snapshot import SourceSnapshot
 from nctl_core.ssh_enroll import SshProbeRunner
-from nctl_core.ssh_trust import derive_host_key_alias
+from nctl_core.ssh_trust import build_ansible_ssh_common_args, derive_host_key_alias
 
 # Every _node() below shares this fixed DesiredNode UUID regardless of slug.
 NODE_ID = "11111111-1111-1111-1111-111111111111"
@@ -1659,3 +1659,172 @@ def test_pre_round_store_failure_still_starts_no_round(tmp_path, monkeypatch):
     assert any(e.code == "ssh_store_read_failed" for e in envelope.errors)
     assert envelope.data.rounds == []
     assert envelope.data.progress_made is False
+
+
+# --- real multi-round dnsmasq content convergence (fix_sshkey4 Step 5) -------
+#
+# Unlike every test above (which stubs fetch_and_compute_drift itself with a
+# hand-built DriftResult), this test mocks only the true external boundary --
+# nctl_core.sources.snapshot.build_source_snapshot, i.e. the Nautobot fetch --
+# and lets the real drift engine (compute_drift/evaluate_all_services/
+# service_placement content-drift), classify(), and the planner run
+# unmodified against a synthetic multi-round SourceSnapshot. Ansible/SSH stay
+# mocked at their existing subprocess/probe boundaries.
+
+
+def test_real_multi_round_dnsmasq_content_convergence(tmp_path, monkeypatch):
+    from nctl_core.ansible import AnsibleRunResult
+    from nctl_core.dnsmasq_render import compute_dnsmasq_render
+
+    cfg = _config(tmp_path)
+    ansible_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
+    (ansible_dir / "playbooks" / "bootstrap").mkdir(parents=True, exist_ok=True)
+    (ansible_dir / "playbooks" / "bootstrap" / "setup_dnsmasq.yml").write_text("---\n")
+    (ansible_dir / "playbooks" / "dnsmasq").mkdir(parents=True, exist_ok=True)
+    (ansible_dir / "playbooks" / "dnsmasq" / "deploy_dnsmasq_records.yml").write_text("---\n")
+    records_path = "/etc/dnsmasq.d/nintent-records.conf"
+    (ansible_dir / "vars").mkdir(parents=True, exist_ok=True)
+    (ansible_dir / "vars" / "deployment_profiles.yml").write_text(
+        """
+deployment_profiles:
+  dnsmasq:
+    group: dnsmasq_server
+    config_schema_version: "1"
+    variables: {}
+deployment_profile_reconciliation:
+  dnsmasq:
+    action:
+      kind: dnsmasq_config
+      managed_files:
+        records:
+          path: %s
+          digest: sha256
+"""
+        % records_path
+    )
+
+    node = _node("agdnsmasq").model_copy(update={"realized_device_id": "dev-1"})
+    service, placement = _service_and_placement("dnsmasq", "dnsmasq", node)
+    route = "192.0.2.50"
+
+    base_snapshot = _snapshot(nodes=[node])
+    desired_digest = compute_dnsmasq_render(base_snapshot).content_sha256
+    old_digest = "0" * 64
+    assert old_digest != desired_digest
+
+    def make_snapshot(*, sha256: str, status: str = "present") -> SourceSnapshot:
+        snapshot = _snapshot(nodes=[node])
+        snapshot.desired.services = [service]
+        snapshot.desired.placements = [placement]
+        snapshot.actual = ActualSnapshot(
+            devices=[
+                ActualDevice(
+                    id="dev-1",
+                    name="agdnsmasq",
+                    facts={
+                        "host_system": "Linux",
+                        "primary_ip_address": route,
+                        "last_seen": datetime.now(timezone.utc).isoformat(),
+                        "service_inventory_updated_at": datetime.now(timezone.utc).isoformat(),
+                        "observed_services": {
+                            "dnsmasq": {
+                                "state": "running",
+                                "source": "systemd",
+                                "checked_at": datetime.now(timezone.utc).isoformat(),
+                                "managed_files": {
+                                    "records": {"path": records_path, "status": status, "sha256": sha256}
+                                },
+                            }
+                        },
+                    },
+                )
+            ]
+        )
+        return snapshot
+
+    call_count = {"n": 0}
+
+    def fetch_snapshot(cfg, client):
+        call_count["n"] += 1
+        # Round 0's own drift fetch and its subsequent production-regeneration
+        # fetch (calls 1-2) both see the stale digest; a real v2
+        # observation/ingest would update this before round 1's fresh fetch
+        # (call 3+) -- represented here since the round loop always re-fetches
+        # drift from the top rather than trusting its own action's result.
+        digest = old_digest if call_count["n"] <= 2 else desired_digest
+        return make_snapshot(sha256=digest)
+
+    monkeypatch.setattr("nctl_core.drift_render.build_source_snapshot", fetch_snapshot)
+    # build_dnsmasq_apply -> build_dnsmasq_render makes its own separate
+    # SourceSnapshot fetch (a different Nautobot round-trip from the
+    # drift/regen fetches above) -- it only reads desired data for rendering,
+    # which never changes across rounds, but share the same round-aware fake
+    # for consistency.
+    monkeypatch.setattr("nctl_core.dnsmasq_render.build_source_snapshot", fetch_snapshot)
+    _patch_production_render(monkeypatch, lambda: fetch_snapshot(cfg, None))
+    monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
+    monkeypatch.setattr(executor_module, "run_observation", lambda *a, **kw: executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()))
+    _stub_dashboard(monkeypatch)
+
+    inventory_payload = {
+        "dnsmasq_server": {"hosts": ["agdnsmasq"]},
+        "_meta": {
+            "hostvars": {
+                "agdnsmasq": {
+                    "nintent_desired_node_id": NODE_ID,
+                    "nctl_ssh_host_key_alias": derive_host_key_alias(NODE_ID),
+                    "ansible_ssh_common_args": build_ansible_ssh_common_args(
+                        derive_host_key_alias(NODE_ID), str(cfg.resolved_ssh_known_hosts_file())
+                    ),
+                    "ansible_host": route,
+                }
+            }
+        },
+    }
+    ansible_calls = []
+
+    def fake_runner_run(self, args, *, mode, artifact_stem=None):
+        ansible_calls.append(args)
+        if args[0] == "ansible-inventory":
+            return AnsibleRunResult(mode=mode, command=args, exit_code=0, stdout=json.dumps(inventory_payload))
+        return AnsibleRunResult(mode=mode, command=args, exit_code=0, stdout="agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n")
+
+    monkeypatch.setattr(executor_module.AnsibleRunner, "run", fake_runner_run)
+
+    # Round 0: content mismatch -> service_config_mismatch -> exact production
+    # SSH preflight -> dnsmasq_config deploy succeeds -> post-actuation
+    # observation (mocked at its own existing boundary; the real drift refetch
+    # at the top of round 1 is what actually proves convergence below).
+    round0 = run_reconcile(cfg, apply_changes=True, max_rounds=1)
+    # max_rounds=1 deliberately stops right after this one round's actuation
+    # (state=max_rounds_reached, not converged) so the second run_reconcile
+    # call below observes a fresh top-of-round fetch, not a second round
+    # inside the same call -- the action results below are what this test
+    # actually verifies.
+    assert len(round0.data.rounds) == 1
+    round0_actions = {a.reconciler_id: a for a in round0.data.rounds[0].actions}
+    assert round0_actions["dnsmasq_config"].success is True
+    assert round0_actions["dnsmasq_config"].target_slugs == ["dnsmasq"]  # the service target; host is in parameters
+    assert round0_actions["observe_node"].success is True
+    [preflight_entry] = round0.data.rounds[0].ssh_preflight
+    assert preflight_entry["route"] == route
+    assert preflight_entry["phase"] == "production_route"
+    assert preflight_entry["status"] == "ready"
+    assert preflight_entry["managed_fingerprints"] and preflight_entry["offered_fingerprints"]
+    deploy_call = next(
+        c for c in ansible_calls if c[0] == "ansible-playbook" and any("deploy_dnsmasq_records.yml" in str(a) for a in c)
+    )
+    extra_vars = json.loads(deploy_call[deploy_call.index("-e") + 1])
+    assert extra_vars["dnsmasq_records_config_file"] == records_path
+
+    # Round 1: real drift recomputed from the (now matching) fresh fetch ->
+    # no service_config_* diff -> no repeated dnsmasq_config action ->
+    # converged for the dnsmasq service scope.
+    ansible_calls.clear()
+    round1 = run_reconcile(cfg, apply_changes=True, max_rounds=1)
+    assert round1.ok, round1.errors
+    assert round1.data.state == "already_converged"
+    assert round1.data.rounds == []
+    assert not any(
+        c[0] == "ansible-playbook" and any("deploy_dnsmasq_records.yml" in str(a) for a in c) for c in ansible_calls
+    )
