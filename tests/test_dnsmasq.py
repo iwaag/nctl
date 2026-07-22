@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 from nctl_core.dnsmasq import (
     dnsmasq_content_sha256,
@@ -10,6 +11,9 @@ from nctl_core.dnsmasq import (
     render_dnsmasq_records_conf,
     resolve_dhcp_reservation,
 )
+
+
+GOLDEN_DNSMASQ_SHA256 = "c25e51c4efce07281e580dcfb1ecad73d666a70310f87cd28ad448241215e592"
 
 
 def node(name: str, slug: str, lifecycle: str) -> dict:
@@ -470,3 +474,35 @@ def test_content_sha256_matches_a_standard_independent_sha256_implementation() -
     assert dnsmasq_content_sha256(conf) == hashlib.sha256(conf.encode("utf-8")).hexdigest()
     assert len(dnsmasq_content_sha256(conf)) == 64
     assert dnsmasq_content_sha256(conf) == dnsmasq_content_sha256(conf).lower()
+
+
+def test_cross_repository_dnsmasq_v5_golden_bytes_and_digest() -> None:
+    """nctl renders the exact bytes that nodeutils independently hashes."""
+    desired_node = node("Golden", "golden", "active")
+    desired_endpoint = endpoint(
+        name="golden",
+        dns_name="golden.home.arpa",
+        ip_address="192.0.2.10",
+        desired_node=desired_node,
+    )
+    export = export_dnsmasq_records(
+        [desired_endpoint],
+        ip_ranges=[
+            ip_range(
+                name="golden-range",
+                slug="golden-range",
+                start_address="192.0.2.100",
+                end_address="192.0.2.199",
+                dnsmasq_options={"lease_time": "12h"},
+            )
+        ],
+        endpoint_evaluations=endpoint_evaluation(
+            desired_endpoint,
+            mac_candidates=[mac_candidate(mac_address="00:11:22:33:44:55")],
+        ),
+    )
+    expected = (Path(__file__).parent / "fixtures" / "dnsmasq-v5-golden.conf").read_text()
+    conf = render_dnsmasq_records_conf(export)
+
+    assert conf == expected
+    assert dnsmasq_content_sha256(conf) == GOLDEN_DNSMASQ_SHA256

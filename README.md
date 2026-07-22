@@ -63,8 +63,9 @@ parent-repo submodule state. Each of the three checks degrades independently: e.
 Nautobot still yields dump and submodule info, with `ok: false` and an entry in `errors`.
 
 `render dnsmasq` fetches desired endpoints, IP ranges, and actual node/interface state through GraphQL and
-prints a deterministic dnsmasq configuration. Use `--out PATH` to write the configuration or
-`--json` to inspect the complete render payload.
+prints a deterministic dnsmasq configuration. Its exact UTF-8 bytes (header plus sorted directives)
+have a `content_sha256`; timestamps and operation IDs are envelope metadata, never deployed bytes.
+Use `--out PATH` to write the configuration or `--json` to inspect the complete render payload.
 
 `render hosts-intent` fetches desired nodes through GraphQL and emits the minimal mDNS bootstrap
 inventory used before actual facts are collected. Without `--out`, YAML goes to stdout. With
@@ -122,6 +123,12 @@ uv run nctl apply dnsmasq --inventory ansible_agdev/inventories/generated/hosts_
 Once nodeutils collection + ingest have run against the new host, `nctl render production` and
 subsequent `nctl apply dnsmasq`/`nctl reconcile` runs use the regenerated production inventory as
 usual — the override is only for the one-time bootstrap window before it exists.
+
+`apply dnsmasq --yes` remains useful for a reviewed, direct deployment. Routine DNS, DHCP
+reservation, and DHCP-range intent changes should use `nctl reconcile --yes`: a running daemon
+with a mismatching managed-file digest is real `service_config_mismatch` drift and is re-observed
+after deployment. The content contract covers only nctl's
+`/etc/dnsmasq.d/nintent-records.conf`, not every dnsmasq package default or `ansible.conf` setting.
 
 `dashboard` is the routine command for getting the drift picture in front of a human: it runs a
 fresh `nctl drift` internally, renders a single self-contained `index.html` (color-coded tiles,
@@ -583,11 +590,16 @@ failing closed with `ssh_host_key_unenrolled`/`ssh_host_key_mismatch`/`ssh_host_
 appropriate. Nothing else in nctl accepts an arbitrary inventory at all.
 
 `nctl reconcile --yes` applies the equivalent binding to its own production-regeneration step: the
-post-regeneration SSH scan always resolves its route from the exact `SourceSnapshot` and generation
-that was just composed and written, never a snapshot fetched earlier in the same round, and a
-production route that cannot be resolved for a target fails closed
+post-regeneration SSH scan uses only a `ResolvedSshTarget` from the exact generation just composed
+and written, never a snapshot fetched earlier in the same round, and a production route that cannot
+be resolved for a target fails closed
 (`no_resolvable_production_route`) rather than falling back to mDNS -- mDNS selection is reserved
 for the bootstrap phase, which is the only phase guaranteed to still use it.
+
+The supported nctl inventory contract rejects policy-changing SSH variables (including
+`ansible_ssh_args`, extra-argument variables, custom SSH executables, non-SSH connections, and
+host-key-checking overrides) and accepts only an integer port in `1..65535`. Direct Ansible commands
+with hostile CLI options or environment variables are outside that supported path.
 
 ## Conventions
 
