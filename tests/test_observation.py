@@ -76,7 +76,7 @@ def _config(tmp_path: Path) -> Config:
 def _report(host: str, collected_at: datetime) -> str:
     return json.dumps(
         {
-            "schema_version": "nodeutils.inventory.v1",
+            "schema_version": "nodeutils.inventory.v2",
             "collector": {"name": "nodeutils"},
             "identity": {"hostname": host, "fqdn": f"{host}.local"},
             "collected_at": collected_at.isoformat(),
@@ -166,6 +166,72 @@ def test_probe_hints_are_active_authoritative_service_names() -> None:
     assert yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"))) == {
         "service_probe_hints": {"dnsmasq": {}}
     }
+
+
+def test_probe_hints_attach_managed_files_from_profile_reconciliation() -> None:
+    # fix_sshkey3 Step 4: an active placement whose deployment_profile has
+    # ProfileAction.managed_files gets that metadata copied verbatim into
+    # its service's probe hint -- the one metadata-owned path source.
+    from nctl_core.reconcile.profiles import ManagedFileSpec, ProfileAction, ProfileReconciliation
+
+    snapshot = _snapshot("node-a")
+    snapshot.services = [
+        DesiredService(
+            id="svc-dns", slug="dns", name="dnsmasq", display_name="DNS",
+            service_type="system", lifecycle="active", catalog_namespace="x", catalog_metadata_name="dns",
+        ),
+    ]
+    snapshot.placements = [
+        DesiredServicePlacement(
+            id="p1", service_id="svc-dns", node_id=_node_id("node-a"), instance_name="dns",
+            deployment_profile="dnsmasq", config_schema_version="v1",
+        ),
+    ]
+    profile_reconciliation = {
+        "dnsmasq": ProfileReconciliation(
+            action=ProfileAction(
+                kind="dnsmasq_config",
+                managed_files={"records": ManagedFileSpec(path="/etc/dnsmasq.d/nintent-records.conf")},
+            )
+        ),
+    }
+
+    rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"), profile_reconciliation))
+
+    assert rendered == {
+        "service_probe_hints": {
+            "dnsmasq": {
+                "managed_files": {"records": {"path": "/etc/dnsmasq.d/nintent-records.conf", "digest": "sha256"}},
+            },
+        }
+    }
+
+
+def test_probe_hints_omit_managed_files_when_profile_has_none(tmp_path) -> None:
+    from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
+
+    snapshot = _snapshot("node-a")
+    snapshot.services = [
+        DesiredService(
+            id="svc-grafana", slug="grafana", name="grafana", display_name="Grafana",
+            service_type="system", lifecycle="active", catalog_namespace="x", catalog_metadata_name="grafana",
+        ),
+    ]
+    snapshot.placements = [
+        DesiredServicePlacement(
+            id="p1", service_id="svc-grafana", node_id=_node_id("node-a"), instance_name="grafana",
+            deployment_profile="grafana", config_schema_version="v1",
+        ),
+    ]
+    profile_reconciliation = {
+        "grafana": ProfileReconciliation(
+            action=ProfileAction(kind="playbook", playbook="playbooks/monitoring/setup_grafana.yml")
+        ),
+    }
+
+    rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"), profile_reconciliation))
+
+    assert rendered == {"service_probe_hints": {"grafana": {}}}
 
 
 def test_observation_collects_caches_and_ingests_all_hosts(tmp_path: Path) -> None:

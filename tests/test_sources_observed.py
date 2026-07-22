@@ -10,7 +10,7 @@ def _dump(facts: dict, serial_number: str | None = None) -> NodeDump:
         identity["serial_number"] = serial_number
     return NodeDump.model_validate(
         {
-            "schema_version": "nodeutils.inventory.v1",
+            "schema_version": "nodeutils.inventory.v2",
             "identity": identity,
             "collected_at": "2026-07-14T12:00:00+00:00",
             "facts": facts,

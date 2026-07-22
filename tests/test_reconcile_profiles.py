@@ -34,6 +34,8 @@ def test_real_repo_file_validates(tmp_path):
     entries = load_profile_reconciliation(repo_playbook_dir, _REPO_PROFILE_NAMES)
 
     assert entries["dnsmasq"].action.kind == "dnsmasq_config"
+    assert entries["dnsmasq"].action.managed_files["records"].path == "/etc/dnsmasq.d/nintent-records.conf"
+    assert entries["dnsmasq"].action.managed_files["records"].digest == "sha256"
     assert entries["home_assistant"].observe_only is True
     assert entries["nomad_client"].dependencies == ["nomad_server"]
     assert entries["prometheus_node_exporter"].dependencies == ["prometheus"]
@@ -172,6 +174,65 @@ def test_playbook_action_needs_exactly_one_of_playbook_or_playbook_by_os(tmp_pat
     playbook_dir = _write(
         tmp_path,
         {"deployment_profile_reconciliation": {"grafana": {"action": {"kind": "playbook"}}}},
+    )
+
+    with pytest.raises(ProfileReconciliationError):
+        load_profile_reconciliation(playbook_dir, {"grafana"})
+
+
+def test_managed_files_relative_path_is_rejected(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "dnsmasq": {
+                    "action": {
+                        "kind": "dnsmasq_config",
+                        "managed_files": {"records": {"path": "relative/records.conf"}},
+                    }
+                },
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError, match="absolute"):
+        load_profile_reconciliation(playbook_dir, {"dnsmasq"})
+
+
+def test_managed_files_defaults_digest_to_sha256(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "dnsmasq": {
+                    "action": {
+                        "kind": "dnsmasq_config",
+                        "managed_files": {"records": {"path": "/etc/dnsmasq.d/nintent-records.conf"}},
+                    }
+                },
+            }
+        },
+    )
+
+    entries = load_profile_reconciliation(playbook_dir, {"dnsmasq"})
+
+    assert entries["dnsmasq"].action.managed_files["records"].digest == "sha256"
+
+
+def test_managed_files_forbidden_on_playbook_actions(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "grafana": {
+                    "action": {
+                        "kind": "playbook",
+                        "playbook": "playbooks/monitoring/setup_grafana.yml",
+                        "managed_files": {"x": {"path": "/etc/x.conf"}},
+                    }
+                },
+            }
+        },
     )
 
     with pytest.raises(ProfileReconciliationError):

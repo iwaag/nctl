@@ -58,7 +58,7 @@ def make_dump_dir(tmp_path: Path) -> Path:
     dumps_dir = tmp_path / "dumps"
     dumps_dir.mkdir()
     dump = {
-        "schema_version": "nodeutils.inventory.v1",
+        "schema_version": "nodeutils.inventory.v2",
         "identity": {"hostname": "agpc"},
         "collected_at": datetime.now(timezone.utc).isoformat(),
         "facts": {"system": "linux"},

@@ -43,6 +43,29 @@ def test_read_actual_facts_reads_only_the_allowlist():
     )
 
 
+def test_read_actual_facts_preserves_nested_managed_file_metadata_unchanged():
+    # fix_sshkey3 Step 4: observed_services[*].managed_files must survive
+    # read_actual_facts() (and therefore GraphQL parsing) structurally
+    # unchanged -- no field renaming, flattening, or content extraction.
+    managed_files = {
+        "records": {
+            "path": "/etc/dnsmasq.d/nintent-records.conf",
+            "status": "present",
+            "sha256": "a" * 64,
+            "size": 1234,
+            "checked_at": "2026-07-22T00:00:00+00:00",
+        }
+    }
+    facts = read_actual_facts(
+        {
+            "observed_services": {
+                "dnsmasq": {"state": "active", "source": "systemd", "managed_files": managed_files},
+            },
+        }
+    )
+    assert facts.observed_services["dnsmasq"]["managed_files"] == managed_files
+
+
 def test_read_actual_facts_handles_missing_and_blank_values():
     facts = read_actual_facts({"host_system": "  "})
     assert facts.observed_system is None

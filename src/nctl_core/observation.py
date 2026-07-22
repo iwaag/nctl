@@ -21,6 +21,8 @@ from nctl_core.hosts_intent import export_hosts_intent, render_hosts_intent_yml
 from nctl_core.jobs import NautobotJobResult, NautobotJobRunner
 from nctl_core.names import canonical_node_name
 from nctl_core.nautobot import NautobotClient
+from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
+from nctl_core.reconcile.profiles import ProfileReconciliation, ProfileReconciliationError, load_profile_reconciliation
 from nctl_core.reconcile.ssh_preflight import STATUS_READY, check_ssh_enrollment
 from nctl_core.sources.desired import DesiredSnapshot
 from nctl_core.sources.actual import ActualSnapshot, fetch_actual_snapshot
@@ -60,24 +62,61 @@ class IngestSummary(BaseModel):
     results: list[IngestSummaryRow]
 
 
-def render_probe_hints(snapshot: DesiredSnapshot, node_id: str) -> str:
-    """Render non-secret probe names from active authoritative placements."""
+def render_probe_hints(
+    snapshot: DesiredSnapshot,
+    node_id: str,
+    profile_reconciliation: dict[str, ProfileReconciliation] | None = None,
+) -> str:
+    """Render non-secret probe names from active authoritative placements.
+
+    fix_sshkey3 Step 4: when `profile_reconciliation` is given (the
+    validated `deployment_profile_reconciliation` metadata), each active
+    placement's own `ProfileAction.managed_files` is attached under its
+    service's hint -- the one metadata-owned source of the deployed path,
+    copied here verbatim rather than re-derived. Probe hints (and therefore
+    managed-file observation) appear only for services actually active on
+    this node, matching the existing name-only hint behavior.
+    """
 
     service_names = {service.id: service.name for service in snapshot.services}
-    names = sorted(
-        {
-            service_names[placement.service_id]
-            for placement in snapshot.placements
-            if placement.node_id == node_id
-            and placement.desired_state == "active"
-            and placement.service_id in service_names
-        }
-    )
+    active_by_service: dict[str, str] = {
+        placement.service_id: placement.deployment_profile
+        for placement in snapshot.placements
+        if placement.node_id == node_id
+        and placement.desired_state == "active"
+        and placement.service_id in service_names
+    }
+    hints: dict[str, dict[str, Any]] = {service_names[sid]: {} for sid in active_by_service}
+    if profile_reconciliation:
+        for service_id, profile_name in active_by_service.items():
+            entry = profile_reconciliation.get(profile_name)
+            if entry is None or entry.action is None or not entry.action.managed_files:
+                continue
+            hints[service_names[service_id]]["managed_files"] = {
+                key: {"path": spec.path, "digest": spec.digest} for key, spec in entry.action.managed_files.items()
+            }
     return yaml.safe_dump(
-        {"service_probe_hints": {name: {} for name in names}},
+        {"service_probe_hints": hints},
         sort_keys=True,
         default_flow_style=False,
     )
+
+
+def _load_profile_reconciliation_for_probe_hints(cfg: Config) -> dict[str, ProfileReconciliation]:
+    """Best-effort load: an unavailable/invalid contract degrades to no managed-file hints.
+
+    Never blocks observation itself -- Step 5's drift comparator is the
+    place an unavailable deployment-profile contract becomes a classified
+    global error; here it would only mean a fresh round's managed-file
+    digest observation is skipped for this round, not that the whole
+    observation/enrollment pipeline stops.
+    """
+    try:
+        playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
+        profiles, _digest = load_deployment_profiles(playbook_dir)
+        return load_profile_reconciliation(playbook_dir, set(profiles))
+    except (DeploymentProfilesError, ProfileReconciliationError):
+        return {}
 
 
 def run_observation(
@@ -120,10 +159,13 @@ def run_observation(
         render_hosts_intent_yml(export, generated_at=generated_at),
     )
     node_by_id = {node.id: node for node in snapshot.nodes}
+    profile_reconciliation = _load_profile_reconciliation_for_probe_hints(cfg)
     probe_dir = artifacts.directory("probe-config")
     for host in targets:
         node = node_by_id[eligible[host]["desired_node_id"]]
-        artifacts.write_text(f"probe-config/{host}.yaml", render_probe_hints(snapshot, node.id))
+        artifacts.write_text(
+            f"probe-config/{host}.yaml", render_probe_hints(snapshot, node.id, profile_reconciliation)
+        )
 
     runner = AnsibleRunner(
         cfg.ansible.resolved_playbook_dir(cfg.source_path.parent),

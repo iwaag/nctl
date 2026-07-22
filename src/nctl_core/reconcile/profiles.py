@@ -37,6 +37,29 @@ class ProfileReconciliationError(Exception):
     """The `deployment_profile_reconciliation` section is missing, unparsable, or invalid."""
 
 
+class ManagedFileSpec(BaseModel):
+    """One closed managed-file observation target (fix_sshkey3 Step 4).
+
+    The one metadata-owned source of the deployed path -- `nctl_core.
+    observation.render_probe_hints` copies it verbatim into the nodeutils
+    probe config, and `ansible_agdev`'s deploy playbook must actuate the
+    same path. `path` must be absolute: the deployed managed-file path is
+    never resolved relative to anything (a Nautobot-editable relative value
+    could otherwise be walked to an unintended location on the target).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    digest: Literal["sha256"] = "sha256"
+
+    @model_validator(mode="after")
+    def _check_absolute_path(self) -> "ManagedFileSpec":
+        if not Path(self.path).is_absolute():
+            raise ValueError(f"managed file path must be absolute: {self.path!r}")
+        return self
+
+
 class ProfileAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -44,6 +67,10 @@ class ProfileAction(BaseModel):
     # Exactly one of these two for kind="playbook"; neither for "dnsmasq_config".
     playbook: str | None = None
     playbook_by_os: dict[str, str] = Field(default_factory=dict)
+    # Closed managed-file observation targets (fix_sshkey3 Step 4). Only
+    # `dnsmasq_config` declares these in this phase -- content convergence
+    # for arbitrary playbook profiles is explicitly out of scope.
+    managed_files: dict[str, ManagedFileSpec] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_playbook_fields(self) -> "ProfileAction":
@@ -53,6 +80,8 @@ class ProfileAction(BaseModel):
         else:
             if bool(self.playbook) == bool(self.playbook_by_os):
                 raise ValueError("a playbook action needs exactly one of playbook or playbook_by_os")
+            if self.managed_files:
+                raise ValueError("managed_files is only supported for kind=dnsmasq_config in this phase")
         return self
 
     def playbook_paths(self) -> list[str]:

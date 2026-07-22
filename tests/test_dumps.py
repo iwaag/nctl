@@ -6,7 +6,7 @@ import pytest
 from nctl_core.dumps import DumpError, load_dump, scan_dumps
 
 VALID = {
-    "schema_version": "nodeutils.inventory.v1",
+    "schema_version": "nodeutils.inventory.v2",
     "collector": "nodeutils",
     "identity": {"hostname": "agpc"},
     "collected_at": "2026-07-14T12:00:00+00:00",
@@ -24,14 +24,14 @@ def test_load_dump_valid(tmp_path):
     path = write_json(tmp_path / "agpc.json", VALID)
     dump = load_dump(path)
     assert dump.identity.hostname == "agpc"
-    assert dump.schema_version == "nodeutils.inventory.v1"
+    assert dump.schema_version == "nodeutils.inventory.v2"
     assert dump.facts == {"os": "linux"}
 
 
 def test_load_dump_yaml(tmp_path):
     path = tmp_path / "agpc.yaml"
     path.write_text(
-        "schema_version: nodeutils.inventory.v1\n"
+        "schema_version: nodeutils.inventory.v2\n"
         "collector: nodeutils\n"
         "identity:\n  hostname: agpc\n"
         "collected_at: '2026-07-14T12:00:00+00:00'\n"

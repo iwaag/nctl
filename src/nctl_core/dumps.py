@@ -1,4 +1,4 @@
-"""Read nodeutils inventory dumps (`schema_version: nodeutils.inventory.v1`)."""
+"""Read nodeutils inventory dumps (`schema_version: nodeutils.inventory.v2`)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-EXPECTED_SCHEMA_VERSION = "nodeutils.inventory.v1"
+# fix_sshkey3 Step 4: coordinated breaking bump, v1 -> v2. No dual reader --
+# a v1 report (from an un-upgraded collector) is rejected with a structured
+# DumpError, not silently accepted.
+EXPECTED_SCHEMA_VERSION = "nodeutils.inventory.v2"
 
 
 class DumpError(Exception):
