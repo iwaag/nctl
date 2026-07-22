@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from nctl_core.reconcile.profiles import ProfileReconciliation
 
 
 @dataclass(frozen=True)
@@ -25,5 +28,12 @@ class DriftContext:
     # `deployment_profiles_unavailable` instead of silently composing against `{}`. `None`
     # means profiles loaded fine (possibly legitimately empty).
     profiles_error: str | None = None
+    # fix_sshkey3 Step 5 (contract item 1): the validated `deployment_profile_reconciliation`
+    # map. `profile_reconciliation_error` set (missing/unparsable/invalid, or unreachable
+    # because `profiles_error` was already set) means `service_intent_matching` must emit a
+    # classified global error and run no managed-file content-drift check at all this round
+    # -- never a silent convergence.
+    profile_reconciliation: "dict[str, ProfileReconciliation]" = field(default_factory=dict)
+    profile_reconciliation_error: str | None = None
     events_dir: Path | None = None
     service_observation_max_age_hours: int = 24

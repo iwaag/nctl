@@ -360,10 +360,26 @@ def endpoint_intent_matching(snapshot: SourceSnapshot, context: DriftContext) ->
 
 @register("service")
 def service_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    if context.profile_reconciliation_error is not None:
+        # fix_sshkey3 Step 5 (contract item 1): an unavailable reconciliation
+        # contract is a classified global blocker, never a silent
+        # convergence -- no managed-file content-drift check runs this round
+        # (profile_reconciliation=None below), and this diff alone already
+        # blocks every scope (Decision 1: global diffs block all scopes).
+        yield DiffRecord(
+            target=Target(kind="global"),
+            code="deployment_profile_reconciliation_unavailable",
+            severity=Severity.ERROR,
+            message=context.profile_reconciliation_error,
+            sources=["actual"],
+        )
     service_evaluations = evaluate_all_services(
         snapshot,
         generated_at=context.generated_at,
         stale_after_hours=context.service_observation_max_age_hours,
+        profile_reconciliation=(
+            None if context.profile_reconciliation_error is not None else context.profile_reconciliation
+        ),
     )
     for service in snapshot.desired.services:
         target = Target(kind="service", slug=service.slug, name=service.name, id=service.id)

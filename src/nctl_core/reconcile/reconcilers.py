@@ -53,7 +53,10 @@ SERVICE_PROFILE = register_reconciler(
     Reconciler(id="service_profile", action_kind="playbook", mutates=True, requires_observation=True)
 )
 DNSMASQ_CONFIG = register_reconciler(
-    Reconciler(id="dnsmasq_config", action_kind="dnsmasq_config", mutates=True, requires_observation=False)
+    # fix_sshkey3 Step 5: requires_observation=True -- a dnsmasq deploy must
+    # be followed by a fresh nodeutils collection/ingest so the next round's
+    # drift compares against the just-deployed digest, not stale evidence.
+    Reconciler(id="dnsmasq_config", action_kind="dnsmasq_config", mutates=True, requires_observation=True)
 )
 NEW_NODE_BASELINE = register_reconciler(
     Reconciler(id="new_node_baseline", action_kind="playbook", mutates=True, requires_observation=False)

@@ -38,6 +38,7 @@ from nctl_core.drift.model import DiffRecord, Severity
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
+from nctl_core.reconcile.profiles import ProfileReconciliationError, load_profile_reconciliation
 from nctl_core.sources.snapshot import SourceSnapshot, build_source_snapshot
 
 DRIFT_SCHEMA = "nctl.drift.v1"
@@ -115,11 +116,21 @@ def fetch_and_compute_drift(
 
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     profiles_error: str | None = None
+    profile_reconciliation: dict = {}
+    profile_reconciliation_error: str | None = None
     try:
         profiles, _digest = load_deployment_profiles(playbook_dir)
     except DeploymentProfilesError as exc:
         profiles = {}
         profiles_error = str(exc)
+        # Reconciliation metadata is keyed against the validated profile name
+        # set; with no valid profiles there is nothing to validate it against.
+        profile_reconciliation_error = str(exc)
+    else:
+        try:
+            profile_reconciliation = load_profile_reconciliation(playbook_dir, set(profiles))
+        except ProfileReconciliationError as exc:
+            profile_reconciliation_error = str(exc)
 
     client = NautobotClient(cfg.nautobot.url, token)
     try:
@@ -133,6 +144,8 @@ def fetch_and_compute_drift(
         generated_at=generated_at,
         profiles=profiles,
         profiles_error=profiles_error,
+        profile_reconciliation=profile_reconciliation,
+        profile_reconciliation_error=profile_reconciliation_error,
         events_dir=cfg.events.resolved_log_dir(),
         service_observation_max_age_hours=cfg.reconcile.service_observation_max_age_hours,
     )

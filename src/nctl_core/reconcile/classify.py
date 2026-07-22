@@ -44,6 +44,10 @@ _OBSERVATION_CODES = frozenset(
         "missing_network_interface",
         "service_observation_missing",
         "service_observation_stale",
+        # fix_sshkey3 Step 5: a fresh service observation has no managed-file
+        # result -- observe again before concluding content drift one way
+        # or the other.
+        "service_config_observation_missing",
         # Dead under the current evaluator (evaluate_all_services always
         # passes observed_facts={}, never None) but kept classified rather
         # than silently unreachable, matching this table's fail-closed intent.
@@ -64,13 +68,25 @@ _LINK_ACTUAL_NODE_CODES = frozenset({"actual_node_not_linked"})
 # code as automatic-by-default.
 _RECONCILE_IPAM_CODES = frozenset({"missing_actual_ip_address", "actual_ip_address_not_linked"})
 
-# service_profile — missing/not-running service on an active placement.
-# Whether a *specific* service target is actually automatable depends on its
-# deployment profile's reconciliation metadata (Decision 7), so these codes
-# are classified AUTOMATIC by default here, but `reconcilers.py`'s
-# `plan_service_profile_action` can downgrade a specific instance to
-# `unsupported` (profile declares no action / observe_only) at plan time.
-_SERVICE_PROFILE_CODES = frozenset({"service_missing", "service_not_running"})
+# service_profile — missing/not-running service on an active placement, or
+# (fix_sshkey3 Step 5) its managed-file content missing/unreadable/wrong on
+# an active placement. Whether a *specific* service target is actually
+# automatable depends on its deployment profile's reconciliation metadata
+# (Decision 7), so these codes are classified AUTOMATIC by default here, but
+# `reconcilers.py`'s `plan_service_profile_action` can downgrade a specific
+# instance to `unsupported` (profile declares no action / observe_only) at
+# plan time. `plan_service_profile` already resolves a `dnsmasq_config`
+# profile action to the `dnsmasq_config` reconciler generically -- these
+# three codes need no separate dnsmasq-only planner.
+_SERVICE_PROFILE_CODES = frozenset(
+    {
+        "service_missing",
+        "service_not_running",
+        "service_config_missing",
+        "service_config_unreadable",
+        "service_config_mismatch",
+    }
+)
 
 # Never automatable: ambiguity/conflict (Decision 2's "automation would be
 # unsafe"), or destructive/data-quality issues explicitly out of scope for

@@ -227,7 +227,10 @@ def test_service_profile_dnsmasq_config_action():
     [action] = plan.actions
     assert action.reconciler_id == "dnsmasq_config"
     assert action.action_kind == "dnsmasq_config"
-    assert action.requires_observation is False
+    # fix_sshkey3 Step 5: a dnsmasq deploy now always requires a
+    # post-actuation observation, so the next round's drift compares
+    # against the just-deployed digest.
+    assert action.requires_observation is True
 
 
 def test_service_profile_unsupported_when_profile_has_no_metadata():

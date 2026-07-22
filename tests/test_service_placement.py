@@ -1,7 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from nctl_core.drift.service_placement import evaluate_placement_drift, normalize_observed_os
+from nctl_core.drift.service_placement import ContentSpec, evaluate_placement_drift, normalize_observed_os
 
 NOW = datetime(2026, 7, 16, 1, tzinfo=timezone.utc)
 
@@ -26,11 +26,12 @@ def device(**updates):
     return row
 
 
-def evaluate(placements=None, devices=None):
+def evaluate(placements=None, devices=None, content_spec_by_service_id=None):
     return evaluate_placement_drift(
         [{"id": "s1", "name": "nomad"}], placements if placements is not None else [placement()],
         devices if devices is not None else {"d1": device()}, {"d1": "n1", "d2": "n2"},
         now=NOW, stale_after_hours=24,
+        content_spec_by_service_id=content_spec_by_service_id,
     )["s1"]
 
 
@@ -78,3 +79,88 @@ def test_observed_os_normalization_matches_nauto_contract():
     assert normalize_observed_os("Linux") == "linux"
     assert normalize_observed_os("Darwin") == "macos"
     assert normalize_observed_os("FreeBSD") is None
+
+
+# --- content drift (fix_sshkey3 Step 5) --------------------------------------
+
+DIGEST_A = "a" * 64
+DIGEST_B = "b" * 64
+CONTENT_SPEC = {"s1": ContentSpec(managed_file_key="records", desired_digest=DIGEST_A)}
+
+
+def _device_with_managed_file(*, status="present", sha256=DIGEST_A, state="running"):
+    return device(
+        observed_services={
+            "nomad": {
+                "state": state,
+                "source": "systemd",
+                "managed_files": {"records": {"path": "/etc/dnsmasq.d/nintent-records.conf", "status": status, "sha256": sha256}},
+            }
+        }
+    )
+
+
+def test_running_service_with_matching_digest_is_converged():
+    report = evaluate(devices={"d1": _device_with_managed_file()}, content_spec_by_service_id=CONTENT_SPEC)
+    assert report["status"] == "satisfied"
+    assert report["placements"][0]["observed_content_digest"] == DIGEST_A
+
+
+def test_running_service_with_changed_digest_is_content_mismatch():
+    report = evaluate(devices={"d1": _device_with_managed_file(sha256=DIGEST_B)}, content_spec_by_service_id=CONTENT_SPEC)
+    assert gap_codes(report) == {"service_config_mismatch"}
+    assert report["placements"][0]["observed_content_digest"] == DIGEST_B
+    assert report["placements"][0]["desired_content_digest"] == DIGEST_A
+
+
+def test_process_and_content_dimensions_are_independent():
+    # A stopped service with a matching digest is still process drift *and*
+    # content-satisfied -- the two dimensions never collapse into one code.
+    report = evaluate(devices={"d1": _device_with_managed_file(state="failed")}, content_spec_by_service_id=CONTENT_SPEC)
+    assert gap_codes(report) == {"service_not_running"}
+
+    # A running service with a manually-changed file digest is content drift
+    # even though the process check alone would report satisfied.
+    report = evaluate(devices={"d1": _device_with_managed_file(sha256=DIGEST_B)}, content_spec_by_service_id=CONTENT_SPEC)
+    assert gap_codes(report) == {"service_config_mismatch"}
+
+
+def test_missing_managed_file_observation_is_distinct_from_missing_service():
+    # The service is observed as running, but no managed-file result exists
+    # yet (e.g. a v1 nodeutils collector, or no observation since rollout).
+    report = evaluate(
+        devices={"d1": device(observed_services={"nomad": {"state": "running", "source": "systemd"}})},
+        content_spec_by_service_id=CONTENT_SPEC,
+    )
+    assert gap_codes(report) == {"service_config_observation_missing"}
+
+
+def test_explicit_missing_file_is_service_config_missing():
+    report = evaluate(devices={"d1": _device_with_managed_file(status="missing", sha256=None)}, content_spec_by_service_id=CONTENT_SPEC)
+    assert gap_codes(report) == {"service_config_missing"}
+
+
+def test_unreadable_and_too_large_are_service_config_unreadable():
+    for status in ("unreadable", "too_large"):
+        report = evaluate(devices={"d1": _device_with_managed_file(status=status, sha256=None)}, content_spec_by_service_id=CONTENT_SPEC)
+        assert gap_codes(report) == {"service_config_unreadable"}
+
+
+def test_two_targets_one_converged_one_mismatched():
+    placements = [
+        placement(placement_id="p1", node_id="n1", node_slug="node-a", realized_device_id="d1"),
+        placement(placement_id="p2", node_id="n2", node_slug="node-b", realized_device_id="d2"),
+    ]
+    devices = {
+        "d1": _device_with_managed_file(sha256=DIGEST_A),
+        "d2": _device_with_managed_file(sha256=DIGEST_B),
+    }
+    report = evaluate(placements=placements, devices=devices, content_spec_by_service_id=CONTENT_SPEC)
+    by_node = {row["node_slug"]: row for row in report["placements"]}
+    assert by_node["node-a"]["gaps"] == []
+    assert [g["code"] for g in by_node["node-b"]["gaps"]] == ["service_config_mismatch"]
+
+
+def test_content_spec_absent_never_produces_content_codes():
+    report = evaluate(devices={"d1": _device_with_managed_file(sha256=DIGEST_B)})
+    assert gap_codes(report) == set()

@@ -426,6 +426,28 @@ def test_service_intent_matching_emits_placement_evidence_and_distinct_code():
     assert stopped.actual["actual"]["observed_source"] == "systemd"
 
 
+def test_service_intent_matching_profile_reconciliation_error_is_a_global_diff():
+    # fix_sshkey3 Step 5 contract item 1: an unavailable
+    # deployment_profile_reconciliation contract is a classified global
+    # error -- never a silent convergence for a dnsmasq-profiled service.
+    service = DesiredService(
+        id="s1", slug="dnsmasq", name="dnsmasq", display_name="dnsmasq", service_type="daemon",
+        lifecycle="active", catalog_namespace="default", catalog_metadata_name="dnsmasq",
+    )
+    snapshot = make_snapshot(services=[service])
+    context = DriftContext(
+        generated_at="2026-07-15T12:00:00+00:00",
+        profile_reconciliation_error="vars/deployment_profiles.yml: deployment_profile_reconciliation is invalid",
+    )
+
+    diffs = list(comparators.service_intent_matching(snapshot, context))
+
+    global_diffs = [d for d in diffs if d.target.kind == "global"]
+    assert len(global_diffs) == 1
+    assert global_diffs[0].code == "deployment_profile_reconciliation_unavailable"
+    assert global_diffs[0].severity.value == "error"
+
+
 def test_production_policy_local_error_yields_structured_error_not_generic_skip():
     # unknown_profile is a structured Group C error (Phase 1): production_policy
     # must emit the precise error-derived diff and must not also emit a second,

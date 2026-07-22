@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from nctl_core.dnsmasq_render import compute_dnsmasq_render
 from nctl_core.drift.evaluation_snapshot import evaluate_all_endpoints, evaluate_all_nodes, evaluate_all_services
+from nctl_core.reconcile.profiles import ManagedFileSpec, ProfileAction, ProfileReconciliation
 from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddress, ActualSnapshot
 from nctl_core.sources.desired import (
     DesiredDependency,
@@ -138,3 +140,108 @@ def test_evaluate_all_services_uses_placement_device_observation() -> None:
     assert observation["observed_state"] == "running"
     assert observation["actual_state_policy"] == "required"
     assert observation["host_os"] == "linux"
+
+
+# --- dnsmasq content drift wiring (fix_sshkey3 Step 5) -----------------------
+
+
+def _dnsmasq_snapshot():
+    service = DesiredService(
+        id="s1", slug="dnsmasq", name="dnsmasq", display_name="dnsmasq", service_type="daemon",
+        lifecycle="active", catalog_namespace="default", catalog_metadata_name="dnsmasq",
+    )
+    node = DesiredNode(
+        id="n1", slug="agdnsmasq", name="agdnsmasq", lifecycle="active", node_type="device",
+        realized_device_id="dev-1",
+    )
+    placement = DesiredServicePlacement(
+        id="p1", service_id="s1", node_id="n1", instance_name="dnsmasq",
+        deployment_profile="dnsmasq", config_schema_version="v1",
+    )
+    operational = DesiredNodeOperationalOverride(id="oc1", node_id="n1", connection_path="local")
+    endpoint = DesiredEndpoint(
+        id="e1", name="primary", endpoint_type="primary", node_id="n1", node_slug="agdnsmasq",
+        ip_address="192.0.2.10/32",
+    )
+    dns_endpoint = DesiredEndpoint(
+        id="e2", name="edge", endpoint_type="primary", node_id="n1", node_slug="agdnsmasq",
+        dns_name="edge.example.test", ip_address="192.0.2.20/32", generate_dnsmasq=True,
+    )
+    return node, endpoint, dns_endpoint, service, placement, operational
+
+
+_DNSMASQ_RECONCILIATION = {
+    "dnsmasq": ProfileReconciliation(
+        action=ProfileAction(
+            kind="dnsmasq_config",
+            managed_files={"records": ManagedFileSpec(path="/etc/dnsmasq.d/nintent-records.conf")},
+        )
+    ),
+}
+
+
+def _device_with_dnsmasq(sha256: str, *, status: str = "present", state: str = "active") -> ActualDevice:
+    return ActualDevice(
+        id="dev-1", name="agdnsmasq",
+        facts={
+            "host_system": "Linux",
+            "last_seen": "2026-07-16T00:30:00+00:00",
+            "service_inventory_updated_at": "2026-07-16T00:30:00+00:00",
+            "observed_services": {
+                "dnsmasq": {
+                    "state": state, "source": "systemd",
+                    "managed_files": {"records": {"path": "/etc/dnsmasq.d/nintent-records.conf", "status": status, "sha256": sha256}},
+                }
+            },
+        },
+    )
+
+
+def test_evaluate_all_services_content_drift_matches_the_real_desired_digest():
+    node, endpoint, dns_endpoint, service, placement, operational = _dnsmasq_snapshot()
+    snapshot = make_snapshot(
+        nodes=[node], endpoints=[endpoint, dns_endpoint], services=[service], placements=[placement],
+        operational_overrides=[operational],
+        devices=[_device_with_dnsmasq(compute_dnsmasq_render(
+            make_snapshot(nodes=[node], endpoints=[endpoint, dns_endpoint], services=[service], placements=[placement], operational_overrides=[operational])
+        ).content_sha256)],
+    )
+
+    result = evaluate_all_services(
+        snapshot, generated_at="2026-07-16T01:00:00+00:00", profile_reconciliation=_DNSMASQ_RECONCILIATION
+    )["s1"]
+
+    assert result.status == "satisfied"
+
+
+def test_evaluate_all_services_content_mismatch_when_observed_digest_differs():
+    node, endpoint, dns_endpoint, service, placement, operational = _dnsmasq_snapshot()
+    snapshot = make_snapshot(
+        nodes=[node], endpoints=[endpoint, dns_endpoint], services=[service], placements=[placement],
+        operational_overrides=[operational],
+        devices=[_device_with_dnsmasq("f" * 64)],
+    )
+
+    result = evaluate_all_services(
+        snapshot, generated_at="2026-07-16T01:00:00+00:00", profile_reconciliation=_DNSMASQ_RECONCILIATION
+    )["s1"]
+
+    assert "service_config_mismatch" in result.deterministic_summary["gap_codes"]
+
+
+def test_evaluate_all_services_profile_reconciliation_none_never_reports_content_codes():
+    # Contract item 1: an unavailable/absent reconciliation contract must
+    # never let content drift silently read as satisfied -- but it also must
+    # never invent a content-drift code with no metadata behind it. The
+    # caller (comparators.service_intent_matching) is responsible for the
+    # accompanying classified global error.
+    node, endpoint, dns_endpoint, service, placement, operational = _dnsmasq_snapshot()
+    snapshot = make_snapshot(
+        nodes=[node], endpoints=[endpoint, dns_endpoint], services=[service], placements=[placement],
+        operational_overrides=[operational],
+        devices=[_device_with_dnsmasq("f" * 64)],
+    )
+
+    result = evaluate_all_services(snapshot, generated_at="2026-07-16T01:00:00+00:00", profile_reconciliation=None)["s1"]
+
+    assert "service_config_mismatch" not in result.deterministic_summary["gap_codes"]

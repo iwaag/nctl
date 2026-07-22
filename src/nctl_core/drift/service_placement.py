@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 RUNNING_STATES = frozenset({"running", "active"})
 _OBSERVED_SYSTEM_MAP = {"Linux": "linux", "Darwin": "macos"}
+_MANAGED_FILE_UNREADABLE_STATUSES = frozenset({"unreadable", "too_large"})
+
+
+@dataclass(frozen=True)
+class ContentSpec:
+    """One managed-file content-drift check to run for a service's active placements.
+
+    fix_sshkey3 Step 5: process state (`RUNNING_STATES`) and managed-file
+    content are two independent actual-state dimensions -- a `ContentSpec`
+    is checked regardless of what the process-state check above found, and
+    vice versa. `desired_digest` is the same
+    `dnsmasq_render.compute_dnsmasq_render(snapshot).content_sha256` value
+    for every placement of the service it applies to (there is one desired
+    dnsmasq artifact, not one per node), but each placement's *observed*
+    digest is still verified independently.
+    """
+
+    managed_file_key: str
+    desired_digest: str
 
 
 def normalize_observed_os(value: Any) -> str | None:
@@ -36,6 +56,32 @@ def observed_service_entry(device_facts: dict[str, Any], observed_key: str) -> d
     return entry if isinstance(entry, dict) else None
 
 
+def _evaluate_content_drift(report: dict[str, Any], entry: dict[str, Any] | None, content_spec: ContentSpec) -> None:
+    """Append `service_config_*` gaps to `report` -- independent of the process-state gaps above."""
+
+    report["desired_content_digest"] = content_spec.desired_digest
+    managed_files = entry.get("managed_files") if isinstance(entry, dict) else None
+    file_result = (
+        managed_files.get(content_spec.managed_file_key) if isinstance(managed_files, dict) else None
+    )
+    if not isinstance(file_result, dict):
+        report["gaps"].append({"code": "service_config_observation_missing"})
+        return
+    status = file_result.get("status")
+    report["observed_content_status"] = status
+    if status == "missing":
+        report["gaps"].append({"code": "service_config_missing"})
+    elif status in _MANAGED_FILE_UNREADABLE_STATUSES:
+        report["gaps"].append({"code": "service_config_unreadable", "status": status})
+    elif status == "present":
+        observed_digest = file_result.get("sha256")
+        report["observed_content_digest"] = observed_digest
+        if observed_digest != content_spec.desired_digest:
+            report["gaps"].append({"code": "service_config_mismatch"})
+    else:
+        report["gaps"].append({"code": "service_config_observation_missing"})
+
+
 def evaluate_active_placement(
     placement: dict[str, Any],
     observed_key: str,
@@ -43,6 +89,7 @@ def evaluate_active_placement(
     *,
     now: datetime,
     stale_after_hours: int,
+    content_spec: ContentSpec | None = None,
 ) -> dict[str, Any]:
     device_id = placement.get("realized_device_id")
     policy = placement.get("actual_state_policy")
@@ -90,6 +137,9 @@ def evaluate_active_placement(
         report["observed_checked_at"] = entry.get("checked_at") or observed_at
         if state not in RUNNING_STATES:
             report["gaps"].append({"code": "service_not_running", "observed_state": entry.get("state")})
+
+    if content_spec is not None:
+        _evaluate_content_drift(report, entry, content_spec)
     return report
 
 
@@ -101,17 +151,22 @@ def evaluate_placement_drift(
     *,
     now: datetime,
     stale_after_hours: int,
+    content_spec_by_service_id: dict[str, ContentSpec] | None = None,
 ) -> dict[str, Any]:
     placements_by_service: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for placement in placements:
         placements_by_service[str(placement.get("service_id"))].append(placement)
+    content_spec_by_service_id = content_spec_by_service_id or {}
     report = {}
     for service in sorted(services, key=lambda item: str(item.get("id"))):
         service_id = str(service.get("id"))
         observed_key = str(service.get("observed_key") or service.get("name"))
+        content_spec = content_spec_by_service_id.get(service_id)
         rows = sorted(placements_by_service.get(service_id, []), key=lambda item: (str(item.get("instance_name")), str(item.get("placement_id"))))
         placement_reports = [
-            evaluate_active_placement(row, observed_key, devices, now=now, stale_after_hours=stale_after_hours)
+            evaluate_active_placement(
+                row, observed_key, devices, now=now, stale_after_hours=stale_after_hours, content_spec=content_spec
+            )
             for row in rows
         ]
         target_devices = {row.get("realized_device_id") for row in rows if row.get("realized_device_id")}
