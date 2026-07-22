@@ -189,7 +189,7 @@ def _probe(*, keyscan_stdout: str = "", keyscan_raises: Exception | None = None)
             raise keyscan_raises
         return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=keyscan_stdout, stderr="")
 
-    return SshProbeRunner(keyscan=keyscan, known_hosts_files_for=lambda host: [], keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+    return SshProbeRunner(keyscan=keyscan, effective_config=lambda host, port: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
 
 
 def test_verify_offered_keys_matching_key_is_ready(tmp_path):
@@ -263,7 +263,7 @@ def test_verify_offered_keys_scans_route_override_instead_of_mdns(tmp_path):
         scanned_hosts.append(host)
         return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {KEY_BLOB}\n", stderr="")
 
-    probe = SshProbeRunner(keyscan=keyscan, known_hosts_files_for=lambda h: [], keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+    probe = SshProbeRunner(keyscan=keyscan, effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
 
     entries = verify_offered_keys(
         cfg, ["agdnsmasq"], _snapshot(), probe, route_overrides={"agdnsmasq": "192.168.0.2"}

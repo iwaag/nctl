@@ -45,7 +45,7 @@ def _fake_ssh_probe(monkeypatch):
 
     fake = SshProbeRunner(
         keyscan=keyscan,
-        known_hosts_files_for=lambda host: [],
+        effective_config=lambda host, port: subprocess.CompletedProcess([], 0, "", ""),
         keygen_find=lambda path, host: subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
     )
     monkeypatch.setattr(executor_module, "default_ssh_probe_runner", lambda: fake)
@@ -343,7 +343,7 @@ def test_apply_blocks_on_mismatched_offered_key_before_observation_runs(tmp_path
 
         return sp.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {OTHER_KEY_BLOB}\n", stderr="")
 
-    bad_probe = SshProbeRunner(keyscan=keyscan, known_hosts_files_for=lambda h: [], keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+    bad_probe = SshProbeRunner(keyscan=keyscan, effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
 
     envelope = run_reconcile(cfg, apply_changes=True, ssh_probe=bad_probe)
 
@@ -630,7 +630,7 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
     def keyscan(host, port, timeout):
         return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {OTHER_KEY_BLOB}\n", stderr="")
 
-    bad_probe = SshProbeRunner(keyscan=keyscan, known_hosts_files_for=lambda h: [], keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+    bad_probe = SshProbeRunner(keyscan=keyscan, effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
 
     envelope = run_reconcile(cfg, apply_changes=True, ssh_probe=bad_probe)
 

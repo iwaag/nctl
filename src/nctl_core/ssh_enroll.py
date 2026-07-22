@@ -20,7 +20,7 @@ from typing import Callable
 
 from pydantic import BaseModel, Field
 
-from nctl_core.artifacts import atomic_write_private
+from nctl_core.artifacts import ArtifactError, atomic_write_private
 from nctl_core.config import Config, ConfigError
 from nctl_core.events import OperationLog
 from nctl_core.hosts_intent import select_mdns_endpoint
@@ -34,12 +34,18 @@ from nctl_core.ssh_trust import (
     SshTrustError,
     compute_sha256_fingerprint,
     derive_host_key_alias,
+    legacy_lookup_name,
     managed_lookup_name,
+    parse_effective_ssh_config,
     parse_known_hosts_line,
 )
 
 SSH_ENROLL_SCHEMA = "nctl.ssh.enroll.v1"
 DEFAULT_SSH_PORT = 22
+
+
+class SshStoreReadError(Exception):
+    """Raised when the managed known_hosts file cannot be read (I/O, permission, encoding)."""
 
 
 class SshEnrollData(BaseModel):
@@ -70,7 +76,7 @@ class SshProbeRunner:
     """
 
     keyscan: Callable[[str, int, float], subprocess.CompletedProcess[str]]
-    known_hosts_files_for: Callable[[str], list[Path]]
+    effective_config: Callable[[str, int], subprocess.CompletedProcess[str]]
     keygen_find: Callable[[Path, str], subprocess.CompletedProcess[str]]
 
 
@@ -84,16 +90,16 @@ def _default_keyscan(host: str, port: int, timeout_seconds: float) -> subprocess
     )
 
 
-def _default_known_hosts_files_for(host: str) -> list[Path]:
-    completed = subprocess.run(
-        ["ssh", "-G", host], capture_output=True, text=True, check=False, timeout=10
+def _default_effective_config(host: str, port: int) -> subprocess.CompletedProcess[str]:
+    """Run `ssh -G -p <port> <host>` to discover the effective, port-aware OpenSSH config.
+
+    Passing `-p` explicitly matters: an `ssh_config` `Host` block can key its
+    `Port`/`HostKeyAlias` override on the connection port, so probing without
+    the real port can report the wrong effective values.
+    """
+    return subprocess.run(
+        ["ssh", "-G", "-p", str(port), host], capture_output=True, text=True, check=False, timeout=10
     )
-    paths: list[Path] = []
-    for line in completed.stdout.splitlines():
-        if line.lower().startswith("userknownhostsfile "):
-            for token in line.split()[1:]:
-                paths.append(Path(token).expanduser())
-    return paths
 
 
 def _default_keygen_find(known_hosts_path: Path, hostname: str) -> subprocess.CompletedProcess[str]:
@@ -109,7 +115,7 @@ def _default_keygen_find(known_hosts_path: Path, hostname: str) -> subprocess.Co
 def default_ssh_probe_runner() -> SshProbeRunner:
     return SshProbeRunner(
         keyscan=_default_keyscan,
-        known_hosts_files_for=_default_known_hosts_files_for,
+        effective_config=_default_effective_config,
         keygen_find=_default_keygen_find,
     )
 
@@ -157,19 +163,29 @@ def scan_offered_keys(
     return keys
 
 
-def find_legacy_trusted_keys(probe: SshProbeRunner, endpoint: str) -> list[ParsedHostKeyLine]:
-    """Resolve the effective OpenSSH user known_hosts files for `endpoint` and return matches.
+def find_legacy_trusted_keys(probe: SshProbeRunner, endpoint: str, port: int) -> list[ParsedHostKeyLine]:
+    """Resolve the effective, port-aware OpenSSH lookup name and known_hosts files for `endpoint`.
 
-    Uses `ssh -G` (to discover `UserKnownHostsFile`, since it may not literally be
-    `~/.ssh/known_hosts`) and `ssh-keygen -F` (which also matches hashed hostname
-    entries) rather than assuming a single well-known file path.
+    Uses `ssh -G -p <port>` (to discover the effective `hostname`, `port`,
+    `hostkeyalias`, and `userknownhostsfile`, since any of these may differ
+    from the literal `endpoint`/`~/.ssh/known_hosts`) and `ssh-keygen -F`
+    (which also matches hashed hostname entries) rather than assuming a
+    single well-known file path or lookup name. Searches under
+    `legacy_lookup_name`, matching a normal OpenSSH endpoint connection --
+    never the managed alias-keyed store, which is a separate lookup name.
     """
+    completed = probe.effective_config(endpoint, port)
+    effective = parse_effective_ssh_config(completed.stdout)
+    lookup_name = legacy_lookup_name(
+        effective.hostname or endpoint, effective.port or port, effective.host_key_alias
+    )
     trusted: list[ParsedHostKeyLine] = []
-    for path in probe.known_hosts_files_for(endpoint):
+    for raw_path in effective.user_known_hosts_files:
+        path = Path(raw_path).expanduser()
         if not path.is_file():
             continue
-        completed = probe.keygen_find(path, endpoint)
-        for line in completed.stdout.splitlines():
+        found = probe.keygen_find(path, lookup_name)
+        for line in found.stdout.splitlines():
             if line.startswith("#"):
                 continue
             parsed = parse_known_hosts_line(line)
@@ -200,7 +216,10 @@ def select_verified_offered_keys(
 def read_raw_lines(path: Path) -> list[str]:
     if not path.is_file():
         return []
-    return path.read_text().splitlines()
+    try:
+        return path.read_text().splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SshStoreReadError(f"cannot read managed known_hosts file {path}: {exc}") from exc
 
 
 def entries_for_lookup_name(lines: list[str], lookup_name: str) -> list[ManagedEntry]:
@@ -230,6 +249,18 @@ def _lines_excluding_lookup_name(lines: list[str], lookup_name: str) -> list[str
             continue
         kept.append(line)
     return kept
+
+
+def _obsolete_alias_port_lookup_name(alias: str, port: int) -> str | None:
+    """Return the obsolete `[alias]:port` managed-store name to purge, if any.
+
+    Before fix_sshkey2, non-default-port enrollment wrote `[alias]:port`
+    instead of the bare alias. `None` at port 22 (the bare alias there is
+    already the correct current form, never a malformed leftover).
+    """
+    if port == 22:
+        return None
+    return f"[{alias}]:{port}"
 
 
 def _write_managed_file(
@@ -268,6 +299,36 @@ def build_ssh_enroll(
 
     client = NautobotClient(cfg.nautobot.url, token)
     try:
+        return _build_ssh_enroll_with_client(
+            cfg,
+            host,
+            client,
+            op,
+            data,
+            from_known_hosts=from_known_hosts,
+            fingerprints=fingerprints,
+            replace=replace,
+            apply_changes=apply_changes,
+            probe=probe,
+        )
+    finally:
+        client.close()
+
+
+def _build_ssh_enroll_with_client(
+    cfg: Config,
+    host: str,
+    client: NautobotClient,
+    op: OperationLog,
+    data: SshEnrollData,
+    *,
+    from_known_hosts: bool,
+    fingerprints: list[str],
+    replace: bool,
+    apply_changes: bool,
+    probe: SshProbeRunner,
+) -> Envelope[SshEnrollData]:
+    try:
         snapshot = fetch_desired_snapshot(client)
     except NautobotError as exc:
         return _fail(op, data, "nautobot_fetch_failed", str(exc))
@@ -301,7 +362,7 @@ def build_ssh_enroll(
         legacy_trusted: list[ParsedHostKeyLine] = []
         if from_known_hosts:
             try:
-                legacy_trusted = find_legacy_trusted_keys(probe, endpoint)
+                legacy_trusted = find_legacy_trusted_keys(probe, endpoint, port)
             except SshTrustError as exc:
                 return _fail(op, data, "ssh_probe_failed", str(exc))
 
@@ -331,7 +392,10 @@ def build_ssh_enroll(
         elif fingerprints:
             data.verified_source = "fingerprint"
 
-        raw_lines = read_raw_lines(known_hosts_path)
+        try:
+            raw_lines = read_raw_lines(known_hosts_path)
+        except SshStoreReadError as exc:
+            return _fail(op, data, "ssh_store_read_failed", str(exc))
         existing = entries_for_lookup_name(raw_lines, lookup_name)
         data.managed_keys = [f"{e.key_type} {compute_sha256_fingerprint(e.key_blob_b64)}" for e in existing]
 
@@ -371,9 +435,12 @@ def build_ssh_enroll(
             return Envelope.build(SSH_ENROLL_SCHEMA, data)
 
         lines_without_entry = _lines_excluding_lookup_name(raw_lines, lookup_name)
+        obsolete_name = _obsolete_alias_port_lookup_name(alias, port)
+        if obsolete_name is not None:
+            lines_without_entry = _lines_excluding_lookup_name(lines_without_entry, obsolete_name)
         try:
             _write_managed_file(known_hosts_path, lines_without_entry, lookup_name, node.slug, verified_keys)
-        except OSError as exc:
+        except (OSError, ArtifactError) as exc:
             return _fail(op, data, "ssh_store_write_failed", str(exc))
 
         data.applied = True
