@@ -28,7 +28,7 @@ from nctl_core.reconcile.ssh_preflight import (
     STATUS_UNREACHABLE,
     SshPreflightEntry,
 )
-from nctl_core.ssh_enroll import SshProbeRunner, default_ssh_probe_runner
+from nctl_core.ssh_enroll import SshProbeRunner, SshStoreReadError, default_ssh_probe_runner
 
 APPLY_DNSMASQ_SCHEMA = "nctl.apply.dnsmasq.v1"
 SETUP_PLAYBOOK = Path("playbooks/bootstrap/setup_dnsmasq.yml")
@@ -162,9 +162,13 @@ def build_dnsmasq_apply(
         )
         return _failure(op, data, [error], error.message)
 
-    preflight_entries = check_inventory_ssh_preflight(
-        known_hosts_path, cfg.ssh.keyscan_timeout_seconds, target_hosts, host_vars_by_host, probe
-    )
+    try:
+        preflight_entries = check_inventory_ssh_preflight(
+            known_hosts_path, cfg.ssh.keyscan_timeout_seconds, target_hosts, host_vars_by_host, probe
+        )
+    except SshStoreReadError as exc:
+        error = EnvelopeError(code="ssh_store_read_failed", message=str(exc))
+        return _failure(op, data, [error], error.message)
     data.ssh_preflight = [entry.model_dump() for entry in preflight_entries]
     ssh_errors = _ssh_preflight_errors(preflight_entries)
     if ssh_errors:

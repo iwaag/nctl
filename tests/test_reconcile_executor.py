@@ -1181,3 +1181,34 @@ def test_dry_plan_succeeds_despite_a_local_composition_error(tmp_path, monkeypat
     assert envelope.ok
     assert len(envelope.data.manual_review) == 1
     assert envelope.data.manual_review[0]["code"] == "unresolved_connection_path"
+
+
+def test_ssh_scan_errors_maps_unenrolled_status_too(tmp_path):
+    # fix_sshkey3 Step 1 (contract item 6): a managed-store entry removed
+    # between the round-start enrollment gate and this post-scan check must
+    # stop the round rather than silently falling through to Ansible --
+    # `_ssh_scan_errors` previously only recognized mismatch/unreachable.
+    entries = [
+        executor_module.SshPreflightEntry(slug="agdnsmasq", alias="nctl-node-x", status=executor_module.STATUS_UNENROLLED)
+    ]
+    errors = executor_module._ssh_scan_errors(entries)
+    assert len(errors) == 1
+    assert errors[0].code == "ssh_host_key_unenrolled"
+    assert "agdnsmasq" in errors[0].message
+
+
+def test_apply_reports_ssh_store_read_failed_when_managed_store_is_corrupt(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _unenrolled_node()
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="missing_actual_data", severity=Severity.ERROR, message="x")
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])], nodes=[node])])
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    known_hosts_path.write_bytes(b"\xff\xfe\x00bad")
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert not envelope.ok
+    assert any(e.code == "ssh_store_read_failed" for e in envelope.errors)
+    assert envelope.data.rounds == []

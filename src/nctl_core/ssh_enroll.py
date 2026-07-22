@@ -153,6 +153,8 @@ def scan_offered_keys(
         completed = probe.keyscan(host, port, timeout_seconds)
     except subprocess.TimeoutExpired as exc:
         raise SshTrustError(f"ssh-keyscan timed out after {timeout_seconds}s for {host}:{port}") from exc
+    except OSError as exc:
+        raise SshTrustError(f"ssh-keyscan failed to start for {host}:{port}: {exc}") from exc
     if completed.returncode != 0 and not completed.stdout.strip():
         raise SshTrustError(f"ssh-keyscan failed for {host}:{port}: {completed.stderr.strip()}")
     keys: list[ParsedHostKeyLine] = []
@@ -173,8 +175,21 @@ def find_legacy_trusted_keys(probe: SshProbeRunner, endpoint: str, port: int) ->
     single well-known file path or lookup name. Searches under
     `legacy_lookup_name`, matching a normal OpenSSH endpoint connection --
     never the managed alias-keyed store, which is a separate lookup name.
+
+    fix_sshkey3 Step 1 (contract item 5): every real probe invocation --
+    `ssh -G` here and `ssh-keygen -F` per known_hosts file -- wraps
+    `TimeoutExpired`/`OSError` (missing executable, killed process, etc.) and
+    a nonzero `ssh -G` exit as `SshTrustError` instead of letting a raw
+    subprocess exception or a silently-empty effective config escape.
+    `ssh-keygen -F` legitimately exits 1 when no entry matches, so only its
+    subprocess-level failures are wrapped, not its exit code.
     """
-    completed = probe.effective_config(endpoint, port)
+    try:
+        completed = probe.effective_config(endpoint, port)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise SshTrustError(f"ssh -G failed for {endpoint}:{port}: {exc}") from exc
+    if completed.returncode != 0:
+        raise SshTrustError(f"ssh -G exited {completed.returncode} for {endpoint}:{port}: {completed.stderr.strip()}")
     effective = parse_effective_ssh_config(completed.stdout)
     lookup_name = legacy_lookup_name(
         effective.hostname or endpoint, effective.port or port, effective.host_key_alias
@@ -184,7 +199,10 @@ def find_legacy_trusted_keys(probe: SshProbeRunner, endpoint: str, port: int) ->
         path = Path(raw_path).expanduser()
         if not path.is_file():
             continue
-        found = probe.keygen_find(path, lookup_name)
+        try:
+            found = probe.keygen_find(path, lookup_name)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise SshTrustError(f"ssh-keygen -F failed for {path}: {exc}") from exc
         for line in found.stdout.splitlines():
             if line.startswith("#"):
                 continue

@@ -95,6 +95,9 @@ def _probe(
     known_hosts_files: list[Path] | None = None,
     keyscan_raises: Exception | None = None,
     effective_host_key_alias: str | None = None,
+    effective_config_raises: Exception | None = None,
+    effective_config_returncode: int = 0,
+    keygen_find_raises: Exception | None = None,
 ) -> SshProbeRunner:
     def keyscan(host: str, port: int, timeout: float) -> subprocess.CompletedProcess[str]:
         if keyscan_raises is not None:
@@ -102,14 +105,20 @@ def _probe(
         return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=keyscan_returncode, stdout=keyscan_stdout, stderr="")
 
     def effective_config(host: str, port: int) -> subprocess.CompletedProcess[str]:
+        if effective_config_raises is not None:
+            raise effective_config_raises
         lines = [f"hostname {host}", f"port {port}"]
         if effective_host_key_alias:
             lines.append(f"hostkeyalias {effective_host_key_alias}")
         if known_hosts_files:
             lines.append("userknownhostsfile " + " ".join(str(p) for p in known_hosts_files))
-        return subprocess.CompletedProcess(args=["ssh", "-G"], returncode=0, stdout="\n".join(lines) + "\n", stderr="")
+        return subprocess.CompletedProcess(
+            args=["ssh", "-G"], returncode=effective_config_returncode, stdout="\n".join(lines) + "\n", stderr=""
+        )
 
     def keygen_find(path: Path, hostname: str) -> subprocess.CompletedProcess[str]:
+        if keygen_find_raises is not None:
+            raise keygen_find_raises
         stdout = "\n".join(legacy_lines or []) + ("\n" if legacy_lines else "")
         return subprocess.CompletedProcess(args=["ssh-keygen"], returncode=0, stdout=stdout, stderr="")
 
@@ -506,6 +515,45 @@ def test_keyscan_timeout_is_reported(tmp_path, monkeypatch):
     _patch_snapshot(monkeypatch)
     probe = _probe(keyscan_raises=subprocess.TimeoutExpired(cmd=["ssh-keyscan"], timeout=1))
     envelope = build_ssh_enroll(cfg, "agdnsmasq", probe=probe)
+    assert not envelope.ok
+    assert envelope.errors[0].code == "ssh_probe_failed"
+
+
+def test_keyscan_missing_executable_is_reported(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _patch_snapshot(monkeypatch)
+    probe = _probe(keyscan_raises=FileNotFoundError("ssh-keyscan not found"))
+    envelope = build_ssh_enroll(cfg, "agdnsmasq", probe=probe)
+    assert not envelope.ok
+    assert envelope.errors[0].code == "ssh_probe_failed"
+
+
+def test_legacy_probe_timeout_is_reported_as_structured_error(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _patch_snapshot(monkeypatch)
+    probe = _probe(
+        keyscan_stdout=_keyscan_line(),
+        effective_config_raises=subprocess.TimeoutExpired(cmd=["ssh", "-G"], timeout=10),
+    )
+    envelope = build_ssh_enroll(cfg, "agdnsmasq", from_known_hosts=True, probe=probe)
+    assert not envelope.ok
+    assert envelope.errors[0].code == "ssh_probe_failed"
+
+
+def test_legacy_probe_missing_executable_is_reported_as_structured_error(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _patch_snapshot(monkeypatch)
+    probe = _probe(keyscan_stdout=_keyscan_line(), effective_config_raises=FileNotFoundError("ssh not found"))
+    envelope = build_ssh_enroll(cfg, "agdnsmasq", from_known_hosts=True, probe=probe)
+    assert not envelope.ok
+    assert envelope.errors[0].code == "ssh_probe_failed"
+
+
+def test_legacy_probe_nonzero_exit_is_reported_as_structured_error(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _patch_snapshot(monkeypatch)
+    probe = _probe(keyscan_stdout=_keyscan_line(), effective_config_returncode=255)
+    envelope = build_ssh_enroll(cfg, "agdnsmasq", from_known_hosts=True, probe=probe)
     assert not envelope.ok
     assert envelope.errors[0].code == "ssh_probe_failed"
 

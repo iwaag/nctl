@@ -437,6 +437,89 @@ def test_unreachable_route_is_rejected(tmp_path, monkeypatch):
     assert not any(c[0] == "ansible-playbook" for c in calls)
 
 
+def test_integer_ansible_port_is_scanned_at_that_port_not_22(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    scanned_ports = []
+
+    def keyscan(host, port, timeout):
+        scanned_ports.append(port)
+        return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {KEY_BLOB}\n", stderr="")
+
+    probe = SshProbeRunner(
+        keyscan=keyscan,
+        effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""),
+        keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""),
+    )
+
+    def fake_run(args, cwd, timeout):
+        if args[0] == "ansible-inventory":
+            host_vars = _valid_host_vars(cfg)
+            host_vars["ansible_port"] = 2222
+            return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload(cfg, host_vars=host_vars)), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, probe=probe)
+
+    assert envelope.ok is True
+    assert scanned_ports == [2222]
+
+
+def test_string_ansible_port_is_rejected_before_keyscan(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _write_managed_entry(cfg)
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    scan_calls = []
+
+    def keyscan(host, port, timeout):
+        scan_calls.append((host, port))
+        return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {KEY_BLOB}\n", stderr="")
+
+    probe = SshProbeRunner(
+        keyscan=keyscan,
+        effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""),
+        keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""),
+    )
+
+    def fake_run(args, cwd, timeout):
+        if args[0] == "ansible-inventory":
+            host_vars = _valid_host_vars(cfg)
+            host_vars["ansible_port"] = "2222"  # string, not int -- Ansible would still use it as port 2222
+            return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload(cfg, host_vars=host_vars)), "")
+        return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
+
+    monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
+
+    envelope = build_dnsmasq_apply(cfg, probe=probe)
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "dnsmasq_inventory_untrusted_host"
+    assert scan_calls == []
+
+
+def test_corrupt_managed_store_returns_structured_error_and_invokes_no_ansible(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    # Invalid UTF-8 -- read_raw_lines must raise SshStoreReadError, not crash.
+    known_hosts_path.write_bytes(b"\xff\xfe\x00bad")
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
+
+    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "ssh_store_read_failed"
+    assert not any(c[0] == "ansible-playbook" for c in calls)
+
+
 def test_production_style_host_vars_resolve_route_via_connection_path(tmp_path, monkeypatch):
     # Production inventories never export ansible_host directly (composer
     # pops it); the route must be derivable from connection_path/mdns_hostname

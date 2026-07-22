@@ -46,7 +46,7 @@ from nctl_core.production_render import (
     build_production_render_context,
     write_production_artifacts,
 )
-from nctl_core.ssh_enroll import SshProbeRunner, default_ssh_probe_runner
+from nctl_core.ssh_enroll import SshProbeRunner, SshStoreReadError, default_ssh_probe_runner
 from nctl_core.sources.snapshot import SourceSnapshot, build_source_snapshot
 
 from .classify import UnclassifiedDiffCodeError
@@ -58,6 +58,7 @@ from .profiles import ProfileReconciliationError, load_profile_reconciliation
 from .ssh_preflight import (
     STATUS_MISMATCH,
     STATUS_READY,
+    STATUS_UNENROLLED,
     STATUS_UNREACHABLE,
     RouteOverrides,
     SshPreflightEntry,
@@ -124,10 +125,22 @@ class _SshPostRegenScanFailed(Exception):
 
 
 def _ssh_scan_errors(entries: list["SshPreflightEntry"]) -> list[EnvelopeError]:
-    """Turn non-ready `verify_offered_keys` entries into structured envelope errors."""
+    """Turn non-ready `verify_offered_keys` entries into structured envelope errors.
+
+    fix_sshkey3 Step 1 (contract item 6): includes `STATUS_UNENROLLED`, not
+    only mismatch/unreachable. A managed-store entry can be removed between
+    the round-start `check_ssh_enrollment` gate and this post-scan check (a
+    concurrent `nctl ssh enroll` or store edit); without this mapping that
+    host would fall through as neither an error nor `STATUS_READY` and the
+    round could proceed to Ansible against an unenrolled host.
+    """
     bad = [entry for entry in entries if entry.status != STATUS_READY]
     errors: list[EnvelopeError] = []
-    for status, code in ((STATUS_MISMATCH, "ssh_host_key_mismatch"), (STATUS_UNREACHABLE, "ssh_host_key_unreachable")):
+    for status, code in (
+        (STATUS_UNENROLLED, "ssh_host_key_unenrolled"),
+        (STATUS_MISMATCH, "ssh_host_key_mismatch"),
+        (STATUS_UNREACHABLE, "ssh_host_key_unreachable"),
+    ):
         matching = [entry for entry in bad if entry.status == status]
         if matching:
             slugs = ", ".join(sorted(entry.slug for entry in matching))
@@ -210,9 +223,13 @@ def _run_plan_only(
     data.scope_summary = _scope_summary(drift_result.targets, scope, snapshot)
     required = ssh_required_host_slugs(plan)
     if required:
-        data.ssh_preflight = [
-            entry.model_dump() for entry in check_ssh_enrollment(cfg, required, snapshot.desired)
-        ]
+        try:
+            enrollment = check_ssh_enrollment(cfg, required, snapshot.desired)
+        except SshStoreReadError as exc:
+            return _finish(
+                op, data, "failed", [EnvelopeError(code="ssh_store_read_failed", message=str(exc))]
+            )
+        data.ssh_preflight = [entry.model_dump() for entry in enrollment]
     return _finish(op, data, "planned", [])
 
 
@@ -297,7 +314,12 @@ def _run_apply(
         # by ssh_required_host_slugs, so they are never blocked by this gate.
         required = ssh_required_host_slugs(plan)
         if required:
-            enrollment = check_ssh_enrollment(cfg, required, snapshot.desired)
+            try:
+                enrollment = check_ssh_enrollment(cfg, required, snapshot.desired)
+            except SshStoreReadError as exc:
+                state = "failed"
+                errors = [EnvelopeError(code="ssh_store_read_failed", message=str(exc))]
+                break
             data.ssh_preflight = [entry.model_dump() for entry in enrollment]
             unenrolled = [entry for entry in enrollment if entry.status != STATUS_READY]
             if unenrolled:
@@ -321,7 +343,12 @@ def _run_apply(
             # service-phase host may not even answer on.
             scan_targets = ssh_required_host_slugs(plan, reconciler_ids=frozenset({"observe_node"}))
             if scan_targets:
-                verified = verify_offered_keys(cfg, scan_targets, snapshot.desired, ssh_probe)
+                try:
+                    verified = verify_offered_keys(cfg, scan_targets, snapshot.desired, ssh_probe)
+                except SshStoreReadError as exc:
+                    state = "failed"
+                    errors = [EnvelopeError(code="ssh_store_read_failed", message=str(exc))]
+                    break
                 bad_errors = _ssh_scan_errors(verified)
                 if bad_errors:
                     state, errors = "failed", bad_errors
@@ -338,6 +365,10 @@ def _run_apply(
             break
         except _SshPostRegenScanFailed as exc:
             state, errors = "failed", exc.errors
+            break
+        except SshStoreReadError as exc:
+            state = "failed"
+            errors = [EnvelopeError(code="ssh_store_read_failed", message=str(exc))]
             break
         except (ConfigError, NautobotError) as exc:
             state = "failed"

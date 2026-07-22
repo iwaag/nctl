@@ -65,6 +65,69 @@ def test_validate_inventory_trust_contract_rejects_different_known_hosts_path():
     assert error.code == "ansible_ssh_common_args_mismatch"
 
 
+def _valid_host_vars(**extra):
+    host_vars = {
+        "nintent_desired_node_id": NODE_ID,
+        "nctl_ssh_host_key_alias": ALIAS,
+        "ansible_ssh_common_args": build_ansible_ssh_common_args(ALIAS, KNOWN_HOSTS_PATH),
+    }
+    host_vars.update(extra)
+    return host_vars
+
+
+def test_validate_inventory_trust_contract_rejects_exact_common_args_plus_hostile_ssh_args():
+    # ansible_ssh_args is placed before ansible_ssh_common_args by Ansible and
+    # OpenSSH keeps the first value for a repeated -o option, so this
+    # inventory would otherwise pass the exact-common-args check while the
+    # real connection used StrictHostKeyChecking=no and a different alias.
+    host_vars = _valid_host_vars(ansible_ssh_args="-o StrictHostKeyChecking=no -o HostKeyAlias=attacker")
+    error = validate_inventory_trust_contract(host_vars, "agdnsmasq", KNOWN_HOSTS_PATH)
+    assert error is not None
+    assert error.code == "ssh_policy_override_rejected"
+    assert "ansible_ssh_args" in str(error)
+
+
+def test_validate_inventory_trust_contract_rejects_each_forbidden_override_var():
+    for var in (
+        "ansible_ssh_args",
+        "ansible_ssh_extra_args",
+        "ansible_scp_extra_args",
+        "ansible_sftp_extra_args",
+        "ansible_ssh_executable",
+        "ansible_host_key_checking",
+        "ansible_ssh_host_key_checking",
+    ):
+        host_vars = _valid_host_vars(**{var: "anything"})
+        error = validate_inventory_trust_contract(host_vars, "agdnsmasq", KNOWN_HOSTS_PATH)
+        assert error is not None, var
+        assert error.code == "ssh_policy_override_rejected", var
+
+
+def test_validate_inventory_trust_contract_rejects_non_ssh_connection():
+    host_vars = _valid_host_vars(ansible_connection="local")
+    error = validate_inventory_trust_contract(host_vars, "agdnsmasq", KNOWN_HOSTS_PATH)
+    assert error is not None
+    assert error.code == "ansible_connection_invalid"
+
+
+def test_validate_inventory_trust_contract_accepts_explicit_ssh_connection():
+    host_vars = _valid_host_vars(ansible_connection="ssh")
+    assert validate_inventory_trust_contract(host_vars, "agdnsmasq", KNOWN_HOSTS_PATH) is None
+
+
+def test_validate_inventory_trust_contract_accepts_integer_port():
+    host_vars = _valid_host_vars(ansible_port=2222)
+    assert validate_inventory_trust_contract(host_vars, "agdnsmasq", KNOWN_HOSTS_PATH) is None
+
+
+def test_validate_inventory_trust_contract_rejects_invalid_ports():
+    for bad_port in ("2222", True, False, 0, -1, 65536, 3.5):
+        host_vars = _valid_host_vars(ansible_port=bad_port)
+        error = validate_inventory_trust_contract(host_vars, "agdnsmasq", KNOWN_HOSTS_PATH)
+        assert error is not None, bad_port
+        assert error.code == "ansible_port_invalid", bad_port
+
+
 def test_resolve_route_from_host_vars_uses_bootstrap_ansible_host_verbatim():
     assert resolve_route_from_host_vars({"ansible_host": "agdnsmasq.local"}, "agdnsmasq") == "agdnsmasq.local"
 

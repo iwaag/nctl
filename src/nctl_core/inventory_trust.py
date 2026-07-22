@@ -41,6 +41,27 @@ class InventoryTrustError(Exception):
         super().__init__(message)
 
 
+# fix_sshkey3 Step 1 (contract item 6): variables that can replace or precede
+# the generated `ansible_ssh_common_args` in Ansible's/OpenSSH's option
+# ordering. `ansible_ssh_args` in particular is placed *before*
+# `ansible_ssh_common_args` by Ansible, and OpenSSH keeps the first value it
+# sees for a given `-o` option -- so an inventory carrying both variables can
+# make the real connection silently use the attacker-supplied policy while
+# `ansible_ssh_common_args` still reads as the correct, closed value. This is
+# a closed denylist of every documented Ansible SSH connection variable
+# capable of that, checked in addition to (not instead of) the exact
+# `ansible_ssh_common_args` equality check above.
+FORBIDDEN_INVENTORY_SSH_VARS: tuple[str, ...] = (
+    "ansible_ssh_args",
+    "ansible_ssh_extra_args",
+    "ansible_scp_extra_args",
+    "ansible_sftp_extra_args",
+    "ansible_ssh_executable",
+    "ansible_host_key_checking",
+    "ansible_ssh_host_key_checking",
+)
+
+
 def validate_inventory_trust_contract(
     host_vars: dict[str, Any], hostname: str, known_hosts_path: Path
 ) -> InventoryTrustError | None:
@@ -52,7 +73,12 @@ def validate_inventory_trust_contract(
     No unmanaged SSH argument can subsequently weaken the host-key policy,
     since the *entire* `ansible_ssh_common_args` string must match the one
     `build_ansible_ssh_common_args` would generate, not just contain the
-    right options.
+    right options. Also closes the allowlist gaps fix_sshkey3 exposed: a
+    forbidden connection-policy variable, a non-integer/out-of-range
+    `ansible_port`, and a non-`ssh` `ansible_connection` are all rejected
+    here, before any managed-file read or network access happens for this
+    host (`check_inventory_ssh_preflight` / `build_dnsmasq_apply` always run
+    this check first).
     """
     node_id = host_vars.get("nintent_desired_node_id")
     if not isinstance(node_id, str) or not node_id:
@@ -79,6 +105,31 @@ def validate_inventory_trust_contract(
             hostname,
             "ansible_ssh_common_args_mismatch",
             f"{hostname}: ansible_ssh_common_args does not match the closed, controller-generated policy",
+        )
+
+    present_forbidden = sorted(var for var in FORBIDDEN_INVENTORY_SSH_VARS if var in host_vars)
+    if present_forbidden:
+        return InventoryTrustError(
+            hostname,
+            "ssh_policy_override_rejected",
+            f"{hostname}: inventory variable(s) can replace or precede the closed host-key policy: "
+            + ", ".join(present_forbidden),
+        )
+
+    port = host_vars.get("ansible_port")
+    if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not (1 <= port <= 65535)):
+        return InventoryTrustError(
+            hostname,
+            "ansible_port_invalid",
+            f"{hostname}: ansible_port must be an integer in 1..65535, got {port!r}",
+        )
+
+    connection = host_vars.get("ansible_connection")
+    if connection is not None and connection != "ssh":
+        return InventoryTrustError(
+            hostname,
+            "ansible_connection_invalid",
+            f"{hostname}: ansible_connection must be absent or exactly 'ssh', got {connection!r}",
         )
     return None
 
@@ -156,8 +207,14 @@ def check_inventory_ssh_preflight(
             )
             continue
 
+        # `validate_inventory_trust_contract` has already rejected any
+        # non-integer/out-of-range `ansible_port` for every host before this
+        # function runs, so a present value here is always a valid port
+        # (fix_sshkey3 Step 1 contract item 2) -- this never coerces a bad
+        # value to 22, it only supplies the real Ansible default when the
+        # variable is absent.
         port = host_vars.get("ansible_port")
-        port = port if isinstance(port, int) and port > 0 else 22
+        port = port if isinstance(port, int) else 22
         try:
             offered = scan_offered_keys(probe, route, port, keyscan_timeout_seconds)
         except SshTrustError as exc:
