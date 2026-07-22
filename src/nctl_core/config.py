@@ -115,6 +115,22 @@ class ReconcileConfig(StrictModel):
         return self.lock_path.expanduser()
 
 
+def resolve_local_path(path: Path, config_dir: Path) -> Path:
+    """Canonicalize a config-relative local path (fix_sshkey2 plan.md Step 1 / Corrected contract 2).
+
+    Expands `~`, keeps an already-absolute path absolute, and resolves a
+    relative path against `config_dir` (the loaded `nctl.toml`'s parent
+    directory) rather than the process working directory. This is the single
+    authoritative resolver for local SSH trust-store paths so enrollment,
+    inventory rendering, preflight, and dnsmasq apply always agree on one file
+    regardless of cwd.
+    """
+    expanded = path.expanduser()
+    if expanded.is_absolute():
+        return expanded
+    return (config_dir / expanded).resolve()
+
+
 class SshConfig(StrictModel):
     # Local controller trust state, not a generated repo artifact or nintent
     # desired/actual state: see devdocs/small/fix_sshkey/plan.md Design Decision 2.
@@ -122,11 +138,11 @@ class SshConfig(StrictModel):
     keyscan_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     lock_path: Path = Path("~/.local/state/nctl/ssh.lock")
 
-    def resolved_known_hosts_file(self) -> Path:
-        return self.known_hosts_file.expanduser()
+    def resolved_known_hosts_file(self, config_dir: Path) -> Path:
+        return resolve_local_path(self.known_hosts_file, config_dir)
 
-    def resolved_lock_path(self) -> Path:
-        return self.lock_path.expanduser()
+    def resolved_lock_path(self, config_dir: Path) -> Path:
+        return resolve_local_path(self.lock_path, config_dir)
 
 
 class ServeConfig(StrictModel):
@@ -184,9 +200,15 @@ class Config(StrictModel):
             root = (self.source_path.parent / root).resolve()
         return root
 
+    def resolved_ssh_known_hosts_file(self) -> Path:
+        return self.ssh.resolved_known_hosts_file(self.source_path.parent)
+
+    def resolved_ssh_lock_path(self) -> Path:
+        return self.ssh.resolved_lock_path(self.source_path.parent)
+
     @classmethod
     def load(cls, explicit_path: Path | None = None, cwd: Path | None = None) -> "Config":
-        path = find_config(explicit_path, cwd=cwd)
+        path = find_config(explicit_path, cwd=cwd).resolve()
         try:
             raw = tomllib.loads(path.read_text())
         except (OSError, tomllib.TOMLDecodeError) as exc:

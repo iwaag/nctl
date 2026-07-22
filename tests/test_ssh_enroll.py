@@ -128,7 +128,7 @@ def test_unverified_scan_cannot_be_applied_even_with_yes(tmp_path, monkeypatch):
     envelope = build_ssh_enroll(cfg, "agdnsmasq", apply_changes=True, probe=probe)
     assert not envelope.ok
     assert envelope.errors[0].code == "host_key_unverified"
-    assert not cfg.ssh.resolved_known_hosts_file().exists()
+    assert not cfg.resolved_ssh_known_hosts_file().exists()
 
 
 def test_matching_explicit_fingerprint_can_be_applied(tmp_path, monkeypatch):
@@ -144,7 +144,7 @@ def test_matching_explicit_fingerprint_can_be_applied(tmp_path, monkeypatch):
     assert envelope.data.applied is True
     assert envelope.data.verified_source == "fingerprint"
     alias = derive_host_key_alias(NODE_ID)
-    content = cfg.ssh.resolved_known_hosts_file().read_text()
+    content = cfg.resolved_ssh_known_hosts_file().read_text()
     assert alias in content
     assert KEY_BLOB in content
 
@@ -217,7 +217,7 @@ def test_conflict_fails_without_replace(tmp_path, monkeypatch):
     )
     assert not conflicting.ok
     assert conflicting.errors[0].code == "host_key_conflict"
-    content = cfg.ssh.resolved_known_hosts_file().read_text()
+    content = cfg.resolved_ssh_known_hosts_file().read_text()
     assert KEY_BLOB in content
     assert OTHER_KEY_BLOB not in content
 
@@ -246,7 +246,7 @@ def test_verified_replacement_changes_only_the_exact_alias_entry(tmp_path, monke
     first = build_ssh_enroll(cfg, "agdnsmasq", fingerprints=[fingerprint], apply_changes=True, probe=probe)
     assert first.ok
 
-    known_hosts_path = cfg.ssh.resolved_known_hosts_file()
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
     unrelated_alias = "nctl-node-00000000-0000-0000-0000-000000000099"
     existing = known_hosts_path.read_text()
     known_hosts_path.write_text(f"# a preserved comment\n{unrelated_alias} ssh-ed25519 {OTHER_KEY_BLOB} nctl:other\n" + existing)
@@ -278,20 +278,22 @@ def test_dry_plan_without_yes_performs_no_write(tmp_path, monkeypatch):
     assert envelope.ok
     assert envelope.data.action == "enroll"
     assert envelope.data.applied is False
-    assert not cfg.ssh.resolved_known_hosts_file().exists()
+    assert not cfg.resolved_ssh_known_hosts_file().exists()
 
 
-def test_non_default_port_is_used_in_lookup_name(tmp_path, monkeypatch):
+def test_non_default_port_still_uses_bare_alias_in_lookup_name(tmp_path, monkeypatch):
+    # fix_sshkey2 Step 1/2: the managed store is always keyed by the bare
+    # alias, independent of ansible_port -- see ssh_trust.managed_lookup_name.
     cfg = _config(tmp_path)
     _patch_snapshot(monkeypatch, port=2222)
     fingerprint = compute_sha256_fingerprint(KEY_BLOB)
     probe = _probe(keyscan_stdout=_keyscan_line())
     envelope = build_ssh_enroll(cfg, "agdnsmasq", fingerprints=[fingerprint], apply_changes=False, probe=probe)
     assert envelope.data.port == 2222
-    assert envelope.data.lookup_name == f"[{envelope.data.alias}]:2222"
+    assert envelope.data.lookup_name == envelope.data.alias
 
 
-def test_non_default_port_writes_bracketed_lookup_name(tmp_path, monkeypatch):
+def test_non_default_port_writes_bare_alias_lookup_name(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     _patch_snapshot(monkeypatch, port=2222)
     fingerprint = compute_sha256_fingerprint(KEY_BLOB)
@@ -299,10 +301,9 @@ def test_non_default_port_writes_bracketed_lookup_name(tmp_path, monkeypatch):
     envelope = build_ssh_enroll(cfg, "agdnsmasq", fingerprints=[fingerprint], apply_changes=True, probe=probe)
     assert envelope.ok, envelope.errors
     alias = derive_host_key_alias(NODE_ID)
-    lookup_name = f"[{alias}]:2222"
-    content = cfg.ssh.resolved_known_hosts_file().read_text()
-    assert lookup_name in content
-    assert content.count(alias) == 1  # only inside the bracketed lookup name, not as a bare entry
+    content = cfg.resolved_ssh_known_hosts_file().read_text()
+    assert f"[{alias}]:2222" not in content
+    assert content.startswith(alias + " ")
 
 
 def test_keyscan_timeout_is_reported(tmp_path, monkeypatch):

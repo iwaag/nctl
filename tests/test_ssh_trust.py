@@ -11,9 +11,11 @@ from nctl_core.ssh_trust import (
     build_ansible_ssh_common_args,
     compute_sha256_fingerprint,
     derive_host_key_alias,
-    derive_lookup_name,
     find_managed_entry,
     is_hashed_hostname_entry,
+    legacy_lookup_name,
+    managed_lookup_name,
+    parse_effective_ssh_config,
     parse_known_hosts_line,
     validate_desired_node_id,
 )
@@ -55,23 +57,70 @@ def test_derive_host_key_alias_contains_no_endpoint_name():
         assert forbidden not in alias
 
 
-def test_derive_lookup_name_default_port_is_bare_alias():
+def test_managed_lookup_name_is_bare_alias_independent_of_port():
     alias = derive_host_key_alias(NODE_ID)
-    assert derive_lookup_name(alias) == alias
-    assert derive_lookup_name(alias, port=22) == alias
+    # The managed store key never varies with `ansible_port`: this is the
+    # entire point of the alias contract (fix_sshkey2 Step 1 bug #1).
+    assert managed_lookup_name(alias) == alias
 
 
-def test_derive_lookup_name_non_default_port_is_bracketed():
-    alias = derive_host_key_alias(NODE_ID)
-    assert derive_lookup_name(alias, port=2222) == f"[{alias}]:2222"
-
-
-def test_derive_lookup_name_rejects_invalid_port():
-    alias = derive_host_key_alias(NODE_ID)
+def test_managed_lookup_name_rejects_empty_alias():
     with pytest.raises(SshTrustError):
-        derive_lookup_name(alias, port=0)
+        managed_lookup_name("")
+
+
+def test_legacy_lookup_name_default_port_is_bare_host():
+    assert legacy_lookup_name("agdnsmasq.local", 22, None) == "agdnsmasq.local"
+
+
+def test_legacy_lookup_name_non_default_port_is_bracketed():
+    assert legacy_lookup_name("agdnsmasq.local", 2222, None) == "[agdnsmasq.local]:2222"
+
+
+def test_legacy_lookup_name_prefers_effective_host_key_alias_with_no_port_suffix():
+    alias = derive_host_key_alias(NODE_ID)
+    assert legacy_lookup_name("agdnsmasq.local", 2222, alias) == alias
+
+
+def test_legacy_lookup_name_rejects_empty_host():
     with pytest.raises(SshTrustError):
-        derive_lookup_name(alias, port=70000)
+        legacy_lookup_name("", 22, None)
+
+
+def test_legacy_lookup_name_rejects_invalid_port():
+    with pytest.raises(SshTrustError):
+        legacy_lookup_name("agdnsmasq.local", 0, None)
+    with pytest.raises(SshTrustError):
+        legacy_lookup_name("agdnsmasq.local", 70000, None)
+
+
+def test_parse_effective_ssh_config_extracts_fields():
+    output = (
+        "hostname agdnsmasq.local\n"
+        "port 2222\n"
+        "hostkeyalias nctl-node-27818c12-fe15-4c9f-83d0-7949523f6c33\n"
+        "userknownhostsfile /home/user/.ssh/known_hosts /home/user/.ssh/known_hosts2\n"
+        "identityfile /home/user/.ssh/id_ed25519\n"
+    )
+    effective = parse_effective_ssh_config(output)
+    assert effective.hostname == "agdnsmasq.local"
+    assert effective.port == 2222
+    assert effective.host_key_alias == "nctl-node-27818c12-fe15-4c9f-83d0-7949523f6c33"
+    assert effective.user_known_hosts_files == (
+        "/home/user/.ssh/known_hosts",
+        "/home/user/.ssh/known_hosts2",
+    )
+
+
+def test_parse_effective_ssh_config_defaults_when_no_hostkeyalias():
+    effective = parse_effective_ssh_config("hostname agdnsmasq.local\nport 22\n")
+    assert effective.host_key_alias is None
+    assert effective.port == 22
+
+
+def test_parse_effective_ssh_config_ignores_blank_and_malformed_lines():
+    effective = parse_effective_ssh_config("\n   \nhostname agdnsmasq.local\nport 22\n")
+    assert effective.hostname == "agdnsmasq.local"
 
 
 def test_build_ansible_ssh_common_args_contains_strict_options():

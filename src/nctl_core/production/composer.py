@@ -267,7 +267,7 @@ def compose_production_inventory(
     """Compose a deterministic schema 3.0 production inventory plus a schema 3.0 report.
 
     ``ssh_known_hosts_file`` is the resolved managed known_hosts path
-    (``cfg.ssh.resolved_known_hosts_file()``); when given, every eligible
+    (``cfg.resolved_ssh_known_hosts_file()``); when given, every eligible
     ``ssh_hosts`` member gets ``nctl_ssh_host_key_alias`` and
     ``ansible_ssh_common_args`` derived from its DesiredNode UUID. The real
     `nctl render production` caller (`production_render.py`) must always

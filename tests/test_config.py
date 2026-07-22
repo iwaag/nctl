@@ -188,8 +188,8 @@ def test_ssh_config_defaults_when_section_absent(tmp_path):
     assert cfg.ssh.known_hosts_file == Path("~/.local/state/nctl/ssh/known_hosts")
     assert cfg.ssh.keyscan_timeout_seconds == 10.0
     assert cfg.ssh.lock_path == Path("~/.local/state/nctl/ssh.lock")
-    assert cfg.ssh.resolved_known_hosts_file() == Path("~/.local/state/nctl/ssh/known_hosts").expanduser()
-    assert cfg.ssh.resolved_lock_path() == Path("~/.local/state/nctl/ssh.lock").expanduser()
+    assert cfg.resolved_ssh_known_hosts_file() == Path("~/.local/state/nctl/ssh/known_hosts").expanduser()
+    assert cfg.resolved_ssh_lock_path() == Path("~/.local/state/nctl/ssh.lock").expanduser()
 
 
 def test_ssh_config_overrides_and_path_expansion(tmp_path):
@@ -203,8 +203,50 @@ def test_ssh_config_overrides_and_path_expansion(tmp_path):
         )
     )
     assert cfg.ssh.keyscan_timeout_seconds == 30
-    assert cfg.ssh.resolved_known_hosts_file() == Path("~/custom/known_hosts").expanduser()
-    assert cfg.ssh.resolved_lock_path() == Path("~/custom/ssh.lock").expanduser()
+    assert cfg.resolved_ssh_known_hosts_file() == Path("~/custom/known_hosts").expanduser()
+    assert cfg.resolved_ssh_lock_path() == Path("~/custom/ssh.lock").expanduser()
+
+
+def test_ssh_config_relative_path_resolves_against_config_file_directory(tmp_path, monkeypatch):
+    config_dir = tmp_path / "cfgdir"
+    config_dir.mkdir()
+    cfg = Config.load(
+        write_config(
+            config_dir,
+            VALID + '\n[ssh]\nknown_hosts_file = "state/ssh/known_hosts"\nlock_path = "state/ssh.lock"\n',
+        )
+    )
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    assert cfg.resolved_ssh_known_hosts_file() == (config_dir / "state/ssh/known_hosts").resolve()
+    assert cfg.resolved_ssh_lock_path() == (config_dir / "state/ssh.lock").resolve()
+    assert cfg.resolved_ssh_known_hosts_file().is_absolute()
+
+
+def test_ssh_config_absolute_path_stays_absolute_regardless_of_config_dir(tmp_path):
+    known_hosts = tmp_path / "abs" / "known_hosts"
+    cfg = Config.load(
+        write_config(tmp_path, VALID + f'\n[ssh]\nknown_hosts_file = "{known_hosts}"\n')
+    )
+    assert cfg.resolved_ssh_known_hosts_file() == known_hosts
+
+
+def test_ssh_config_path_with_spaces(tmp_path):
+    spaced_dir = tmp_path / "dir with spaces"
+    spaced_dir.mkdir()
+    cfg = Config.load(
+        write_config(spaced_dir, VALID + '\n[ssh]\nknown_hosts_file = "state/known hosts file"\n')
+    )
+    assert cfg.resolved_ssh_known_hosts_file() == (spaced_dir / "state/known hosts file").resolve()
+
+
+def test_config_source_path_is_always_absolute_for_relative_explicit_path(tmp_path, monkeypatch):
+    write_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cfg = Config.load(Path("nctl.toml"))
+    assert cfg.source_path.is_absolute()
+    assert cfg.source_path == (tmp_path / "nctl.toml").resolve()
 
 
 def test_ssh_config_rejects_bad_timeout_bounds(tmp_path):

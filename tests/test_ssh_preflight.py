@@ -155,7 +155,7 @@ def test_ssh_required_host_slugs_excludes_ledger_only_actions():
 
 
 def _write_managed_entry(cfg: Config, lookup_name: str, key_blob: str = KEY_BLOB) -> None:
-    path = cfg.ssh.resolved_known_hosts_file()
+    path = cfg.resolved_ssh_known_hosts_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{lookup_name} ssh-ed25519 {key_blob} nctl:test\n")
 

@@ -43,8 +43,11 @@ out_dir = "~/.local/state/nctl/dashboard"
 
 [ssh]
 # Local controller SSH trust store, keyed by the immutable DesiredNode UUID
-# (see devdocs/small/fix_sshkey/plan.md). Not a credential and not a generated
-# repo artifact -- never commit this file or copy it into an operation artifact.
+# (see devdocs/small/fix_sshkey/plan.md, devdocs/small/fix_sshkey2/plan.md).
+# Not a credential and not a generated repo artifact -- never commit this
+# file or copy it into an operation artifact. known_hosts_file/lock_path: `~`
+# expands, an absolute path stays absolute, and a relative path resolves
+# against this nctl.toml's directory (not the process working directory).
 known_hosts_file = "~/.local/state/nctl/ssh/known_hosts"
 keyscan_timeout_seconds = 10
 lock_path = "~/.local/state/nctl/ssh.lock"

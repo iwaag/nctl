@@ -45,20 +45,85 @@ def derive_host_key_alias(node_id: str) -> str:
     return f"{ALIAS_PREFIX}{validate_desired_node_id(node_id)}"
 
 
-def derive_lookup_name(alias: str, port: int = 22) -> str:
-    """Return the OpenSSH-compatible known_hosts lookup name for `alias`/`port`.
+def managed_lookup_name(alias: str) -> str:
+    """Return the nctl-managed known_hosts lookup name for `alias`.
 
-    Port 22 uses the bare alias; any other port uses the bracketed
-    `[alias]:port` form, matching OpenSSH's own non-default-port host-key
-    naming convention.
+    Always the bare alias, independent of `ansible_port`: when
+    `HostKeyAlias` is configured, OpenSSH uses the alias itself as the
+    known_hosts lookup name and never appends the connection port (see
+    `ssh_config(5)` HostKeyAlias). A managed store keyed any other way would
+    disagree with the real SSH connection on a non-default port.
     """
     if not alias:
         raise SshTrustError("alias must not be empty")
-    if port == 22:
-        return alias
-    if not (1 <= port <= 65535):
-        raise SshTrustError(f"invalid port: {port}")
-    return f"[{alias}]:{port}"
+    return alias
+
+
+def legacy_lookup_name(effective_host: str, effective_port: int, host_key_alias: str | None) -> str:
+    """Return the known_hosts lookup name OpenSSH uses for a normal (non-managed) connection.
+
+    Mirrors portable OpenSSH's `get_hostfile_hostname_ipaddr()`: if an
+    effective `HostKeyAlias` is active, it is used verbatim with no port
+    suffix; otherwise the effective host is used bare on port 22 and as
+    `[host]:port` for any other port. Only legacy known_hosts promotion
+    (`nctl ssh enroll --from-known-hosts`) uses this -- never the managed
+    store, which is always looked up via `managed_lookup_name`.
+    """
+    if host_key_alias:
+        return host_key_alias
+    if not effective_host:
+        raise SshTrustError("effective_host must not be empty")
+    if effective_port == 22:
+        return effective_host
+    if not (1 <= effective_port <= 65535):
+        raise SshTrustError(f"invalid port: {effective_port}")
+    return f"[{effective_host}]:{effective_port}"
+
+
+@dataclass(frozen=True)
+class EffectiveSshConfig:
+    """The subset of `ssh -G` output needed to compute a legacy lookup name."""
+
+    hostname: str
+    port: int
+    host_key_alias: str | None
+    user_known_hosts_files: tuple[str, ...]
+
+
+def parse_effective_ssh_config(output: str) -> EffectiveSshConfig:
+    """Parse `ssh -G` output into the fields `legacy_lookup_name` needs.
+
+    `ssh -G` prints one resolved directive per line as `key value...`
+    (lowercase key). Unrecognized directives are ignored. `port` defaults to
+    22 if OpenSSH did not print a `port` line (it always does in practice,
+    but callers must not crash on unexpected output).
+    """
+    hostname = ""
+    port = 22
+    host_key_alias: str | None = None
+    known_hosts_files: list[str] = []
+    for line in output.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        key, value = parts[0].lower(), parts[1].strip()
+        if key == "hostname":
+            hostname = value
+        elif key == "port":
+            try:
+                port = int(value)
+            except ValueError:
+                pass
+        elif key == "hostkeyalias":
+            host_key_alias = value
+        elif key == "userknownhostsfile":
+            known_hosts_files.extend(value.split())
+    return EffectiveSshConfig(
+        hostname=hostname,
+        port=port,
+        host_key_alias=host_key_alias,
+        user_known_hosts_files=tuple(known_hosts_files),
+    )
 
 
 def build_ansible_ssh_common_args(alias: str, known_hosts_path: str) -> str:

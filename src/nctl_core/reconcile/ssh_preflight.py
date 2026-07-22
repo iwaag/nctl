@@ -39,7 +39,7 @@ from nctl_core.ssh_enroll import (
     read_raw_lines,
     scan_offered_keys,
 )
-from nctl_core.ssh_trust import SshTrustError, derive_host_key_alias, derive_lookup_name
+from nctl_core.ssh_trust import SshTrustError, derive_host_key_alias, managed_lookup_name
 
 # Only reconcilers that actually connect to the node over SSH require enrollment;
 # `link_actual_node` (Nautobot metadata patch) and `reconcile_ipam` (Nautobot Job)
@@ -92,7 +92,11 @@ def ssh_required_host_slugs(
 def _resolve_alias_and_lookup_name(
     snapshot: DesiredSnapshot, slug: str
 ) -> tuple[str, str, str | None]:
-    """Return (alias, lookup_name, error_detail). error_detail is set only on failure."""
+    """Return (alias, lookup_name, error_detail). error_detail is set only on failure.
+
+    `lookup_name` is always the bare managed alias: the managed store's key
+    is independent of `ansible_port` (see `ssh_trust.managed_lookup_name`).
+    """
     node = next((n for n in snapshot.nodes if n.slug == slug), None)
     if node is None:
         return "", "", "unknown_host"
@@ -100,10 +104,7 @@ def _resolve_alias_and_lookup_name(
         alias = derive_host_key_alias(node.id)
     except SshTrustError as exc:
         return "", "", str(exc)
-    override = next((o for o in snapshot.operational_overrides if o.node_id == node.id), None)
-    port = override.ansible_port if override and override.ansible_port else 22
-    lookup_name = derive_lookup_name(alias, port)
-    return alias, lookup_name, None
+    return alias, managed_lookup_name(alias), None
 
 
 def check_ssh_enrollment(
@@ -114,7 +115,7 @@ def check_ssh_enrollment(
     Presence alone does not prove the current route offers that key -- see
     `verify_offered_keys` for the read-only rejection check that does.
     """
-    known_hosts_path = cfg.ssh.resolved_known_hosts_file()
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
     raw_lines = read_raw_lines(known_hosts_path)
     entries = []
     for slug in sorted(host_slugs):
@@ -177,7 +178,7 @@ def verify_offered_keys(
     authorizes a new one. Unenrolled hosts are reported as such rather than scanned.
     """
     route_overrides = route_overrides or {}
-    known_hosts_path = cfg.ssh.resolved_known_hosts_file()
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
     raw_lines = read_raw_lines(known_hosts_path)
     entries = []
     for slug in sorted(host_slugs):

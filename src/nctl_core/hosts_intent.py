@@ -77,7 +77,7 @@ def export_hosts_intent(
     """Return a deterministic minimal Ansible inventory from desired nodes.
 
     ``ssh_known_hosts_file`` is the resolved managed known_hosts path
-    (``cfg.ssh.resolved_known_hosts_file()``); when given, every eligible
+    (``cfg.resolved_ssh_known_hosts_file()``); when given, every eligible
     ``ssh_hosts`` member gets ``nctl_ssh_host_key_alias`` and
     ``ansible_ssh_common_args`` derived from its DesiredNode UUID. Real
     callers (`hosts_intent_render.py`, `observation.py`) must always supply

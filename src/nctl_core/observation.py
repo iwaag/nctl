@@ -96,7 +96,7 @@ def run_observation(
 
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     export = export_hosts_intent(
-        snapshot.nodes, snapshot.endpoints, ssh_known_hosts_file=str(cfg.ssh.resolved_known_hosts_file())
+        snapshot.nodes, snapshot.endpoints, ssh_known_hosts_file=str(cfg.resolved_ssh_known_hosts_file())
     )
     eligible = {row["inventory_hostname"]: row for row in export.hosts}
     targets = sorted(set(target_slugs))

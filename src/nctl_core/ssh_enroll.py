@@ -34,7 +34,7 @@ from nctl_core.ssh_trust import (
     SshTrustError,
     compute_sha256_fingerprint,
     derive_host_key_alias,
-    derive_lookup_name,
+    managed_lookup_name,
     parse_known_hosts_line,
 )
 
@@ -285,8 +285,8 @@ def build_ssh_enroll(
     data.port = port
 
     alias = derive_host_key_alias(node.id)
-    lookup_name = derive_lookup_name(alias, port)
-    known_hosts_path = cfg.ssh.resolved_known_hosts_file()
+    lookup_name = managed_lookup_name(alias)
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
     data.alias = alias
     data.lookup_name = lookup_name
     data.known_hosts_file = str(known_hosts_path)
@@ -385,7 +385,7 @@ def build_ssh_enroll(
         return _plan_and_maybe_apply()
 
     try:
-        with acquire_reconcile_lock(cfg.ssh.resolved_lock_path()):
+        with acquire_reconcile_lock(cfg.resolved_ssh_lock_path()):
             return _plan_and_maybe_apply()
     except ReconcileLockError as exc:
         return _fail(op, data, "ssh_lock_contention", str(exc))

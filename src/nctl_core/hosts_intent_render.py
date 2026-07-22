@@ -76,7 +76,7 @@ def build_hosts_intent_render(cfg: Config) -> Envelope[HostsIntentRenderData]:
         snapshot.endpoints,
         placements=snapshot.placements,
         profile_groups=profile_groups,
-        ssh_known_hosts_file=str(cfg.ssh.resolved_known_hosts_file()),
+        ssh_known_hosts_file=str(cfg.resolved_ssh_known_hosts_file()),
     )
     payload = hosts_intent_payload(export, generated_at=generated_at)
     data = HostsIntentRenderData(

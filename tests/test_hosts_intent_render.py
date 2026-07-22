@@ -45,7 +45,7 @@ def _fake_config() -> SimpleNamespace:
     return SimpleNamespace(
         nautobot=SimpleNamespace(url="http://nautobot.test", resolve_token=lambda: "token"),
         ansible=SimpleNamespace(resolved_playbook_dir=lambda config_dir: Path("/fake/playbook-dir")),
-        ssh=SimpleNamespace(resolved_known_hosts_file=lambda: Path("/fake/state/ssh/known_hosts")),
+        resolved_ssh_known_hosts_file=lambda: Path("/fake/state/ssh/known_hosts"),
         source_path=Path("/fake/nctl.toml"),
     )
 
