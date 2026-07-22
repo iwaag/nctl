@@ -17,7 +17,12 @@ from nctl_core.reconcile.ledger import IpamReconcileResult, LinkActualNodeResult
 from nctl_core.reconcile.lock import acquire_reconcile_lock
 from nctl_core.reconcile.model import ReconcileAction
 from nctl_core.sources.actual import ActualDevice, ActualSnapshot
-from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredSnapshot
+from nctl_core.sources.desired import (
+    DesiredEndpoint,
+    DesiredNode,
+    DesiredNodeOperationalOverride,
+    DesiredSnapshot,
+)
 from nctl_core.sources.snapshot import SourceSnapshot
 from nctl_core.ssh_enroll import SshProbeRunner
 from nctl_core.ssh_trust import derive_host_key_alias
@@ -146,6 +151,30 @@ def _stub_dashboard(monkeypatch, *, ok=True):
         return Envelope.build("nctl.dashboard.v1", executor_module.DashboardData(), [] if ok else [EnvelopeError(code="x", message="dashboard failed")])
 
     monkeypatch.setattr(executor_module, "render_dashboard_from_drift", fake)
+
+
+def _patch_production_render(monkeypatch, snapshot_factory, *, generated_at="2026-07-17T00:00:00+00:00"):
+    """Stub `_regenerate_production_inventory`'s own fresh-snapshot fetch and compose call.
+
+    fix_sshkey2 Step 3: `_regenerate_production_inventory` now fetches its own
+    `SourceSnapshot` (rather than reusing the round's) and composes via
+    `build_production_render_context`, so both must be stubbed together --
+    stubbing only the old, now-unused `build_production_render` name would
+    silently skip the real code path.
+    """
+    from nctl_core.production_render import ProductionRenderContext, ProductionRenderData
+
+    monkeypatch.setattr(executor_module, "build_source_snapshot", lambda cfg, client: snapshot_factory())
+    monkeypatch.setattr(
+        executor_module,
+        "build_production_render_context",
+        lambda cfg, snapshot: ProductionRenderContext(
+            envelope=Envelope.build("nctl.render.production.v1", ProductionRenderData(), []),
+            generation_id="test-generation",
+            generated_at=generated_at,
+            source_snapshot=snapshot,
+        ),
+    )
 
 
 def test_playbook_grouping_passes_the_fixed_operation_timestamp_to_resolver(monkeypatch):
@@ -595,11 +624,6 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
             "good": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/good.yml")),
         },
     )
-    from nctl_core.production_render import ProductionRenderData
-
-    monkeypatch.setattr(
-        executor_module, "build_production_render", lambda cfg: Envelope.build("nctl.render.production.v1", ProductionRenderData(), [])
-    )
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
     _stub_dashboard(monkeypatch)
 
@@ -623,8 +647,16 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
         snapshot = _snapshot(nodes=[node])
         snapshot.desired.services = [good_service[0]]
         snapshot.desired.placements = [good_service[1]]
+        # fix_sshkey2 Step 3: a resolvable production route is required for
+        # this test to genuinely exercise route-based mismatch detection
+        # (rather than an unrelated no_resolvable_production_route). "declared"
+        # policy needs no realized/actual facts on this node fixture.
+        snapshot.desired.operational_overrides = [
+            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
+        ]
         return snapshot
 
+    _patch_production_render(monkeypatch, make_snapshot)
     _sequence(monkeypatch, [(make_snapshot(), DriftResult(summary={"drifting": 1}, targets=[_target_status(diff.target, Status.DRIFTING, [diff])]), "2026-07-17T00:00:00+00:00")])
 
     def keyscan(host, port, timeout):
@@ -638,6 +670,152 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
     assert any(e.code == "ssh_host_key_mismatch" for e in envelope.errors)
     assert playbook_run_calls["n"] == 0
     assert envelope.data.rounds == []
+
+
+def test_production_write_failure_starts_no_service_ansible_process(tmp_path, monkeypatch):
+    # fix_sshkey2 Step 3 required regression test: a production write or
+    # validation failure starts no service Ansible process.
+    cfg = _config(tmp_path)
+
+    def fake_load_profiles(playbook_dir):
+        return ({"good": {"group": "good_server", "config_schema_version": "1", "variables": {}}}, "digest")
+
+    monkeypatch.setattr(executor_module, "load_deployment_profiles", fake_load_profiles)
+
+    from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
+
+    monkeypatch.setattr(
+        executor_module,
+        "load_profile_reconciliation",
+        lambda playbook_dir, names: {
+            "good": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/good.yml")),
+        },
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "write_production_artifacts",
+        lambda envelope, out_dir: EnvelopeError(code="inventory_validation_failed", message="ansible-inventory rejected the staged copy"),
+    )
+    _stub_dashboard(monkeypatch)
+
+    playbook_run_calls = {"n": 0}
+    monkeypatch.setattr(
+        executor_module,
+        "AnsibleRunner",
+        lambda *a, **k: SimpleNamespace(run=lambda *a2, **k2: playbook_run_calls.__setitem__("n", playbook_run_calls["n"] + 1)),
+    )
+
+    node = _node()
+    good_service = _service_and_placement("good-svc", "good", node)
+    diff = DiffRecord(
+        target=Target(kind="service", slug="good-svc", name="good-svc", id="s-good"),
+        code="service_not_running",
+        severity=Severity.ERROR,
+        message="x",
+    )
+
+    def make_snapshot():
+        snapshot = _snapshot(nodes=[node])
+        snapshot.desired.services = [good_service[0]]
+        snapshot.desired.placements = [good_service[1]]
+        snapshot.desired.operational_overrides = [
+            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
+        ]
+        return snapshot
+
+    _patch_production_render(monkeypatch, make_snapshot)
+    _sequence(monkeypatch, [(make_snapshot(), DriftResult(summary={"drifting": 1}, targets=[_target_status(diff.target, Status.DRIFTING, [diff])]), "2026-07-17T00:00:00+00:00")])
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert not envelope.ok
+    assert any(e.code == "production_regeneration_unavailable" for e in envelope.errors)
+    assert playbook_run_calls["n"] == 0
+    assert envelope.data.rounds == []
+
+
+def test_service_phase_scans_freshly_regenerated_route_not_round_start_snapshot(tmp_path, monkeypatch):
+    # fix_sshkey2 Step 3 required regression test (bug #2): the round-start
+    # snapshot contains an old IP, while an IPAM-style update means the
+    # snapshot _regenerate_production_inventory freshly fetches contains a
+    # new IP. keyscan must be called only against the new IP.
+    cfg = _config(tmp_path)
+
+    def fake_load_profiles(playbook_dir):
+        return ({"good": {"group": "good_server", "config_schema_version": "1", "variables": {}}}, "digest")
+
+    monkeypatch.setattr(executor_module, "load_deployment_profiles", fake_load_profiles)
+
+    from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
+
+    monkeypatch.setattr(
+        executor_module,
+        "load_profile_reconciliation",
+        lambda playbook_dir, names: {
+            "good": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/good.yml")),
+        },
+    )
+    monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
+    _stub_dashboard(monkeypatch)
+
+    playbook_run_calls = {"n": 0}
+
+    def fake_runner_run(self, args, *, mode, artifact_stem=None):
+        from nctl_core.ansible import AnsibleRunResult
+
+        playbook_run_calls["n"] += 1
+        return AnsibleRunResult(mode=mode, command=args, exit_code=0)
+
+    monkeypatch.setattr(executor_module.AnsibleRunner, "run", fake_runner_run)
+
+    node = _node()
+    good_service = _service_and_placement("good-svc", "good", node)
+    diff = DiffRecord(
+        target=Target(kind="service", slug="good-svc", name="good-svc", id="s-good"),
+        code="service_not_running",
+        severity=Severity.ERROR,
+        message="x",
+    )
+
+    def snapshot_with_ip(ip: str):
+        snapshot = _snapshot(nodes=[node])
+        snapshot.desired.endpoints[0].ip_address = ip
+        snapshot.desired.services = [good_service[0]]
+        snapshot.desired.placements = [good_service[1]]
+        snapshot.desired.operational_overrides = [
+            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
+        ]
+        return snapshot
+
+    OLD_IP = "10.0.0.1"
+    NEW_IP = "10.0.0.2"
+    _patch_production_render(monkeypatch, lambda: snapshot_with_ip(NEW_IP))
+    _sequence(
+        monkeypatch,
+        [
+            (snapshot_with_ip(OLD_IP), DriftResult(summary={"drifting": 1}, targets=[_target_status(diff.target, Status.DRIFTING, [diff])]), "2026-07-17T00:00:00+00:00"),
+            (snapshot_with_ip(NEW_IP), DriftResult(summary={}, targets=[_target_status(diff.target, Status.CONVERGED, [])]), "2026-07-17T00:05:00+00:00"),
+        ],
+    )
+
+    scanned_hosts = []
+
+    def keyscan(host, port, timeout):
+        scanned_hosts.append(host)
+        return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {FIXTURE_KEY_BLOB}\n", stderr="")
+
+    probe = SshProbeRunner(
+        keyscan=keyscan,
+        effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""),
+        keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""),
+    )
+
+    envelope = run_reconcile(cfg, apply_changes=True, ssh_probe=probe)
+
+    assert envelope.ok, envelope.errors
+    assert NEW_IP in scanned_hosts
+    assert OLD_IP not in scanned_hosts
+    assert playbook_run_calls["n"] == 1
 
 
 # --- independent partial failure among service actions -----------------------
@@ -667,11 +845,6 @@ def test_independent_service_action_failure_does_not_block_the_other(tmp_path, m
             "bad": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/bad.yml")),
         },
     )
-    from nctl_core.production_render import ProductionRenderData
-
-    monkeypatch.setattr(
-        executor_module, "build_production_render", lambda cfg: Envelope.build("nctl.render.production.v1", ProductionRenderData(), [])
-    )
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
     _stub_dashboard(monkeypatch)
 
@@ -696,7 +869,15 @@ def test_independent_service_action_failure_does_not_block_the_other(tmp_path, m
         snapshot = _snapshot(nodes=[node])
         snapshot.desired.services = [good_service[0], bad_service[0]]
         snapshot.desired.placements = [good_service[1], bad_service[1]]
+        # fix_sshkey2 Step 3: a resolvable production route is required so the
+        # post-regen scan reports ready (matching FIXTURE_KEY_BLOB) instead of
+        # no_resolvable_production_route.
+        snapshot.desired.operational_overrides = [
+            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
+        ]
         return snapshot
+
+    _patch_production_render(monkeypatch, make_snapshot)
 
     def drift_with(snapshot, targets):
         summary: dict[str, int] = {}

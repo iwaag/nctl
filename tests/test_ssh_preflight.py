@@ -12,6 +12,7 @@ from nctl_core.reconcile.ssh_preflight import (
     STATUS_READY,
     STATUS_UNENROLLED,
     STATUS_UNREACHABLE,
+    RouteOverrides,
     check_ssh_enrollment,
     resolve_production_routes,
     ssh_required_host_slugs,
@@ -266,7 +267,7 @@ def test_verify_offered_keys_scans_route_override_instead_of_mdns(tmp_path):
     probe = SshProbeRunner(keyscan=keyscan, effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
 
     entries = verify_offered_keys(
-        cfg, ["agdnsmasq"], _snapshot(), probe, route_overrides={"agdnsmasq": "192.168.0.2"}
+        cfg, ["agdnsmasq"], _snapshot(), probe, route_overrides=RouteOverrides({"agdnsmasq": "192.168.0.2"})
     )
 
     assert scanned_hosts == ["192.168.0.2"]
@@ -281,7 +282,85 @@ def test_verify_offered_keys_unreachable_when_route_override_missing_and_no_mdns
     snapshot = DesiredSnapshot(nodes=[node])  # no endpoints at all
     probe = _probe(keyscan_raises=AssertionError("should not be called"))
 
-    entries = verify_offered_keys(cfg, ["agdnsmasq"], snapshot, probe, route_overrides={})
+    entries = verify_offered_keys(cfg, ["agdnsmasq"], snapshot, probe, route_overrides=RouteOverrides({}))
+
+    assert entries[0].status == STATUS_UNREACHABLE
+    assert entries[0].detail == "no_resolvable_production_route"
+
+
+def test_verify_offered_keys_empty_production_map_never_falls_back_to_mdns(tmp_path):
+    # fix_sshkey2 Step 3 required regression test: an empty *explicit*
+    # production route map must stay unreachable even when the snapshot has
+    # a perfectly good mDNS endpoint -- mDNS selection is reserved for
+    # bootstrap mode (route_overrides=None), never a silent production
+    # fallback. keyscan must not run.
+    cfg = _config(tmp_path)
+    alias = derive_host_key_alias(NODE_ID)
+    _write_managed_entry(cfg, alias)
+    probe = _probe(keyscan_raises=AssertionError("keyscan must not be called for an unresolved production route"))
+
+    entries = verify_offered_keys(cfg, ["agdnsmasq"], _snapshot(), probe, route_overrides=RouteOverrides({}))
+
+    assert entries[0].status == STATUS_UNREACHABLE
+    assert entries[0].detail == "no_resolvable_production_route"
+
+
+def test_verify_offered_keys_bootstrap_mode_none_still_falls_back_to_mdns(tmp_path):
+    # The `None` (no RouteOverrides at all) bootstrap case is unaffected: it
+    # is the one place mDNS selection is still legitimate.
+    cfg = _config(tmp_path)
+    alias = derive_host_key_alias(NODE_ID)
+    _write_managed_entry(cfg, alias)
+    probe = _probe(keyscan_stdout=f"agdnsmasq.local ssh-ed25519 {KEY_BLOB}\n")
+
+    entries = verify_offered_keys(cfg, ["agdnsmasq"], _snapshot(), probe, route_overrides=None)
+
+    assert entries[0].status == STATUS_READY
+
+
+def test_verify_offered_keys_slug_missing_from_partial_map_does_not_escape_to_mdns(tmp_path):
+    # fix_sshkey2 Step 3 required regression test: if one of two targets is
+    # missing from the route map, that target does not escape to mDNS even
+    # though the other target in the same call is scanned normally.
+    cfg = _config(tmp_path)
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    known_hosts_path.write_text(
+        f"{derive_host_key_alias(NODE_ID)} ssh-ed25519 {KEY_BLOB} nctl:test\n"
+        f"{derive_host_key_alias(LEDGER_NODE_ID)} ssh-ed25519 {KEY_BLOB} nctl:test\n"
+    )
+    scanned_hosts = []
+
+    def keyscan(host, port, timeout):
+        scanned_hosts.append(host)
+        return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {KEY_BLOB}\n", stderr="")
+
+    probe = SshProbeRunner(keyscan=keyscan, effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
+
+    entries = verify_offered_keys(
+        cfg,
+        ["agdnsmasq", "agledgeronly"],
+        _snapshot(),
+        probe,
+        route_overrides=RouteOverrides({"agdnsmasq": "192.168.0.2"}),
+    )
+
+    by_slug = {e.slug: e for e in entries}
+    assert scanned_hosts == ["192.168.0.2"]  # never agledgeronly's mDNS name
+    assert by_slug["agdnsmasq"].status == STATUS_READY
+    assert by_slug["agledgeronly"].status == STATUS_UNREACHABLE
+    assert by_slug["agledgeronly"].detail == "no_resolvable_production_route"
+
+
+def test_verify_offered_keys_bootstrap_mode_unreachable_detail_when_no_mdns(tmp_path):
+    cfg = _config(tmp_path)
+    alias = derive_host_key_alias(NODE_ID)
+    _write_managed_entry(cfg, alias)
+    node = DesiredNode(id=NODE_ID, slug="agdnsmasq", name="agdnsmasq", lifecycle="active", node_type="device")
+    snapshot = DesiredSnapshot(nodes=[node])  # no endpoints at all
+    probe = _probe(keyscan_raises=AssertionError("should not be called"))
+
+    entries = verify_offered_keys(cfg, ["agdnsmasq"], snapshot, probe, route_overrides=None)
 
     assert entries[0].status == STATUS_UNREACHABLE
     assert entries[0].detail == "no_resolvable_route"

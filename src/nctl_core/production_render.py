@@ -12,6 +12,7 @@ render-time safety check, not a long-running operation.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ from nctl_core.production.composer import (
     render_production_report_json,
 )
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
-from nctl_core.sources.snapshot import build_source_snapshot
+from nctl_core.sources.snapshot import SourceSnapshot, build_source_snapshot
 
 RENDER_PRODUCTION_SCHEMA = "nctl.render.production.v1"
 
@@ -45,29 +46,48 @@ class ProductionRenderData(BaseModel):
     report_json: str = ""
 
 
-def build_production_render(cfg: Config) -> Envelope[ProductionRenderData]:
+@dataclass(frozen=True)
+class ProductionRenderContext:
+    """Everything a post-regeneration SSH preflight needs from one production render.
+
+    fix_sshkey2 Step 3 (Corrected contract 3): bundling `source_snapshot` and
+    `generated_at` alongside the envelope lets a caller resolve the exact
+    same-generation route (via `reconcile.ssh_preflight.resolve_production_routes`,
+    fed this *same* `source_snapshot`/`generated_at`) instead of an
+    independently re-fetched snapshot that could disagree with what was just
+    rendered. `envelope` is falsy (`envelope.ok is False`) whenever
+    `source_snapshot` was not actually usable for composition -- callers must
+    check that before trusting any route resolved against it.
+    """
+
+    envelope: Envelope[ProductionRenderData]
+    generation_id: str
+    generated_at: str
+    source_snapshot: SourceSnapshot
+
+
+def build_production_render_context(cfg: Config, snapshot: SourceSnapshot) -> ProductionRenderContext:
+    """Compose the production envelope from an already-fetched `snapshot`.
+
+    The single internal API both `build_production_render` (normal `nctl
+    render production`) and the reconcile executor's post-regeneration
+    preflight go through, so they can never compose from two different
+    snapshots for what is supposed to be one generation.
+    """
     generated_at = datetime.now(timezone.utc).isoformat()
     generation_id = str(uuid.uuid4())
     data = ProductionRenderData()
-
-    try:
-        token = cfg.nautobot.resolve_token()
-    except ConfigError as exc:
-        return _failed(data, EnvelopeError(code="nautobot_token_error", message=str(exc)))
 
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     try:
         profiles, digest = load_deployment_profiles(playbook_dir)
     except DeploymentProfilesError as exc:
-        return _failed(data, EnvelopeError(code="deployment_profiles_invalid", message=str(exc)))
-
-    client = NautobotClient(cfg.nautobot.url, token)
-    try:
-        snapshot = build_source_snapshot(cfg, client)
-    except NautobotError as exc:
-        return _failed(data, EnvelopeError(code="nautobot_fetch_failed", message=str(exc)))
-    finally:
-        client.close()
+        return ProductionRenderContext(
+            envelope=_failed(data, EnvelopeError(code="deployment_profiles_invalid", message=str(exc))),
+            generation_id=generation_id,
+            generated_at=generated_at,
+            source_snapshot=snapshot,
+        )
 
     node_inputs = build_production_node_inputs(snapshot)
     try:
@@ -80,13 +100,40 @@ def build_production_render(cfg: Config) -> Envelope[ProductionRenderData]:
             ssh_known_hosts_file=str(cfg.resolved_ssh_known_hosts_file()),
         )
     except ContractError as exc:
-        return _failed(data, EnvelopeError(code=exc.code, message=str(exc)))
+        return ProductionRenderContext(
+            envelope=_failed(data, EnvelopeError(code=exc.code, message=str(exc))),
+            generation_id=generation_id,
+            generated_at=generated_at,
+            source_snapshot=snapshot,
+        )
 
     data.inventory = composition.inventory
     data.report = composition.report
     data.inventory_yaml = render_production_inventory_yml(composition)
     data.report_json = render_production_report_json(composition)
-    return Envelope.build(RENDER_PRODUCTION_SCHEMA, data, [])
+    return ProductionRenderContext(
+        envelope=Envelope.build(RENDER_PRODUCTION_SCHEMA, data, []),
+        generation_id=generation_id,
+        generated_at=generated_at,
+        source_snapshot=snapshot,
+    )
+
+
+def build_production_render(cfg: Config) -> Envelope[ProductionRenderData]:
+    try:
+        token = cfg.nautobot.resolve_token()
+    except ConfigError as exc:
+        return _failed(ProductionRenderData(), EnvelopeError(code="nautobot_token_error", message=str(exc)))
+
+    client = NautobotClient(cfg.nautobot.url, token)
+    try:
+        snapshot = build_source_snapshot(cfg, client)
+    except NautobotError as exc:
+        return _failed(ProductionRenderData(), EnvelopeError(code="nautobot_fetch_failed", message=str(exc)))
+    finally:
+        client.close()
+
+    return build_production_render_context(cfg, snapshot).envelope
 
 
 def render_production_inventory_text(envelope: Envelope[ProductionRenderData]) -> str:

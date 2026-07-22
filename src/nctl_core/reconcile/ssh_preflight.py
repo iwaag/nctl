@@ -21,6 +21,7 @@ plan on enrollment.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Iterable
 
 from pydantic import BaseModel
@@ -57,6 +58,22 @@ class SshPreflightEntry(BaseModel):
     alias: str = ""
     status: str
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class RouteOverrides:
+    """Wraps an explicit slug -> route map for `verify_offered_keys` (fix_sshkey2 Step 3).
+
+    Presence of this wrapper -- even wrapping an empty `routes` dict -- means
+    production mode: a slug absent from `routes` is
+    `no_resolvable_production_route`, never a silent mDNS fallback. Passing
+    `None` (no wrapper at all) instead of an instance of this class means
+    bootstrap mode: select the mDNS endpoint per node. A plain
+    `dict | None` parameter cannot make this distinction safely, since an
+    empty dict and `None` are both falsy and easy to conflate with `or {}`.
+    """
+
+    routes: dict[str, str]
 
 
 def ssh_required_host_slugs(
@@ -166,18 +183,22 @@ def verify_offered_keys(
     snapshot: DesiredSnapshot,
     probe: SshProbeRunner,
     *,
-    route_overrides: dict[str, str] | None = None,
+    route_overrides: RouteOverrides | None = None,
 ) -> list[SshPreflightEntry]:
     """Scan each already-enrolled host's current route and compare against the managed key.
 
-    Without `route_overrides`, the mDNS endpoint is used (the bootstrap-phase
-    route). With `route_overrides` (from `resolve_production_routes`), the
-    production-resolved `ansible_host` is scanned instead -- the service phase
-    may connect over an IP or `.home.arpa` name production selected, not mDNS.
-    A scan can only prove a mismatch against an already-trusted key -- it never
-    authorizes a new one. Unenrolled hosts are reported as such rather than scanned.
+    Without `route_overrides` (`None`), this is bootstrap mode: the mDNS
+    endpoint is used. With a `RouteOverrides` instance (from
+    `resolve_production_routes`, fed the *same* generation's
+    `SourceSnapshot`/`generated_at` -- see `ProductionRenderContext`), this is
+    production mode: the production-resolved `ansible_host` is scanned
+    instead, and a slug missing from `route_overrides.routes` is
+    `no_resolvable_production_route` -- it never falls back to mDNS, which is
+    reserved for bootstrap and may not even be what the service-phase host
+    answers on. A scan can only prove a mismatch against an already-trusted
+    key -- it never authorizes a new one. Unenrolled hosts are reported as
+    such rather than scanned.
     """
-    route_overrides = route_overrides or {}
     known_hosts_path = cfg.resolved_ssh_known_hosts_file()
     raw_lines = read_raw_lines(known_hosts_path)
     entries = []
@@ -192,8 +213,16 @@ def verify_offered_keys(
             continue
 
         node = next((n for n in snapshot.nodes if n.slug == slug), None)
-        route = route_overrides.get(slug)
-        if route is None:
+        if route_overrides is not None:
+            route = route_overrides.routes.get(slug)
+            if not route:
+                entries.append(
+                    SshPreflightEntry(
+                        slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail="no_resolvable_production_route"
+                    )
+                )
+                continue
+        else:
             endpoints = [e for e in snapshot.endpoints if e.node_id == node.id]
             endpoint = select_mdns_endpoint(endpoints)
             route = endpoint.mdns_name if endpoint else None

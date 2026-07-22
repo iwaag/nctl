@@ -41,9 +41,13 @@ from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production.adapter import build_production_node_inputs
 from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
-from nctl_core.production_render import build_production_render, write_production_artifacts
+from nctl_core.production_render import (
+    ProductionRenderContext,
+    build_production_render_context,
+    write_production_artifacts,
+)
 from nctl_core.ssh_enroll import SshProbeRunner, default_ssh_probe_runner
-from nctl_core.sources.snapshot import SourceSnapshot
+from nctl_core.sources.snapshot import SourceSnapshot, build_source_snapshot
 
 from .classify import UnclassifiedDiffCodeError
 from .ledger import LedgerActionError, execute_link_actual_node, execute_reconcile_ipam
@@ -55,6 +59,7 @@ from .ssh_preflight import (
     STATUS_MISMATCH,
     STATUS_READY,
     STATUS_UNREACHABLE,
+    RouteOverrides,
     SshPreflightEntry,
     check_ssh_enrollment,
     resolve_production_routes,
@@ -396,30 +401,57 @@ def _execute_round(
     finally:
         client.close()
 
-    summary.actions.append(_regenerate_production_inventory(cfg))
+    regen_result, render_context = _regenerate_production_inventory(cfg)
+    summary.actions.append(regen_result)
 
-    # fix_sshkey Step 5 (Design Decision 5): a route created only by an IPAM
-    # action just above may not have been testable until now. Re-verify the
-    # production-resolved route for every service-phase SSH target before the
-    # first production playbook runs -- presence in the trust store proved
-    # nothing about which key the *newly selected* route actually offers.
-    service_scan_targets = ssh_required_host_slugs(plan, reconciler_ids=frozenset({"service_profile", "dnsmasq_config"}))
-    if service_scan_targets:
-        routes = resolve_production_routes(snapshot, service_scan_targets, operation_generated_at)
-        verified = verify_offered_keys(cfg, service_scan_targets, snapshot.desired, ssh_probe, route_overrides=routes)
-        scan_errors = _ssh_scan_errors(verified)
-        if scan_errors:
-            raise _SshPostRegenScanFailed(scan_errors)
-
-    for action in service_actions:
-        if interrupted.is_set():
-            raise _Interrupted()
-        summary.actions.append(
-            _execute_action(
-                cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner,
-                generated_at=operation_generated_at,
+    # fix_sshkey Step 5 (Design Decision 5) / fix_sshkey2 Step 3: a route
+    # created only by an IPAM action just above may not have been testable
+    # until now. Re-verify the production-resolved route for every
+    # service-phase SSH target before the first production playbook runs --
+    # presence in the trust store proved nothing about which key the *newly
+    # selected* route actually offers. The route is resolved from
+    # `render_context.source_snapshot`/`generated_at` -- the exact snapshot
+    # this round's regeneration just composed from, never the round-start
+    # `snapshot` above, which an IPAM/observation update earlier in this same
+    # round can have already made stale.
+    if render_context is None:
+        if service_actions:
+            raise _SshPostRegenScanFailed(
+                [
+                    EnvelopeError(
+                        code="production_regeneration_unavailable",
+                        message=(
+                            regen_result.error
+                            or "production inventory regeneration produced no usable render context; "
+                            "no service action will run"
+                        ),
+                    )
+                ]
             )
+    else:
+        service_scan_targets = ssh_required_host_slugs(
+            plan, reconciler_ids=frozenset({"service_profile", "dnsmasq_config"})
         )
+        if service_scan_targets:
+            routes = resolve_production_routes(
+                render_context.source_snapshot, service_scan_targets, render_context.generated_at
+            )
+            verified = verify_offered_keys(
+                cfg, service_scan_targets, snapshot.desired, ssh_probe, route_overrides=RouteOverrides(routes)
+            )
+            scan_errors = _ssh_scan_errors(verified)
+            if scan_errors:
+                raise _SshPostRegenScanFailed(scan_errors)
+
+        for action in service_actions:
+            if interrupted.is_set():
+                raise _Interrupted()
+            summary.actions.append(
+                _execute_action(
+                    cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner,
+                    generated_at=operation_generated_at,
+                )
+            )
 
     observe_targets = sorted(
         {
@@ -440,35 +472,86 @@ def _execute_round(
     return summary
 
 
-def _regenerate_production_inventory(cfg: Config) -> ActionResult:
+def _regenerate_production_inventory(cfg: Config) -> tuple[ActionResult, ProductionRenderContext | None]:
+    """Regenerate the production inventory and return its render context alongside the action result.
+
+    fix_sshkey2 Step 3: the context is `None` whenever there is nothing a
+    caller could safely resolve a same-generation route from -- a
+    deployment-profiles load failure, no profiles configured at all, or a
+    failed render/atomic-install. Only a `None`-free `ActionResult(success=True)`
+    context may be handed to `resolve_production_routes` for post-regeneration
+    scanning; every other outcome must stop before any service action runs
+    (this function's caller enforces that).
+    """
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     try:
         profiles, _digest = load_deployment_profiles(playbook_dir)
     except DeploymentProfilesError as exc:
-        return ActionResult(
-            action_id="regenerate_production_inventory",
-            reconciler_id="production_inventory",
-            action_kind="render",
-            success=False,
-            error=str(exc),
+        return (
+            ActionResult(
+                action_id="regenerate_production_inventory",
+                reconciler_id="production_inventory",
+                action_kind="render",
+                success=False,
+                error=str(exc),
+            ),
+            None,
         )
     if not profiles:
-        return ActionResult(
-            action_id="regenerate_production_inventory",
-            reconciler_id="production_inventory",
-            action_kind="render",
-            success=True,
-            detail={"skipped": "no deployment profiles configured"},
+        return (
+            ActionResult(
+                action_id="regenerate_production_inventory",
+                reconciler_id="production_inventory",
+                action_kind="render",
+                success=True,
+                detail={"skipped": "no deployment profiles configured"},
+            ),
+            None,
         )
-    envelope = build_production_render(cfg)
-    write_error = write_production_artifacts(envelope, cfg.ansible.resolved_inventory(cfg.source_path.parent).parent)
-    return ActionResult(
+
+    try:
+        token = cfg.nautobot.resolve_token()
+    except ConfigError as exc:
+        return (
+            ActionResult(
+                action_id="regenerate_production_inventory",
+                reconciler_id="production_inventory",
+                action_kind="render",
+                success=False,
+                error=str(exc),
+            ),
+            None,
+        )
+    client = NautobotClient(cfg.nautobot.url, token)
+    try:
+        fresh_snapshot = build_source_snapshot(cfg, client)
+    except NautobotError as exc:
+        return (
+            ActionResult(
+                action_id="regenerate_production_inventory",
+                reconciler_id="production_inventory",
+                action_kind="render",
+                success=False,
+                error=str(exc),
+            ),
+            None,
+        )
+    finally:
+        client.close()
+
+    render_context = build_production_render_context(cfg, fresh_snapshot)
+    write_error = write_production_artifacts(
+        render_context.envelope, cfg.ansible.resolved_inventory(cfg.source_path.parent).parent
+    )
+    success = write_error is None
+    result = ActionResult(
         action_id="regenerate_production_inventory",
         reconciler_id="production_inventory",
         action_kind="render",
-        success=write_error is None,
+        success=success,
         error=write_error.message if write_error is not None else None,
     )
+    return result, (render_context if success else None)
 
 
 def _execute_action(
