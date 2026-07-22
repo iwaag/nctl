@@ -23,7 +23,7 @@ from nctl_core.reconcile.ssh_preflight import (
     STATUS_UNREACHABLE,
     SshPreflightEntry,
 )
-from nctl_core.ssh_enroll import SshProbeRunner, entries_for_lookup_name, read_raw_lines, scan_offered_keys
+from nctl_core.ssh_enroll import SshProbeRunner, load_managed_ssh_store, scan_offered_keys
 from nctl_core.ssh_trust import (
     SshTrustError,
     build_ansible_ssh_common_args,
@@ -189,13 +189,13 @@ def check_inventory_ssh_preflight(
     first -- this function trusts `host_vars_by_host[host]["nintent_desired_node_id"]`
     to already be a valid UUID and the alias to already match it.
     """
-    raw_lines = read_raw_lines(known_hosts_path)
+    store = load_managed_ssh_store(known_hosts_path)
     entries: list[SshPreflightEntry] = []
     for host in sorted(target_hosts):
         host_vars = host_vars_by_host.get(host, {})
         alias = derive_host_key_alias(host_vars["nintent_desired_node_id"])
         lookup_name = managed_lookup_name(alias)
-        managed = entries_for_lookup_name(raw_lines, lookup_name)
+        managed = store.entries_for(lookup_name)
         if not managed:
             entries.append(SshPreflightEntry(slug=host, alias=alias, status=STATUS_UNENROLLED))
             continue

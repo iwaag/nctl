@@ -522,6 +522,26 @@ def test_corrupt_managed_store_returns_structured_error_and_invokes_no_ansible(t
     assert not any(c[0] == "ansible-playbook" for c in calls)
 
 
+def test_malformed_store_line_returns_structured_error_and_invokes_no_ansible(tmp_path, monkeypatch):
+    # fix_sshkey4 Step 1: a syntactically malformed *line* (not just an I/O
+    # failure) must also fail closed here rather than being silently skipped
+    # by the old per-line error suppression in entries_for_lookup_name.
+    cfg = _config(tmp_path)
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    known_hosts_path.write_text("agdnsmasq.local ssh-ed25519 " + KEY_BLOB + "\n")
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
+    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
+    calls = []
+    monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
+
+    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+
+    assert envelope.ok is False
+    assert envelope.errors[0].code == "ssh_store_read_failed"
+    assert not any(c[0] == "ansible-playbook" for c in calls)
+
+
 def test_production_style_host_vars_resolve_route_via_connection_path(tmp_path, monkeypatch):
     # Production inventories never export ansible_host directly (composer
     # pops it); the route must be derivable from connection_path/mdns_hostname

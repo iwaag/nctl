@@ -3,12 +3,16 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import nctl_core.ssh_enroll as ssh_enroll
 from nctl_core.config import Config
 from nctl_core.ssh_enroll import (
     SSH_ENROLL_SCHEMA,
     SshProbeRunner,
+    SshStoreReadError,
     build_ssh_enroll,
+    load_managed_ssh_store,
 )
 from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredNodeOperationalOverride, DesiredSnapshot
 from nctl_core.ssh_trust import compute_sha256_fingerprint, derive_host_key_alias
@@ -577,3 +581,96 @@ def test_json_envelope_never_includes_raw_key_blob(tmp_path, monkeypatch):
     payload = envelope.to_json()
     assert KEY_BLOB not in payload
     assert '"schema": "' + SSH_ENROLL_SCHEMA + '"' in payload
+
+
+# fix_sshkey4 Step 1: the one strict managed known_hosts store reader.
+
+ALIAS = "nctl-node-27818c12-fe15-4c9f-83d0-7949523f6c33"
+OTHER_ALIAS = "nctl-node-00000000-0000-0000-0000-000000000099"
+
+
+def test_absent_store_is_empty_not_a_read_failure(tmp_path):
+    store = load_managed_ssh_store(tmp_path / "known_hosts")
+    assert store.raw_lines == ()
+    assert store.entries == ()
+    assert store.obsolete_entries == ()
+    assert store.entries_for(ALIAS) == []
+
+
+def test_valid_comments_and_multiple_aliases_remain_readable(tmp_path):
+    path = tmp_path / "known_hosts"
+    path.write_text(
+        "# a comment\n"
+        "\n"
+        f"{ALIAS} ssh-ed25519 {KEY_BLOB} nctl:agdnsmasq\n"
+        f"{OTHER_ALIAS} ssh-rsa {OTHER_KEY_BLOB} nctl:other\n"
+    )
+    store = load_managed_ssh_store(path)
+    assert len(store.entries) == 2
+    assert store.entries_for(ALIAS)[0].key_type == "ssh-ed25519"
+    assert store.entries_for(OTHER_ALIAS)[0].key_type == "ssh-rsa"
+
+
+def test_valid_obsolete_bracketed_entry_is_recognized_separately(tmp_path):
+    path = tmp_path / "known_hosts"
+    path.write_text(f"[{ALIAS}]:2222 ssh-ed25519 {KEY_BLOB} nctl:agdnsmasq\n")
+    store = load_managed_ssh_store(path)
+    assert store.entries == ()
+    assert len(store.obsolete_entries) == 1
+    obsolete = store.obsolete_entries[0]
+    assert obsolete.alias == ALIAS
+    assert obsolete.port == 2222
+    assert store.entries_for(ALIAS) == []  # never satisfies current enrollment
+
+
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        f"{ALIAS} ssh-rsa\n",  # malformed field count
+        f"{ALIAS} not-a-real-keytype {KEY_BLOB}\n",  # unknown key type
+        f"{ALIAS} ssh-ed25519 not-valid-base64!!!\n",  # invalid base64
+        f"@cert-authority {ALIAS} ssh-ed25519 {KEY_BLOB}\n",  # marker entry
+        f"|1|abcdefghijklmnopqrstuvwxyz1234==|abcdefghijklmnopqrstuvwxyz5678== ssh-ed25519 {KEY_BLOB}\n",  # hashed name
+        f"agdnsmasq.local ssh-ed25519 {KEY_BLOB}\n",  # endpoint-keyed name, not a bare alias
+        f"[{ALIAS}]:99999 ssh-ed25519 {KEY_BLOB}\n",  # out-of-range obsolete port
+        f"{ALIAS},agdnsmasq.local ssh-ed25519 {KEY_BLOB}\n",  # more than one name
+    ],
+)
+def test_malformed_or_unsupported_line_is_a_structured_store_failure(tmp_path, bad_line):
+    path = tmp_path / "known_hosts"
+    path.write_text(bad_line)
+    with pytest.raises(SshStoreReadError):
+        load_managed_ssh_store(path)
+
+
+def test_invalid_utf8_store_is_a_structured_store_failure(tmp_path):
+    path = tmp_path / "known_hosts"
+    path.write_bytes(b"\xff\xfe not valid utf-8\n")
+    with pytest.raises(SshStoreReadError):
+        load_managed_ssh_store(path)
+
+
+def test_one_malformed_unrelated_line_fails_the_whole_store(tmp_path):
+    path = tmp_path / "known_hosts"
+    path.write_text(
+        f"{ALIAS} ssh-ed25519 {KEY_BLOB} nctl:agdnsmasq\n"
+        "some.endpoint.local ssh-ed25519 " + OTHER_KEY_BLOB + "\n"
+    )
+    with pytest.raises(SshStoreReadError):
+        load_managed_ssh_store(path)
+
+
+def test_corrupt_store_prevents_enrollment_and_preserves_original_bytes(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _patch_snapshot(monkeypatch)
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
+    known_hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_content = "agdnsmasq.local ssh-ed25519 " + KEY_BLOB + "\n"
+    known_hosts_path.write_text(corrupt_content)
+
+    fingerprint = compute_sha256_fingerprint(KEY_BLOB)
+    probe = _probe(keyscan_stdout=_keyscan_line())
+    envelope = build_ssh_enroll(cfg, "agdnsmasq", fingerprints=[fingerprint], apply_changes=True, probe=probe)
+    assert not envelope.ok
+    assert envelope.errors[0].code == "ssh_store_read_failed"
+    assert known_hosts_path.read_text() == corrupt_content

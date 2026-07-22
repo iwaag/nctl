@@ -13,6 +13,7 @@ preference is defined in exactly one place.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,7 @@ from nctl_core.ssh_trust import (
     SshTrustError,
     compute_sha256_fingerprint,
     derive_host_key_alias,
+    is_hashed_hostname_entry,
     legacy_lookup_name,
     managed_lookup_name,
     parse_effective_ssh_config,
@@ -240,29 +242,119 @@ def read_raw_lines(path: Path) -> list[str]:
         raise SshStoreReadError(f"cannot read managed known_hosts file {path}: {exc}") from exc
 
 
-def entries_for_lookup_name(lines: list[str], lookup_name: str) -> list[ManagedEntry]:
-    entries = []
-    for line in lines:
+_ALIAS_UUID_RE = re.compile(
+    r"^nctl-node-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_OBSOLETE_ALIAS_PORT_RE = re.compile(
+    r"^\[(?P<alias>nctl-node-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]:(?P<port>\d+)$"
+)
+
+
+@dataclass(frozen=True)
+class ObsoleteEntry:
+    """A syntactically valid historical `[alias]:port` managed-store entry (pre-fix_sshkey2).
+
+    Recognized separately from `ManagedEntry`; it never satisfies current
+    enrollment or authorizes a connection, and is removed only by the
+    existing verified enrollment/replacement flow
+    (`_obsolete_alias_port_lookup_name`).
+    """
+
+    lookup_name: str
+    alias: str
+    port: int
+    key_type: str
+    key_blob_b64: str
+
+
+@dataclass(frozen=True)
+class ManagedSshStore:
+    """The complete, validated content of the nctl-managed known_hosts file.
+
+    `load_managed_ssh_store` is the one strict store-loading boundary
+    (fix_sshkey4 Step 1): every line beyond blank lines and comments must be
+    a current bare-alias entry or a syntactically valid obsolete
+    `[alias]:port` entry, or the whole store fails as `SshStoreReadError`.
+    Callers query `entries`/`obsolete_entries`; they must never re-parse
+    `raw_lines` with independent per-line error suppression.
+    """
+
+    raw_lines: tuple[str, ...]
+    entries: tuple[ManagedEntry, ...]
+    obsolete_entries: tuple[ObsoleteEntry, ...]
+
+    def entries_for(self, lookup_name: str) -> list[ManagedEntry]:
+        return [e for e in self.entries if e.alias == lookup_name]
+
+
+def load_managed_ssh_store(path: Path) -> ManagedSshStore:
+    """Load and strictly validate the nctl-managed known_hosts store.
+
+    An absent file is a valid empty store (produces `unenrolled` for any
+    requested host, never `ssh_store_read_failed`). Every other non-blank,
+    non-comment line must be a current bare `nctl-node-<uuid>` entry or a
+    syntactically valid obsolete `[nctl-node-<uuid>]:<port>` entry. Marker
+    lines (`@cert-authority`/`@revoked`), malformed field counts, unknown key
+    types, invalid base64, hashed (`|1|...`) names, and any other name form
+    (an endpoint name, IP, or out-of-range obsolete port) that nctl itself
+    never writes fail the *whole* store as `SshStoreReadError`, with path and
+    line-number context but never a key blob.
+    """
+    raw_lines = read_raw_lines(path)
+    entries: list[ManagedEntry] = []
+    obsolete: list[ObsoleteEntry] = []
+    for lineno, line in enumerate(raw_lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("@"):
+            raise SshStoreReadError(f"{path}:{lineno}: marker line not permitted in managed store")
         try:
             parsed = parse_known_hosts_line(line)
-        except SshTrustError:
-            continue
-        if parsed is not None and parsed.names == (lookup_name,):
-            entries.append(
-                ManagedEntry(alias=lookup_name, key_type=parsed.key_type, key_blob_b64=parsed.key_blob_b64)
+        except SshTrustError as exc:
+            raise SshStoreReadError(f"{path}:{lineno}: {exc}") from exc
+        if parsed is None:
+            raise SshStoreReadError(f"{path}:{lineno}: unsupported managed store line")
+        if len(parsed.names) != 1:
+            raise SshStoreReadError(
+                f"{path}:{lineno}: managed entry must name exactly one host, got {len(parsed.names)}"
             )
-    return entries
+        name = parsed.names[0]
+        if is_hashed_hostname_entry(name):
+            raise SshStoreReadError(f"{path}:{lineno}: hashed hostnames are not permitted in the managed store")
+        if _ALIAS_UUID_RE.match(name):
+            entries.append(ManagedEntry(alias=name, key_type=parsed.key_type, key_blob_b64=parsed.key_blob_b64))
+            continue
+        obs_match = _OBSOLETE_ALIAS_PORT_RE.match(name)
+        if obs_match is not None and 1 <= int(obs_match.group("port")) <= 65535:
+            obsolete.append(
+                ObsoleteEntry(
+                    lookup_name=name,
+                    alias=obs_match.group("alias"),
+                    port=int(obs_match.group("port")),
+                    key_type=parsed.key_type,
+                    key_blob_b64=parsed.key_blob_b64,
+                )
+            )
+            continue
+        raise SshStoreReadError(f"{path}:{lineno}: managed store entry name {name!r} is not a supported nctl alias")
+    return ManagedSshStore(raw_lines=tuple(raw_lines), entries=tuple(entries), obsolete_entries=tuple(obsolete))
 
 
 def _lines_excluding_lookup_name(lines: list[str], lookup_name: str) -> list[str]:
-    """Keep every line except ordinary entries for `lookup_name` -- comments/other aliases untouched."""
+    """Keep every line except ordinary entries for `lookup_name` -- comments/other aliases untouched.
+
+    Callers must validate the whole store (`load_managed_ssh_store`) before
+    calling this: every line here is already known-parseable, so no
+    per-line error is caught or suppressed.
+    """
     kept = []
     for line in lines:
-        try:
-            parsed = parse_known_hosts_line(line)
-        except SshTrustError:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
             kept.append(line)
             continue
+        parsed = parse_known_hosts_line(line)
         if parsed is not None and parsed.names == (lookup_name,):
             continue
         kept.append(line)
@@ -411,10 +503,11 @@ def _build_ssh_enroll_with_client(
             data.verified_source = "fingerprint"
 
         try:
-            raw_lines = read_raw_lines(known_hosts_path)
+            store = load_managed_ssh_store(known_hosts_path)
         except SshStoreReadError as exc:
             return _fail(op, data, "ssh_store_read_failed", str(exc))
-        existing = entries_for_lookup_name(raw_lines, lookup_name)
+        raw_lines = list(store.raw_lines)
+        existing = store.entries_for(lookup_name)
         data.managed_keys = [f"{e.key_type} {compute_sha256_fingerprint(e.key_blob_b64)}" for e in existing]
 
         existing_pairs = {(e.key_type, e.key_blob_b64) for e in existing}

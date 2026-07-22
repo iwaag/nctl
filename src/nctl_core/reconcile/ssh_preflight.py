@@ -32,8 +32,7 @@ from nctl_core.reconcile.model import ReconcileAction, ReconcilePlan
 from nctl_core.sources.desired import DesiredSnapshot
 from nctl_core.ssh_enroll import (
     SshProbeRunner,
-    entries_for_lookup_name,
-    read_raw_lines,
+    load_managed_ssh_store,
     scan_offered_keys,
 )
 from nctl_core.ssh_trust import (
@@ -141,14 +140,14 @@ def check_ssh_enrollment(
     `verify_offered_keys` for the read-only rejection check that does.
     """
     known_hosts_path = cfg.resolved_ssh_known_hosts_file()
-    raw_lines = read_raw_lines(known_hosts_path)
+    store = load_managed_ssh_store(known_hosts_path)
     entries = []
     for slug in sorted(host_slugs):
         alias, lookup_name, error = _resolve_alias_and_lookup_name(snapshot, slug)
         if error is not None:
             entries.append(SshPreflightEntry(slug=slug, status=STATUS_UNENROLLED, detail=error))
             continue
-        if entries_for_lookup_name(raw_lines, lookup_name):
+        if store.entries_for(lookup_name):
             entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_READY))
         else:
             entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNENROLLED))
@@ -176,14 +175,14 @@ def verify_offered_keys(
     Unenrolled hosts are reported as such rather than scanned.
     """
     known_hosts_path = cfg.resolved_ssh_known_hosts_file()
-    raw_lines = read_raw_lines(known_hosts_path)
+    store = load_managed_ssh_store(known_hosts_path)
     entries = []
     for slug in sorted(host_slugs):
         alias, lookup_name, error = _resolve_alias_and_lookup_name(snapshot, slug)
         if error is not None:
             entries.append(SshPreflightEntry(slug=slug, status=STATUS_UNENROLLED, detail=error, phase="bootstrap_route"))
             continue
-        managed = entries_for_lookup_name(raw_lines, lookup_name)
+        managed = store.entries_for(lookup_name)
         if not managed:
             entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNENROLLED, phase="bootstrap_route"))
             continue
@@ -241,7 +240,7 @@ def verify_resolved_ssh_targets(
     already-trusted key -- it never authorizes a new one.
     """
     known_hosts_path = cfg.resolved_ssh_known_hosts_file()
-    raw_lines = read_raw_lines(known_hosts_path)
+    store = load_managed_ssh_store(known_hosts_path)
     entries = []
     for slug in sorted(host_slugs):
         target = ssh_targets.get(slug)
@@ -255,7 +254,7 @@ def verify_resolved_ssh_targets(
             continue
 
         lookup_name = managed_lookup_name(target.alias)
-        managed = entries_for_lookup_name(raw_lines, lookup_name)
+        managed = store.entries_for(lookup_name)
         managed_fingerprints = sorted({compute_sha256_fingerprint(e.key_blob_b64) for e in managed})
         if not managed:
             entries.append(
