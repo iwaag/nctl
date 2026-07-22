@@ -1404,3 +1404,258 @@ def test_apply_reports_ssh_store_read_failed_when_managed_store_is_corrupt(tmp_p
     assert not envelope.ok
     assert any(e.code == "ssh_store_read_failed" for e in envelope.errors)
     assert envelope.data.rounds == []
+
+
+# --- observation-time store failures are round-safe (fix_sshkey4 Step 2) -----
+
+
+def _direct_round_setup(tmp_path, monkeypatch):
+    """Build the plumbing to call `_execute_round` directly, bypassing the planner.
+
+    Lets these tests construct exactly the bootstrap-action sequence they
+    need (a successful ledger action followed by an observe_node action)
+    without depending on drift/planner internals unrelated to this contract.
+    """
+    from pathlib import Path
+
+    from nctl_core.artifacts import OperationArtifacts
+    from nctl_core.events import OperationLog
+    from nctl_core.reconcile.model import PlanScope, ReconcilePlan
+
+    cfg = _config(tmp_path)
+    op = OperationLog("reconcile", cfg.events.resolved_log_dir())
+    artifacts = OperationArtifacts.create(cfg.events.resolved_log_dir(), op.operation_id)
+    node = _node()
+    snapshot = _snapshot(nodes=[node])
+
+    class _NeverInterrupted:
+        def is_set(self):
+            return False
+
+    dummy_probe = SshProbeRunner(
+        keyscan=lambda host, port, timeout: subprocess.CompletedProcess([], 0, "", ""),
+        effective_config=lambda host, port: subprocess.CompletedProcess([], 0, "", ""),
+        keygen_find=lambda path, host: subprocess.CompletedProcess([], 0, "", ""),
+    )
+
+    def make_plan(actions):
+        return ReconcilePlan(
+            scope=PlanScope(kind="cluster"),
+            drift_fingerprint="fp1",
+            generated_at=datetime.now(timezone.utc),
+            actions=actions,
+        )
+
+    return SimpleNamespace(
+        cfg=cfg,
+        op=op,
+        artifacts=artifacts,
+        node=node,
+        snapshot=snapshot,
+        interrupted=_NeverInterrupted(),
+        probe=dummy_probe,
+        make_plan=make_plan,
+        Path=Path,
+    )
+
+
+def test_successful_ledger_action_retained_when_observation_store_fails(tmp_path, monkeypatch):
+    # Corrected contract 2, second boundary: a ledger action that already
+    # succeeded this round must stay in the round's evidence even though a
+    # later bootstrap observe_node action in the same round hits a
+    # managed-store failure.
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    link_action = ReconcileAction(
+        id="link-1",
+        reconciler_id="link_actual_node",
+        action_kind="ledger",
+        targets=[Target(kind="node", slug=ctx.node.slug, name=ctx.node.name, id=ctx.node.id)],
+        claimed_diff_codes=["actual_node_not_linked"],
+        reason="test",
+        mutates=True,
+        requires_observation=False,
+    )
+    observe_action = ReconcileAction(
+        id="observe-1",
+        reconciler_id="observe_node",
+        action_kind="observation",
+        targets=[Target(kind="node", slug=ctx.node.slug, name=ctx.node.name, id=ctx.node.id)],
+        claimed_diff_codes=["service_observation_missing"],
+        reason="test",
+        mutates=False,
+        requires_observation=False,
+    )
+    plan = ctx.make_plan([link_action, observe_action])
+
+    monkeypatch.setattr(
+        executor_module,
+        "execute_link_actual_node",
+        lambda client, action: LinkActualNodeResult(
+            node_id=ctx.node.id, node_slug=ctx.node.slug, field="realized_device", candidate_id="dev-1"
+        ),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "run_observation",
+        lambda *a, **kw: (_ for _ in ()).throw(executor_module.SshStoreReadError("store corrupted mid-round")),
+    )
+
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+    )
+
+    assert len(outcome.summary.actions) == 2
+    link_result, observe_result = outcome.summary.actions
+    assert link_result.reconciler_id == "link_actual_node" and link_result.success is True
+    assert observe_result.reconciler_id == "observe_node" and observe_result.success is False
+    assert "ssh_store_read_failed" in observe_result.error
+    assert outcome.had_side_effects is True
+    assert len(outcome.terminal_errors) == 1
+    assert outcome.terminal_errors[0].code == "ssh_store_read_failed"
+
+
+def test_post_actuation_observation_store_failure_retains_deployment_evidence(tmp_path, monkeypatch):
+    # Corrected contract 2, post-actuation boundary: a dnsmasq deployment
+    # that already succeeded this round must stay in the round's evidence
+    # even though the post-actuation observation that follows it hits a
+    # managed-store failure.
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    ctx.snapshot.desired.operational_overrides = [
+        DesiredNodeOperationalOverride(id="ov-1", node_id=ctx.node.id, declared_host_os="haos")
+    ]
+    dnsmasq_action = ReconcileAction(
+        id="dnsmasq-1",
+        reconciler_id="dnsmasq_config",
+        action_kind="dnsmasq_config",
+        targets=[Target(kind="service", slug="dnsmasq", name="dnsmasq", id="svc-1")],
+        claimed_diff_codes=["service_config_mismatch"],
+        reason="test",
+        mutates=True,
+        requires_observation=True,
+        parameters={"host_slugs": [ctx.node.slug]},
+    )
+    plan = ctx.make_plan([dnsmasq_action])
+
+    from nctl_core.output import Envelope as _Envelope
+    from nctl_core.dnsmasq_apply import DnsmasqApplyData
+
+    def fake_load_profiles(playbook_dir):
+        return ({"good": {"group": "good_server", "config_schema_version": "1", "variables": {}}}, "digest")
+
+    monkeypatch.setattr(executor_module, "load_deployment_profiles", fake_load_profiles)
+    monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
+    _patch_production_render(monkeypatch, lambda: ctx.snapshot)
+    monkeypatch.setattr(
+        executor_module,
+        "build_dnsmasq_apply",
+        lambda cfg, apply_changes=False, probe=None: _Envelope.build(
+            "nctl.dnsmasq.apply.v2",
+            DnsmasqApplyData(operation_id="op-1", mode="apply", event_log_path="events/op-1.jsonl"),
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "run_observation",
+        lambda *a, **kw: (_ for _ in ()).throw(executor_module.SshStoreReadError("store corrupted post-actuation")),
+    )
+
+    matching_probe = SshProbeRunner(
+        keyscan=lambda host, port, timeout: subprocess.CompletedProcess(
+            args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {FIXTURE_KEY_BLOB}\n", stderr=""
+        ),
+        effective_config=lambda host, port: subprocess.CompletedProcess([], 0, "", ""),
+        keygen_find=lambda path, host: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, matching_probe,
+    )
+
+    reconciler_ids = [a.reconciler_id for a in outcome.summary.actions]
+    assert "production_inventory" in reconciler_ids
+    assert "dnsmasq_config" in reconciler_ids
+    dnsmasq_result = next(a for a in outcome.summary.actions if a.reconciler_id == "dnsmasq_config")
+    assert dnsmasq_result.success is True
+    observe_result = outcome.summary.actions[-1]
+    assert observe_result.reconciler_id == "observe_node" and observe_result.success is False
+    assert outcome.had_side_effects is True
+    assert len(outcome.terminal_errors) == 1
+    assert outcome.terminal_errors[0].code == "ssh_store_read_failed"
+
+
+def test_final_drift_refresh_failure_after_store_failure_reports_unknown(tmp_path, monkeypatch):
+    # Item 7 (fix_sshkey3 Step 2, reused unchanged by fix_sshkey4 Step 2): a
+    # terminal store failure with prior side effects triggers one final-drift
+    # refresh; if that refresh itself fails, the run must report
+    # `final_drift_unknown` rather than silently keeping the stale
+    # pre-mutation drift. `_execute_round` is stubbed directly to a crafted
+    # `RoundOutcome` so this exercises `_run_apply`'s generic handling of that
+    # outcome without depending on planner action ordering.
+    from nctl_core.sources.actual import ActualDevice, ActualSnapshot
+
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="actual_node_not_linked", severity=Severity.ERROR, message="x")
+
+    def make_drift():
+        snapshot = _snapshot(nodes=[node])
+        snapshot.actual = ActualSnapshot(devices=[ActualDevice(id="dev-1", name=node.name)])
+        targets = [_target_status(diff.target, Status.DRIFTING, [diff])]
+        return snapshot, DriftResult(summary={"drifting": 1}, targets=targets), "2026-07-17T00:00:00+00:00"
+
+    _sequence(
+        monkeypatch,
+        [
+            make_drift(),
+            EnvelopeError(code="nautobot_fetch_failed", message="refresh failed"),
+        ],
+    )
+
+    def fake_execute_round(cfg, op, artifacts, round_index, plan, snapshot, now, command_runner, interrupted, ssh_probe):
+        summary = executor_module.RoundSummary(round=round_index, drift_fingerprint=plan.drift_fingerprint)
+        summary.actions.append(
+            executor_module.ActionResult(
+                action_id="link-1", reconciler_id="link_actual_node", action_kind="ledger",
+                target_slugs=[node.slug], success=True,
+            )
+        )
+        return executor_module.RoundOutcome(
+            summary=summary,
+            terminal_errors=[EnvelopeError(code="ssh_store_read_failed", message="store corrupted post-actuation")],
+            had_side_effects=True,
+        )
+
+    monkeypatch.setattr(executor_module, "_execute_round", fake_execute_round)
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert not envelope.ok
+    assert any(e.code == "ssh_store_read_failed" for e in envelope.errors)
+    assert any(e.code == "final_drift_unknown" for e in envelope.errors)
+    assert len(envelope.data.rounds) == 1
+    assert envelope.data.rounds[0].actions[0].success is True
+    assert envelope.data.progress_made is True
+    assert envelope.data.final_drift_path == ""
+
+
+def test_pre_round_store_failure_still_starts_no_round(tmp_path, monkeypatch):
+    # No successful mutation has happened yet at the pre-round enrollment
+    # gate, so a store failure there must still report zero rounds and no
+    # progress -- distinct from the mid-round/post-actuation cases above.
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="missing_actual_data", severity=Severity.ERROR, message="x")
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])], nodes=[node])])
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
+    known_hosts_path.write_bytes(b"\xff\xfe\x00bad")
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert not envelope.ok
+    assert any(e.code == "ssh_store_read_failed" for e in envelope.errors)
+    assert envelope.data.rounds == []
+    assert envelope.data.progress_made is False

@@ -136,6 +136,23 @@ class RoundOutcome(BaseModel):
     had_side_effects: bool = False
 
 
+class ExecutedAction(BaseModel):
+    """One action's private execution outcome (fix_sshkey4 Step 2, corrected contract 2).
+
+    `result` must always be appended to the round's `RoundSummary.actions`
+    before `terminal_errors` is inspected -- a managed-store failure inside
+    observation (bootstrap or post-actuation) must not make its
+    `ActionResult` disappear, only stop the round immediately after it is
+    recorded. Every `_execute_action`/`_run_observation_action` return path
+    uses this type instead of raising `SshStoreReadError` past the action
+    boundary, so control flow for a store failure is never encoded in an
+    error-message string.
+    """
+
+    result: ActionResult
+    terminal_errors: list[EnvelopeError] = Field(default_factory=list)
+
+
 def _ssh_scan_errors(entries: list["SshPreflightEntry"]) -> list[EnvelopeError]:
     """Turn non-ready `verify_offered_keys` entries into structured envelope errors.
 
@@ -483,12 +500,16 @@ def _execute_round(
         for action in bootstrap_actions:
             if interrupted.is_set():
                 return _interrupted_outcome()
-            result = _execute_action(
+            executed = _execute_action(
                 cfg, op, artifacts, round_index, action, snapshot, client, now, command_runner, ssh_probe,
                 generated_at=operation_generated_at,
             )
-            summary.actions.append(result)
-            had_side_effects = had_side_effects or result.success
+            summary.actions.append(executed.result)
+            had_side_effects = had_side_effects or executed.result.success
+            if executed.terminal_errors:
+                return RoundOutcome(
+                    summary=summary, terminal_errors=executed.terminal_errors, had_side_effects=had_side_effects
+                )
     finally:
         client.close()
 
@@ -545,12 +566,16 @@ def _execute_round(
         for action in service_actions:
             if interrupted.is_set():
                 return _interrupted_outcome()
-            result = _execute_action(
+            executed = _execute_action(
                 cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner, ssh_probe,
                 generated_at=operation_generated_at,
             )
-            summary.actions.append(result)
-            had_side_effects = had_side_effects or result.success
+            summary.actions.append(executed.result)
+            had_side_effects = had_side_effects or executed.result.success
+            if executed.terminal_errors:
+                return RoundOutcome(
+                    summary=summary, terminal_errors=executed.terminal_errors, had_side_effects=had_side_effects
+                )
 
     observe_targets = sorted(
         {
@@ -561,11 +586,15 @@ def _execute_round(
         }
     )
     if observe_targets:
-        result = _run_observation_action(
+        executed = _run_observation_action(
             cfg, op, artifacts, observe_targets, snapshot, now, command_runner, action_id="post_actuation_observation"
         )
-        summary.actions.append(result)
-        had_side_effects = had_side_effects or result.success
+        summary.actions.append(executed.result)
+        had_side_effects = had_side_effects or executed.result.success
+        if executed.terminal_errors:
+            return RoundOutcome(
+                summary=summary, terminal_errors=executed.terminal_errors, had_side_effects=had_side_effects
+            )
 
     return RoundOutcome(summary=summary, terminal_errors=[], had_side_effects=had_side_effects)
 
@@ -666,7 +695,7 @@ def _execute_action(
     ssh_probe: SshProbeRunner,
     *,
     generated_at: str,
-) -> ActionResult:
+) -> ExecutedAction:
     target_slugs = [t.slug for t in action.targets if t.slug]
     op.emit("action_started", f"action {action.id} started", action_id=action.id, reconciler_id=action.reconciler_id)
 
@@ -676,7 +705,8 @@ def _execute_action(
         if action.reconciler_id == "link_actual_node":
             assert client is not None
             link_result = execute_link_actual_node(client, action)
-            return _actuation_result(op, action, target_slugs, True, link_result.model_dump(), requires_observation=False)
+            result = _actuation_result(op, action, target_slugs, True, link_result.model_dump(), requires_observation=False)
+            return ExecutedAction(result=result)
         if action.reconciler_id == "reconcile_ipam":
             assert client is not None
             job_runner = NautobotJobRunner(
@@ -690,12 +720,14 @@ def _execute_action(
                 job_runner, action, artifact_relative_path=f"round-{round_index:02d}/jobs/ipam-{action.id}.json"
             )
             detail = {"conflicts": ipam_result.conflicts, "skipped": ipam_result.skipped}
-            return _actuation_result(op, action, target_slugs, True, detail, requires_observation=False)
+            result = _actuation_result(op, action, target_slugs, True, detail, requires_observation=False)
+            return ExecutedAction(result=result)
         if action.reconciler_id in ("service_profile", "dnsmasq_config"):
-            return _run_playbook_action(
+            result = _run_playbook_action(
                 cfg, op, artifacts, round_index, action, snapshot, command_runner, ssh_probe,
                 generated_at=generated_at,
             )
+            return ExecutedAction(result=result)
         raise LedgerActionError("unknown_reconciler", f"no executor for reconciler {action.reconciler_id!r}")
     except (LedgerActionError, NautobotJobError, NautobotError) as exc:
         code = getattr(exc, "code", "action_failed")
@@ -708,7 +740,7 @@ def _execute_action(
             success=False,
             error=str(exc),
         )
-        return ActionResult(
+        result = ActionResult(
             action_id=action.id,
             reconciler_id=action.reconciler_id,
             action_kind=action.action_kind,
@@ -716,6 +748,7 @@ def _execute_action(
             success=False,
             error=f"{code}: {exc}",
         )
+        return ExecutedAction(result=result)
 
 
 def _actuation_result(
@@ -871,13 +904,37 @@ def _run_observation_action(
     command_runner: CommandRunner | None,
     *,
     action_id: str,
-) -> ActionResult:
+) -> ExecutedAction:
+    """Run one observation and always return an `ExecutedAction` (fix_sshkey4 Step 2).
+
+    `run_observation` performs its own defense-in-depth `check_ssh_enrollment`
+    call, which can raise `SshStoreReadError` if the managed store becomes
+    unreadable or invalid after this round's start gate already passed --
+    distinct from an ordinary `ValueError` (e.g. `ssh_host_key_unenrolled`),
+    which only fails this one action and lets the round continue.
+    `SshStoreReadError` instead also sets `terminal_errors`, so the caller
+    stops the round right after recording this failed observation result,
+    per `RoundOutcome`'s evidence-retention contract.
+    """
     try:
         result: ObservationResult = run_observation(
             cfg, snapshot.desired, target_slugs, artifacts, op, command_runner=command_runner, now=now()
         )
+    except SshStoreReadError as exc:
+        action_result = ActionResult(
+            action_id=action_id,
+            reconciler_id="observe_node",
+            action_kind="observation",
+            target_slugs=target_slugs,
+            success=False,
+            error=f"ssh_store_read_failed: {exc}",
+        )
+        return ExecutedAction(
+            result=action_result,
+            terminal_errors=[EnvelopeError(code="ssh_store_read_failed", message=str(exc))],
+        )
     except ValueError as exc:
-        return ActionResult(
+        action_result = ActionResult(
             action_id=action_id,
             reconciler_id="observe_node",
             action_kind="observation",
@@ -885,7 +942,8 @@ def _run_observation_action(
             success=False,
             error=str(exc),
         )
-    return ActionResult(
+        return ExecutedAction(result=action_result)
+    action_result = ActionResult(
         action_id=action_id,
         reconciler_id="observe_node",
         action_kind="observation",
@@ -894,6 +952,7 @@ def _run_observation_action(
         detail={"hosts": [h.model_dump() for h in result.hosts]},
         error=result.error,
     )
+    return ExecutedAction(result=action_result)
 
 
 def _write_dashboard(cfg: Config, op: OperationLog, data: ReconcileData, final_data: DriftData) -> None:
