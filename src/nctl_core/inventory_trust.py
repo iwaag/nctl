@@ -1,0 +1,164 @@
+"""Structured SSH trust-contract validation for an already-loaded inventory (fix_sshkey2 Step 4).
+
+`nctl apply dnsmasq` actuates against a rendered inventory (`ansible-inventory
+--list` output), not a live `SourceSnapshot` -- there is no Nautobot fetch on
+this path. This module therefore re-derives the expected trust variables from
+each host's own `nintent_desired_node_id` and validates the *rendered* host
+vars exactly, instead of trusting a hand-written or stale inventory's
+self-reported alias. It shares `production.contract.select_local_route` with
+the production composer (Step 3's pure route helper) so route resolution can
+never independently drift between composition and this preflight.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from nctl_core.production.contract import select_local_route
+from nctl_core.reconcile.ssh_preflight import (
+    STATUS_MISMATCH,
+    STATUS_READY,
+    STATUS_UNENROLLED,
+    STATUS_UNREACHABLE,
+    SshPreflightEntry,
+)
+from nctl_core.ssh_enroll import SshProbeRunner, entries_for_lookup_name, read_raw_lines, scan_offered_keys
+from nctl_core.ssh_trust import (
+    SshTrustError,
+    build_ansible_ssh_common_args,
+    derive_host_key_alias,
+    managed_lookup_name,
+)
+
+
+class InventoryTrustError(Exception):
+    """One host's rendered SSH trust variables fail the closed contract."""
+
+    def __init__(self, hostname: str, code: str, message: str) -> None:
+        self.hostname = hostname
+        self.code = code
+        super().__init__(message)
+
+
+def validate_inventory_trust_contract(
+    host_vars: dict[str, Any], hostname: str, known_hosts_path: Path
+) -> InventoryTrustError | None:
+    """Recompute the expected alias/`ansible_ssh_common_args` from the UUID and require exact equality.
+
+    Rejects old-schema, hand-written, or partial trust variables, a
+    different known_hosts path, and an incorrect alias -- a non-empty alias
+    that merely differs from the UUID-derived value is not enough to pass.
+    No unmanaged SSH argument can subsequently weaken the host-key policy,
+    since the *entire* `ansible_ssh_common_args` string must match the one
+    `build_ansible_ssh_common_args` would generate, not just contain the
+    right options.
+    """
+    node_id = host_vars.get("nintent_desired_node_id")
+    if not isinstance(node_id, str) or not node_id:
+        return InventoryTrustError(
+            hostname, "missing_desired_node_id", f"{hostname}: missing nintent_desired_node_id"
+        )
+    try:
+        expected_alias = derive_host_key_alias(node_id)
+    except SshTrustError as exc:
+        return InventoryTrustError(hostname, "invalid_desired_node_id", f"{hostname}: {exc}")
+
+    alias = host_vars.get("nctl_ssh_host_key_alias")
+    if alias != expected_alias:
+        return InventoryTrustError(
+            hostname,
+            "ssh_host_key_alias_mismatch",
+            f"{hostname}: nctl_ssh_host_key_alias {alias!r} does not match the UUID-derived alias {expected_alias!r}",
+        )
+
+    expected_args = build_ansible_ssh_common_args(expected_alias, str(known_hosts_path))
+    actual_args = host_vars.get("ansible_ssh_common_args")
+    if actual_args != expected_args:
+        return InventoryTrustError(
+            hostname,
+            "ansible_ssh_common_args_mismatch",
+            f"{hostname}: ansible_ssh_common_args does not match the closed, controller-generated policy",
+        )
+    return None
+
+
+def resolve_route_from_host_vars(host_vars: dict[str, Any], hostname: str) -> str | None:
+    """Resolve the connection route for `hostname` from its own rendered host vars.
+
+    A bootstrap inventory (`hosts_intent.yml`) exports `ansible_host`
+    directly -- used verbatim. A production inventory never exports
+    `ansible_host` (the composer pops it: it is resolved from group_vars/all,
+    not per host) but does export the same `connection_path`/`local_ip`/
+    `local_dns_hostname`/`mdns_hostname`/`tailscale_ip` variables the
+    composer derived it from, so the identical priority chain
+    (`select_local_route`) reproduces the same route here. Returns `None`
+    (never a guess) when neither representation resolves.
+    """
+    ansible_host = host_vars.get("ansible_host")
+    if isinstance(ansible_host, str) and ansible_host.strip():
+        return ansible_host.strip()
+
+    connection_path = host_vars.get("connection_path")
+    if connection_path == "tailscale":
+        tailscale_ip = host_vars.get("tailscale_ip")
+        return tailscale_ip.strip() if isinstance(tailscale_ip, str) and tailscale_ip.strip() else None
+    if connection_path == "local":
+        local_ip = host_vars.get("local_ip")
+        local_dns_hostname = host_vars.get("local_dns_hostname")
+        mdns_hostname = host_vars.get("mdns_hostname")
+        return select_local_route(
+            local_ip=local_ip if isinstance(local_ip, str) else None,
+            local_dns_hostname=local_dns_hostname if isinstance(local_dns_hostname, str) else None,
+            mdns_hostname=mdns_hostname if isinstance(mdns_hostname, str) else None,
+            inventory_hostname=hostname,
+        )
+    return None
+
+
+def check_inventory_ssh_preflight(
+    known_hosts_path: Path,
+    keyscan_timeout_seconds: float,
+    target_hosts: list[str],
+    host_vars_by_host: dict[str, dict[str, Any]],
+    probe: SshProbeRunner,
+) -> list[SshPreflightEntry]:
+    """Read-only: managed-store enrollment + a matching currently-offered key, per host.
+
+    Callers must run `validate_inventory_trust_contract` for every host
+    first -- this function trusts `host_vars_by_host[host]["nintent_desired_node_id"]`
+    to already be a valid UUID and the alias to already match it.
+    """
+    raw_lines = read_raw_lines(known_hosts_path)
+    entries: list[SshPreflightEntry] = []
+    for host in sorted(target_hosts):
+        host_vars = host_vars_by_host.get(host, {})
+        alias = derive_host_key_alias(host_vars["nintent_desired_node_id"])
+        lookup_name = managed_lookup_name(alias)
+        managed = entries_for_lookup_name(raw_lines, lookup_name)
+        if not managed:
+            entries.append(SshPreflightEntry(slug=host, alias=alias, status=STATUS_UNENROLLED))
+            continue
+
+        route = resolve_route_from_host_vars(host_vars, host)
+        if not route:
+            entries.append(
+                SshPreflightEntry(slug=host, alias=alias, status=STATUS_UNREACHABLE, detail="no_resolvable_route")
+            )
+            continue
+
+        port = host_vars.get("ansible_port")
+        port = port if isinstance(port, int) and port > 0 else 22
+        try:
+            offered = scan_offered_keys(probe, route, port, keyscan_timeout_seconds)
+        except SshTrustError as exc:
+            entries.append(SshPreflightEntry(slug=host, alias=alias, status=STATUS_UNREACHABLE, detail=str(exc)))
+            continue
+
+        managed_pairs = {(e.key_type, e.key_blob_b64) for e in managed}
+        offered_pairs = {(k.key_type, k.key_blob_b64) for k in offered}
+        if managed_pairs & offered_pairs:
+            entries.append(SshPreflightEntry(slug=host, alias=alias, status=STATUS_READY))
+        else:
+            entries.append(SshPreflightEntry(slug=host, alias=alias, status=STATUS_MISMATCH))
+    return entries

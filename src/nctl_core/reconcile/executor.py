@@ -394,7 +394,7 @@ def _execute_round(
                 raise _Interrupted()
             summary.actions.append(
                 _execute_action(
-                    cfg, op, artifacts, round_index, action, snapshot, client, now, command_runner,
+                    cfg, op, artifacts, round_index, action, snapshot, client, now, command_runner, ssh_probe,
                     generated_at=operation_generated_at,
                 )
             )
@@ -448,7 +448,7 @@ def _execute_round(
                 raise _Interrupted()
             summary.actions.append(
                 _execute_action(
-                    cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner,
+                    cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner, ssh_probe,
                     generated_at=operation_generated_at,
                 )
             )
@@ -564,6 +564,7 @@ def _execute_action(
     client: NautobotClient | None,
     now: Callable[[], datetime],
     command_runner: CommandRunner | None,
+    ssh_probe: SshProbeRunner,
     *,
     generated_at: str,
 ) -> ActionResult:
@@ -593,7 +594,7 @@ def _execute_action(
             return _actuation_result(op, action, target_slugs, True, detail, requires_observation=False)
         if action.reconciler_id in ("service_profile", "dnsmasq_config"):
             return _run_playbook_action(
-                cfg, op, artifacts, round_index, action, snapshot, command_runner,
+                cfg, op, artifacts, round_index, action, snapshot, command_runner, ssh_probe,
                 generated_at=generated_at,
             )
         raise LedgerActionError("unknown_reconciler", f"no executor for reconciler {action.reconciler_id!r}")
@@ -660,12 +661,13 @@ def _run_playbook_action(
     action: ReconcileAction,
     snapshot: SourceSnapshot,
     command_runner: CommandRunner | None,
+    ssh_probe: SshProbeRunner,
     *,
     generated_at: str,
 ) -> ActionResult:
     target_slugs = [t.slug for t in action.targets if t.slug]
     if action.action_kind == "dnsmasq_config":
-        envelope = build_dnsmasq_apply(cfg, apply_changes=True)
+        envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=ssh_probe)
         if envelope.ok:
             return _actuation_result(op, action, target_slugs, True, {}, requires_observation=action.requires_observation)
         return _failed_action_result(

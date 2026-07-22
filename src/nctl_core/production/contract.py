@@ -316,6 +316,27 @@ def actual_state_problem(
     return None
 
 
+def select_local_route(
+    *,
+    local_ip: str | None,
+    local_dns_hostname: str | None,
+    mdns_hostname: str | None,
+    inventory_hostname: str,
+) -> str:
+    """Pick the `ansible_host` value for the `local` connection path.
+
+    Priority: `local_ip` -> `local_dns_hostname` -> `mdns_hostname` ->
+    `inventory_hostname` (always a non-empty fallback). Extracted so
+    `resolve_connection_variables` (production composition) and
+    `nctl_core.inventory_trust` (the `nctl apply dnsmasq` preflight, which
+    reads these same variables back out of an already-rendered inventory
+    instead of Nautobot facts) can never independently drift on this
+    priority chain -- see fix_sshkey2 plan.md Step 4.
+    """
+    candidates = (local_ip, local_dns_hostname, mdns_hostname, inventory_hostname)
+    return next(value for value in candidates if _nonempty(value))
+
+
 def resolve_connection_variables(
     *,
     inventory_hostname: str,
@@ -341,13 +362,12 @@ def resolve_connection_variables(
     if tailscale_endpoint.get("ip_address"):
         variables["tailscale_ip"] = _normalize_ip(tailscale_endpoint["ip_address"], "tailscale_endpoint.ip_address")
     if connection_path == "local":
-        candidates = (
-            variables.get("local_ip"),
-            variables.get("local_dns_hostname"),
-            variables.get("mdns_hostname"),
-            inventory_hostname,
+        variables["ansible_host"] = select_local_route(
+            local_ip=variables.get("local_ip"),
+            local_dns_hostname=variables.get("local_dns_hostname"),
+            mdns_hostname=variables.get("mdns_hostname"),
+            inventory_hostname=inventory_hostname,
         )
-        variables["ansible_host"] = next(value for value in candidates if _nonempty(value))
     elif connection_path == "tailscale":
         if "tailscale_ip" not in variables:
             raise ContractError("unresolved_connection_path", "tailscale path requires a usable tailscale endpoint")
