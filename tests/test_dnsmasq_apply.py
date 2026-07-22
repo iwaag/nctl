@@ -720,7 +720,12 @@ def test_ssh_preflight_summary_is_populated_on_success(tmp_path, monkeypatch):
     envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
 
     assert envelope.ok is True
-    assert envelope.data.ssh_preflight == [{"slug": "agdnsmasq", "alias": ALIAS, "status": "ready", "detail": ""}]
+    assert envelope.data.ssh_preflight == [
+        {
+            "slug": "agdnsmasq", "alias": ALIAS, "status": "ready", "detail": "", "phase": "", "round": None,
+            "route": "", "port": None, "generation_id": "", "managed_fingerprints": [], "offered_fingerprints": [],
+        }
+    ]
 
 
 def test_setup_failure_aborts_before_records_deploy(tmp_path, monkeypatch):

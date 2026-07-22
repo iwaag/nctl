@@ -21,26 +21,27 @@ plan on enrollment.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Mapping
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from nctl_core.config import Config
 from nctl_core.hosts_intent import select_mdns_endpoint
-from nctl_core.production.adapter import build_production_node_inputs
-from nctl_core.production.composer import resolve_effective_route, try_resolve_operational_values
-from nctl_core.production.contract import ContractError
-from nctl_core.reconcile.model import ReconcilePlan
+from nctl_core.production.composer import ResolvedSshTarget
+from nctl_core.reconcile.model import ReconcileAction, ReconcilePlan
 from nctl_core.sources.desired import DesiredSnapshot
-from nctl_core.sources.snapshot import SourceSnapshot
 from nctl_core.ssh_enroll import (
     SshProbeRunner,
     entries_for_lookup_name,
     read_raw_lines,
     scan_offered_keys,
 )
-from nctl_core.ssh_trust import SshTrustError, derive_host_key_alias, managed_lookup_name
+from nctl_core.ssh_trust import (
+    SshTrustError,
+    compute_sha256_fingerprint,
+    derive_host_key_alias,
+    managed_lookup_name,
+)
 
 # Only reconcilers that actually connect to the node over SSH require enrollment;
 # `link_actual_node` (Nautobot metadata patch) and `reconcile_ipam` (Nautobot Job)
@@ -58,22 +59,38 @@ class SshPreflightEntry(BaseModel):
     alias: str = ""
     status: str
     detail: str = ""
+    # fix_sshkey3 Step 2 (contract item 7): a richer public preflight record.
+    # `phase` distinguishes which gate produced this entry (`enrollment`,
+    # `bootstrap_route`, `production_route`); route/port/generation_id/round
+    # and the SHA-256 fingerprints let an operation artifact prove exactly
+    # what was checked without ever including a raw key blob. Left at their
+    # defaults for call sites (enrollment presence, bootstrap mDNS) that
+    # predate this contract and have nothing meaningful to report for them.
+    phase: str = ""
+    round: int | None = None
+    route: str = ""
+    port: int | None = None
+    generation_id: str = ""
+    managed_fingerprints: list[str] = Field(default_factory=list)
+    offered_fingerprints: list[str] = Field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class RouteOverrides:
-    """Wraps an explicit slug -> route map for `verify_offered_keys` (fix_sshkey2 Step 3).
+def action_host_slugs(action: ReconcileAction) -> set[str]:
+    """Return the node slugs one reconcile action actually touches.
 
-    Presence of this wrapper -- even wrapping an empty `routes` dict -- means
-    production mode: a slug absent from `routes` is
-    `no_resolvable_production_route`, never a silent mDNS fallback. Passing
-    `None` (no wrapper at all) instead of an instance of this class means
-    bootstrap mode: select the mDNS endpoint per node. A plain
-    `dict | None` parameter cannot make this distinction safely, since an
-    empty dict and `None` are both falsy and easy to conflate with `or {}`.
+    `service_profile`/`dnsmasq_config` actions target the *service* (their
+    `targets` are kind="service"); the node slugs they actually touch live in
+    `parameters["host_slugs"]` (`reconcilers.plan_service_profile`).
+    `observe_node`/ledger actions target the nodes themselves and set no
+    `host_slugs` parameter, so this falls through to the target loop. Shared
+    by `ssh_required_host_slugs` (SSH gating) and the executor's
+    post-actuation observation host list (fix_sshkey3 Step 2 item 8) so the
+    two can never disagree on which node a service action's evidence belongs to.
     """
-
-    routes: dict[str, str]
+    host_slugs = action.parameters.get("host_slugs")
+    if host_slugs:
+        return set(host_slugs)
+    return {target.slug for target in action.targets if target.kind == "node" and target.slug}
 
 
 def ssh_required_host_slugs(
@@ -93,16 +110,7 @@ def ssh_required_host_slugs(
     for action in plan.actions:
         if action.reconciler_id not in ids:
             continue
-        # service_profile/dnsmasq_config actions target the *service* (their
-        # `targets` are kind="service"); the node slugs they actually touch
-        # live in parameters["host_slugs"] (reconcilers.plan_service_profile).
-        # observe_node's targets are the nodes themselves and it sets no
-        # host_slugs parameter, so this falls through to the target loop.
-        host_slugs = action.parameters.get("host_slugs")
-        if host_slugs:
-            slugs.update(host_slugs)
-            continue
-        slugs.update(target.slug for target in action.targets if target.kind == "node" and target.slug)
+        slugs.update(action_host_slugs(action))
     return slugs
 
 
@@ -147,57 +155,25 @@ def check_ssh_enrollment(
     return entries
 
 
-def resolve_production_routes(
-    source_snapshot: SourceSnapshot, host_slugs: Iterable[str], generated_at: str
-) -> dict[str, str]:
-    """Resolve the `ansible_host` production would currently use for each of `host_slugs`.
-
-    Reuses `production.composer.resolve_effective_route` -- the exact same
-    connection-resolution pipeline `nctl render production` uses -- so this
-    never becomes a second, potentially disagreeing, route-selection
-    implementation. A slug whose route cannot be resolved (ineligible node,
-    missing facts, contract error) is simply absent from the returned map;
-    callers treat that as unreachable rather than raising.
-    """
-    wanted = set(host_slugs)
-    routes: dict[str, str] = {}
-    for node in build_production_node_inputs(source_snapshot):
-        if node.slug not in wanted:
-            continue
-        effective, finding = try_resolve_operational_values(node, generated_at)
-        if finding is not None or effective is None:
-            continue
-        try:
-            connection = resolve_effective_route(node, effective)
-        except ContractError:
-            continue
-        host = connection.get("ansible_host")
-        if host:
-            routes[node.slug] = host
-    return routes
-
-
 def verify_offered_keys(
     cfg: Config,
     host_slugs: Iterable[str],
     snapshot: DesiredSnapshot,
     probe: SshProbeRunner,
-    *,
-    route_overrides: RouteOverrides | None = None,
 ) -> list[SshPreflightEntry]:
-    """Scan each already-enrolled host's current route and compare against the managed key.
+    """Bootstrap-only: scan each already-enrolled host's mDNS endpoint and compare against the managed key.
 
-    Without `route_overrides` (`None`), this is bootstrap mode: the mDNS
-    endpoint is used. With a `RouteOverrides` instance (from
-    `resolve_production_routes`, fed the *same* generation's
-    `SourceSnapshot`/`generated_at` -- see `ProductionRenderContext`), this is
-    production mode: the production-resolved `ansible_host` is scanned
-    instead, and a slug missing from `route_overrides.routes` is
-    `no_resolvable_production_route` -- it never falls back to mDNS, which is
-    reserved for bootstrap and may not even be what the service-phase host
-    answers on. A scan can only prove a mismatch against an already-trusted
-    key -- it never authorizes a new one. Unenrolled hosts are reported as
-    such rather than scanned.
+    fix_sshkey3 Step 2: production scanning no longer goes through this
+    function at all -- it used to take an optional `route_overrides`
+    (`RouteOverrides`/`resolve_production_routes`) that re-resolved a route
+    from a possibly-stale `SourceSnapshot`, decoupled from the port/identity
+    that snapshot actually used. `verify_resolved_ssh_targets` (below) is the
+    one production-mode scan now, fed `ResolvedSshTarget`s built by the exact
+    composition run being verified. This function keeps doing only what
+    bootstrap ever needed: the mDNS endpoint, port 22 unless a desired
+    operational override says otherwise. A scan can only prove a mismatch
+    against an already-trusted key -- it never authorizes a new one.
+    Unenrolled hosts are reported as such rather than scanned.
     """
     known_hosts_path = cfg.resolved_ssh_known_hosts_file()
     raw_lines = read_raw_lines(known_hosts_path)
@@ -205,30 +181,23 @@ def verify_offered_keys(
     for slug in sorted(host_slugs):
         alias, lookup_name, error = _resolve_alias_and_lookup_name(snapshot, slug)
         if error is not None:
-            entries.append(SshPreflightEntry(slug=slug, status=STATUS_UNENROLLED, detail=error))
+            entries.append(SshPreflightEntry(slug=slug, status=STATUS_UNENROLLED, detail=error, phase="bootstrap_route"))
             continue
         managed = entries_for_lookup_name(raw_lines, lookup_name)
         if not managed:
-            entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNENROLLED))
+            entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNENROLLED, phase="bootstrap_route"))
             continue
 
         node = next((n for n in snapshot.nodes if n.slug == slug), None)
-        if route_overrides is not None:
-            route = route_overrides.routes.get(slug)
-            if not route:
-                entries.append(
-                    SshPreflightEntry(
-                        slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail="no_resolvable_production_route"
-                    )
-                )
-                continue
-        else:
-            endpoints = [e for e in snapshot.endpoints if e.node_id == node.id]
-            endpoint = select_mdns_endpoint(endpoints)
-            route = endpoint.mdns_name if endpoint else None
+        endpoints = [e for e in snapshot.endpoints if e.node_id == node.id]
+        endpoint = select_mdns_endpoint(endpoints)
+        route = endpoint.mdns_name if endpoint else None
         if not route:
             entries.append(
-                SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail="no_resolvable_route")
+                SshPreflightEntry(
+                    slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail="no_resolvable_route",
+                    phase="bootstrap_route",
+                )
             )
             continue
         override = next((o for o in snapshot.operational_overrides if o.node_id == node.id), None)
@@ -236,13 +205,88 @@ def verify_offered_keys(
         try:
             offered = scan_offered_keys(probe, route, port, cfg.ssh.keyscan_timeout_seconds)
         except SshTrustError as exc:
-            entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail=str(exc)))
+            entries.append(
+                SshPreflightEntry(
+                    slug=slug, alias=alias, status=STATUS_UNREACHABLE, detail=str(exc), phase="bootstrap_route"
+                )
+            )
             continue
 
         managed_pairs = {(e.key_type, e.key_blob_b64) for e in managed}
         offered_pairs = {(k.key_type, k.key_blob_b64) for k in offered}
-        if managed_pairs & offered_pairs:
-            entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_READY))
-        else:
-            entries.append(SshPreflightEntry(slug=slug, alias=alias, status=STATUS_MISMATCH))
+        status = STATUS_READY if managed_pairs & offered_pairs else STATUS_MISMATCH
+        entries.append(
+            SshPreflightEntry(slug=slug, alias=alias, status=status, route=route, port=port, phase="bootstrap_route")
+        )
+    return entries
+
+
+def verify_resolved_ssh_targets(
+    cfg: Config,
+    host_slugs: Iterable[str],
+    ssh_targets: Mapping[str, ResolvedSshTarget],
+    probe: SshProbeRunner,
+    *,
+    round_index: int | None = None,
+) -> list[SshPreflightEntry]:
+    """Production-mode scan: verify each target's *own* generation-exact alias/route/port.
+
+    fix_sshkey3 Step 2 (Corrected contract 5): `ssh_targets` must be the
+    `ProductionRenderContext.ssh_targets` map produced by the exact
+    composition run this round just installed -- never a separately
+    re-resolved snapshot. A slug missing from the map (a planned service host
+    that composition did not actually include in `ssh_hosts`) is
+    `no_resolvable_production_target`; it never falls back to mDNS and never
+    substitutes any other route. A scan can only prove a mismatch against an
+    already-trusted key -- it never authorizes a new one.
+    """
+    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
+    raw_lines = read_raw_lines(known_hosts_path)
+    entries = []
+    for slug in sorted(host_slugs):
+        target = ssh_targets.get(slug)
+        if target is None:
+            entries.append(
+                SshPreflightEntry(
+                    slug=slug, status=STATUS_UNREACHABLE, detail="no_resolvable_production_target",
+                    phase="production_route", round=round_index,
+                )
+            )
+            continue
+
+        lookup_name = managed_lookup_name(target.alias)
+        managed = entries_for_lookup_name(raw_lines, lookup_name)
+        managed_fingerprints = sorted({compute_sha256_fingerprint(e.key_blob_b64) for e in managed})
+        if not managed:
+            entries.append(
+                SshPreflightEntry(
+                    slug=slug, alias=target.alias, status=STATUS_UNENROLLED, phase="production_route",
+                    round=round_index, route=target.route, port=target.port, generation_id=target.generation_id,
+                )
+            )
+            continue
+
+        try:
+            offered = scan_offered_keys(probe, target.route, target.port, cfg.ssh.keyscan_timeout_seconds)
+        except SshTrustError as exc:
+            entries.append(
+                SshPreflightEntry(
+                    slug=slug, alias=target.alias, status=STATUS_UNREACHABLE, detail=str(exc),
+                    phase="production_route", round=round_index, route=target.route, port=target.port,
+                    generation_id=target.generation_id, managed_fingerprints=managed_fingerprints,
+                )
+            )
+            continue
+
+        managed_pairs = {(e.key_type, e.key_blob_b64) for e in managed}
+        offered_pairs = {(k.key_type, k.key_blob_b64) for k in offered}
+        offered_fingerprints = sorted({compute_sha256_fingerprint(k.key_blob_b64) for k in offered})
+        status = STATUS_READY if managed_pairs & offered_pairs else STATUS_MISMATCH
+        entries.append(
+            SshPreflightEntry(
+                slug=slug, alias=target.alias, status=status, phase="production_route", round=round_index,
+                route=target.route, port=target.port, generation_id=target.generation_id,
+                managed_fingerprints=managed_fingerprints, offered_fingerprints=offered_fingerprints,
+            )
+        )
     return entries

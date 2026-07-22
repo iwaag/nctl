@@ -203,11 +203,36 @@ class NodeInput:
 
 
 @dataclass(frozen=True)
+class ResolvedSshTarget:
+    """One production-composed node's immutable, single-generation SSH connection identity.
+
+    fix_sshkey3 Step 2: replaces the split
+    `resolve_production_routes(SourceSnapshot, ...) + verify_offered_keys(old_snapshot, ...)`
+    API. Every field here comes from the exact `NodeInput`/`EffectiveOperationalValues`
+    this composition run used to build the node's `ssh_hosts` entry -- never a
+    separately re-resolved snapshot -- so a post-regeneration SSH scan can
+    never combine a fresh route with a stale port or identity. Only nodes
+    actually included in the composed `ssh_hosts` group receive a target
+    (see `compose_production_inventory`); a planned service host missing
+    from the map must be treated as unreachable, never silently resolved
+    another way.
+    """
+
+    slug: str
+    desired_node_id: str
+    alias: str
+    route: str
+    port: int
+    generation_id: str
+
+
+@dataclass(frozen=True)
 class ProductionComposition:
     """The composed inventory document and its companion report."""
 
     inventory: dict[str, Any]
     report: dict[str, Any]
+    ssh_targets: dict[str, ResolvedSshTarget] = field(default_factory=dict)
 
 
 def is_production_eligible(node: NodeInput) -> bool:
@@ -345,7 +370,7 @@ def compose_production_inventory(
             continue
 
         try:
-            host_vars, host_os = _compose_host(node, effective, validated_profiles, ssh_known_hosts_file)
+            host_vars, host_os, route = _compose_host(node, effective, validated_profiles, ssh_known_hosts_file)
         except LocalCompositionError as local_error:
             outcomes[node.id] = NodeOutcome(
                 state="skipped",
@@ -379,6 +404,8 @@ def compose_production_inventory(
             active_placement_ids=list(node_active_ids),
             host_os=host_os,
             nautobot_device_id=host_vars.get("nautobot_device_id"),
+            resolved_route=route,
+            resolved_port=effective.ansible_port.value,
         )
 
     inventory = _build_inventory_document(
@@ -389,6 +416,26 @@ def compose_production_inventory(
         generated_at=generated_at,
         deployment_profile_digest=deployment_profile_digest,
     )
+
+    # fix_sshkey3 Step 2: one ResolvedSshTarget per node actually included in
+    # ssh_hosts -- never for a skipped/out-of-scope node, and never
+    # constructed from anything but this same composition run's route/port.
+    ssh_targets: dict[str, ResolvedSshTarget] = {}
+    if ssh_known_hosts_file is not None:
+        for node in all_nodes:
+            if node.slug not in ssh_hosts:
+                continue
+            outcome = outcomes[node.id]
+            if outcome.resolved_route is None:
+                continue
+            ssh_targets[node.slug] = ResolvedSshTarget(
+                slug=node.slug,
+                desired_node_id=node.id,
+                alias=derive_host_key_alias(node.id),
+                route=outcome.resolved_route,
+                port=outcome.resolved_port if outcome.resolved_port is not None else 22,
+                generation_id=generation_id,
+            )
 
     report_nodes = [build_node_report_record(node, outcomes[node.id]) for node in all_nodes]
     applied_placements = sum(
@@ -426,7 +473,7 @@ def compose_production_inventory(
     # Fail closed: the composer must only ever emit conforming documents.
     validate_production_inventory_document(inventory, validated_profiles)
     validate_production_report_v3(report)
-    return ProductionComposition(inventory=inventory, report=report)
+    return ProductionComposition(inventory=inventory, report=report, ssh_targets=ssh_targets)
 
 
 @dataclass
@@ -444,6 +491,8 @@ class NodeOutcome:
     host_os: str | None = None
     nautobot_device_id: str | None = None
     local_error: LocalCompositionError | None = None
+    resolved_route: str | None = None
+    resolved_port: int | None = None
 
 
 def resolve_effective_route(node: NodeInput, effective: EffectiveOperationalValues) -> dict[str, Any]:
@@ -630,8 +679,15 @@ def _compose_host(
     effective: EffectiveOperationalValues,
     profiles: Mapping[str, Any],
     ssh_known_hosts_file: str | None,
-) -> tuple[dict[str, Any], str]:
-    """Build the ssh_hosts host variables for one included node."""
+) -> tuple[dict[str, Any], str, str | None]:
+    """Build the ssh_hosts host variables for one included node.
+
+    Returns `(host_vars, host_os, route)`: `route` is the exact
+    `ansible_host` this composition resolved for the node before it was
+    popped from the exported vars (fix_sshkey3 Step 2's `ResolvedSshTarget`
+    source of truth) -- `None` only in the pathological case where
+    `resolve_effective_route` returned no `ansible_host` at all.
+    """
 
     declared = effective.actual_state_policy.value == "declared"
     realized = None if declared else node.realized
@@ -647,7 +703,7 @@ def _compose_host(
             evidence={"operational_values": effective.as_dict()},
         )
     # ansible_host is resolved in generated group_vars/all, not exported per host.
-    connection.pop("ansible_host", None)
+    route = connection.pop("ansible_host", None)
 
     base_vars: dict[str, Any] = {
         "host_os": effective.host_os.value,
@@ -705,7 +761,7 @@ def _compose_host(
         )
     host_vars["nintent_active_placement_ids"] = sorted(active_ids)
 
-    return host_vars, effective.host_os.value
+    return host_vars, effective.host_os.value, route
 
 
 def _localize(exc: ContractError, allowlist: frozenset[str], *, stage: str, evidence: Mapping[str, Any]) -> None:

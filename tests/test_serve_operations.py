@@ -117,7 +117,7 @@ def test_concurrent_mutating_post_returns_409_with_running_operation_id(tmp_path
         started.set()
         release.wait(timeout=2)
         data = ReconcileData(operation_id=operation_id, mode="apply", scope=PlanScope(kind="cluster"), event_log_path="")
-        envelope = Envelope.build("nctl.reconcile.v1", data)
+        envelope = Envelope.build("nctl.reconcile.v2", data)
         log.finish(ok=True)
         return envelope
 

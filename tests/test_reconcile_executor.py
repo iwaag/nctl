@@ -153,6 +153,42 @@ def _stub_dashboard(monkeypatch, *, ok=True):
     monkeypatch.setattr(executor_module, "render_dashboard_from_drift", fake)
 
 
+def _resolved_ssh_targets_for_snapshot(snapshot, generation_id, generated_at):
+    """Mirror `compose_production_inventory`'s ResolvedSshTarget derivation for a stubbed render.
+
+    fix_sshkey3 Step 2: production-mode SSH scanning now reads only
+    `ProductionRenderContext.ssh_targets`, never a route re-resolved from the
+    snapshot at scan time -- so a test stubbing `build_production_render_context`
+    (to skip the real, heavier composer) must still populate this map using
+    the same pure route-resolution pipeline the real composer uses, or every
+    service-phase scan target would come back `no_resolvable_production_target`.
+    """
+    from nctl_core.production.adapter import build_production_node_inputs
+    from nctl_core.production.composer import ContractError, ResolvedSshTarget, resolve_effective_route, try_resolve_operational_values
+
+    targets = {}
+    for node in build_production_node_inputs(snapshot):
+        effective, finding = try_resolve_operational_values(node, generated_at)
+        if finding is not None or effective is None:
+            continue
+        try:
+            connection = resolve_effective_route(node, effective)
+        except ContractError:
+            continue
+        route = connection.get("ansible_host")
+        if not route:
+            continue
+        targets[node.slug] = ResolvedSshTarget(
+            slug=node.slug,
+            desired_node_id=node.id,
+            alias=derive_host_key_alias(node.id),
+            route=route,
+            port=effective.ansible_port.value if effective.ansible_port.value is not None else 22,
+            generation_id=generation_id,
+        )
+    return targets
+
+
 def _patch_production_render(monkeypatch, snapshot_factory, *, generated_at="2026-07-17T00:00:00+00:00"):
     """Stub `_regenerate_production_inventory`'s own fresh-snapshot fetch and compose call.
 
@@ -173,6 +209,7 @@ def _patch_production_render(monkeypatch, snapshot_factory, *, generated_at="202
             generation_id="test-generation",
             generated_at=generated_at,
             source_snapshot=snapshot,
+            ssh_targets=_resolved_ssh_targets_for_snapshot(snapshot, "test-generation", generated_at),
         ),
     )
 
@@ -248,7 +285,7 @@ def test_terminal_result_json_is_persisted_publicly_and_matches_the_envelope(tmp
     assert result_path.is_file()
     assert result_path.stat().st_mode & 0o777 == 0o644
     payload = json.loads(result_path.read_text())
-    assert payload["schema"] == "nctl.reconcile.v1"
+    assert payload["schema"] == "nctl.reconcile.v2"
     assert payload["ok"] == envelope.ok
     assert payload["data"]["state"] == envelope.data.state
 
@@ -299,7 +336,11 @@ def test_apply_blocks_on_unenrolled_ssh_host_before_any_action_executes(tmp_path
     assert observation_calls["n"] == 0
     assert envelope.data.rounds == []
     assert envelope.data.ssh_preflight == [
-        {"slug": "agunenrolled", "alias": derive_host_key_alias(UNENROLLED_NODE_ID), "status": "unenrolled", "detail": ""}
+        {
+            "slug": "agunenrolled", "alias": derive_host_key_alias(UNENROLLED_NODE_ID), "status": "unenrolled",
+            "detail": "", "phase": "", "round": None, "route": "", "port": None, "generation_id": "",
+            "managed_fingerprints": [], "offered_fingerprints": [],
+        }
     ]
 
 
@@ -657,7 +698,17 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
         return snapshot
 
     _patch_production_render(monkeypatch, make_snapshot)
-    _sequence(monkeypatch, [(make_snapshot(), DriftResult(summary={"drifting": 1}, targets=[_target_status(diff.target, Status.DRIFTING, [diff])]), "2026-07-17T00:00:00+00:00")])
+    # fix_sshkey3 Step 2 item 7: the successful production regeneration
+    # below means this failed round had a side effect, so the executor
+    # performs one extra read-only drift refresh for the final drift --
+    # a second fetch_and_compute_drift() call this fixture must supply.
+    _sequence(
+        monkeypatch,
+        [
+            (make_snapshot(), DriftResult(summary={"drifting": 1}, targets=[_target_status(diff.target, Status.DRIFTING, [diff])]), "2026-07-17T00:00:00+00:00"),
+            (make_snapshot(), DriftResult(summary={"drifting": 1}, targets=[_target_status(diff.target, Status.DRIFTING, [diff])]), "2026-07-17T00:00:05+00:00"),
+        ],
+    )
 
     def keyscan(host, port, timeout):
         return subprocess.CompletedProcess(args=["ssh-keyscan"], returncode=0, stdout=f"{host} ssh-ed25519 {OTHER_KEY_BLOB}\n", stderr="")
@@ -669,7 +720,19 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
     assert not envelope.ok
     assert any(e.code == "ssh_host_key_mismatch" for e in envelope.errors)
     assert playbook_run_calls["n"] == 0
-    assert envelope.data.rounds == []
+    # fix_sshkey3 Step 2 item 6: the production regeneration that ran
+    # successfully just before the mismatch was found must not be discarded
+    # -- exactly one round is retained, with the regeneration's success and
+    # no service_profile action (it never started).
+    assert len(envelope.data.rounds) == 1
+    round_reconciler_ids = [a.reconciler_id for a in envelope.data.rounds[0].actions]
+    assert round_reconciler_ids == ["production_inventory"]
+    assert envelope.data.rounds[0].actions[0].success is True
+    # Item 7: a successful mutation happened (the regeneration), so this
+    # counts as progress and a fresh final drift was fetched -- not the
+    # pre-mutation drift from the top of this same round.
+    assert envelope.data.progress_made is True
+    assert envelope.data.final_drift_path
 
 
 def test_production_write_failure_starts_no_service_ansible_process(tmp_path, monkeypatch):
@@ -731,7 +794,12 @@ def test_production_write_failure_starts_no_service_ansible_process(tmp_path, mo
     assert not envelope.ok
     assert any(e.code == "production_regeneration_unavailable" for e in envelope.errors)
     assert playbook_run_calls["n"] == 0
-    assert envelope.data.rounds == []
+    # fix_sshkey3 Step 2 item 6: the round is still retained (with the
+    # failed regeneration action) rather than discarded -- it had no side
+    # effects (the regeneration itself failed), so no extra drift refresh.
+    assert len(envelope.data.rounds) == 1
+    assert [a.reconciler_id for a in envelope.data.rounds[0].actions] == ["production_inventory"]
+    assert envelope.data.rounds[0].actions[0].success is False
 
 
 def test_service_phase_scans_freshly_regenerated_route_not_round_start_snapshot(tmp_path, monkeypatch):
@@ -815,7 +883,27 @@ def test_service_phase_scans_freshly_regenerated_route_not_round_start_snapshot(
     assert envelope.ok, envelope.errors
     assert NEW_IP in scanned_hosts
     assert OLD_IP not in scanned_hosts
-    assert playbook_run_calls["n"] == 1
+    # fix_sshkey3 Step 2 item 8: post-actuation observation now derives its
+    # host list from parameters["host_slugs"] (the real node, "agweb"), not
+    # the service action's own target slug ("good-svc") -- so it actually
+    # runs (2 more AnsibleRunner calls: collect + retrieve) alongside the
+    # one service_profile playbook run.
+    observation_actions = [
+        a for r in envelope.data.rounds for a in r.actions if a.reconciler_id == "observe_node"
+    ]
+    assert len(observation_actions) == 1
+    assert observation_actions[0].target_slugs == ["agweb"]
+    assert playbook_run_calls["n"] == 3
+    # Item 7: the round's own production SSH scan evidence (route/port/
+    # generation/fingerprints, no raw key blobs) is retained on the round,
+    # not just as a flattened top-level enrollment summary.
+    [preflight_entry] = envelope.data.rounds[0].ssh_preflight
+    assert preflight_entry["route"] == NEW_IP
+    assert preflight_entry["status"] == "ready"
+    assert preflight_entry["phase"] == "production_route"
+    assert preflight_entry["generation_id"] == "test-generation"
+    assert preflight_entry["managed_fingerprints"] and preflight_entry["offered_fingerprints"]
+    assert "key_blob" not in str(preflight_entry)
 
 
 # --- independent partial failure among service actions -----------------------
@@ -922,6 +1010,110 @@ def test_independent_service_action_failure_does_not_block_the_other(tmp_path, m
     successes = {a.success for a in round0_actions if a.reconciler_id == "service_profile"}
     assert successes == {True, False}
     assert envelope.data.state == "non_converged"
+
+
+def test_interruption_mid_round_retains_actions_completed_before_it(tmp_path, monkeypatch):
+    # fix_sshkey3 Step 2 (contract item 6): interruption is one of the
+    # explicitly listed cases where `_execute_round`'s partial evidence must
+    # still be appended to `data.rounds` -- not just regeneration/SSH-scan
+    # failures.
+    cfg = _config(tmp_path)
+
+    def fake_load_profiles(playbook_dir):
+        return (
+            {
+                "good": {"group": "good_server", "config_schema_version": "1", "variables": {}},
+                "bad": {"group": "bad_server", "config_schema_version": "1", "variables": {}},
+            },
+            "digest",
+        )
+
+    monkeypatch.setattr(executor_module, "load_deployment_profiles", fake_load_profiles)
+
+    from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
+
+    monkeypatch.setattr(
+        executor_module,
+        "load_profile_reconciliation",
+        lambda playbook_dir, names: {
+            "good": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/good.yml")),
+            "bad": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="playbooks/bad.yml")),
+        },
+    )
+    monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
+    _stub_dashboard(monkeypatch)
+
+    node = _node()
+    good_service = _service_and_placement("good-svc", "good", node)
+    bad_service = _service_and_placement("bad-svc", "bad", node)
+    good_diff = DiffRecord(
+        target=Target(kind="service", slug="good-svc", name="good-svc", id="s-good"),
+        code="service_not_running", severity=Severity.ERROR, message="x",
+    )
+    bad_diff = DiffRecord(
+        target=Target(kind="service", slug="bad-svc", name="bad-svc", id="s-bad"),
+        code="service_not_running", severity=Severity.ERROR, message="x",
+    )
+
+    def make_snapshot():
+        snapshot = _snapshot(nodes=[node])
+        snapshot.desired.services = [good_service[0], bad_service[0]]
+        snapshot.desired.placements = [good_service[1], bad_service[1]]
+        snapshot.desired.operational_overrides = [
+            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
+        ]
+        return snapshot
+
+    _patch_production_render(monkeypatch, make_snapshot)
+    drift = (
+        make_snapshot(),
+        DriftResult(
+            summary={"drifting": 2},
+            targets=[
+                _target_status(good_diff.target, Status.DRIFTING, [good_diff]),
+                _target_status(bad_diff.target, Status.DRIFTING, [bad_diff]),
+            ],
+        ),
+        "2026-07-17T00:00:00+00:00",
+    )
+    # One extra fetch for the post-interruption final-drift refresh (item 7):
+    # the first service action below succeeds, so the round had a side effect.
+    _sequence(monkeypatch, [drift, drift])
+
+    class ToggleInterrupt:
+        def __init__(self):
+            self.triggered = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def is_set(self):
+            return self.triggered
+
+    flag = ToggleInterrupt()
+    monkeypatch.setattr(executor_module, "_InterruptFlag", lambda: flag)
+
+    def fake_runner_run(self, args, *, mode, artifact_stem=None):
+        from nctl_core.ansible import AnsibleRunResult
+
+        flag.triggered = True  # interrupt is discovered only after this action's playbook ran
+        return AnsibleRunResult(mode=mode, command=args, exit_code=0)
+
+    monkeypatch.setattr(executor_module.AnsibleRunner, "run", fake_runner_run)
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert not envelope.ok
+    assert any(e.code == "interrupted" for e in envelope.errors)
+    assert len(envelope.data.rounds) == 1
+    round0_actions = envelope.data.rounds[0].actions
+    assert any(a.reconciler_id == "production_inventory" and a.success for a in round0_actions)
+    service_actions = [a for a in round0_actions if a.reconciler_id == "service_profile"]
+    assert len(service_actions) == 1
+    assert service_actions[0].success is True
 
 
 def _service_and_placement(slug, profile, node):

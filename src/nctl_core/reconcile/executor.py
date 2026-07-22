@@ -60,15 +60,15 @@ from .ssh_preflight import (
     STATUS_READY,
     STATUS_UNENROLLED,
     STATUS_UNREACHABLE,
-    RouteOverrides,
     SshPreflightEntry,
+    action_host_slugs,
     check_ssh_enrollment,
-    resolve_production_routes,
     ssh_required_host_slugs,
     verify_offered_keys,
+    verify_resolved_ssh_targets,
 )
 
-RECONCILE_SCHEMA = "nctl.reconcile.v1"
+RECONCILE_SCHEMA = "nctl.reconcile.v2"
 
 _BOOTSTRAP_LEDGER_RECONCILERS = frozenset({"observe_node", "link_actual_node", "reconcile_ipam"})
 
@@ -87,6 +87,12 @@ class RoundSummary(BaseModel):
     round: int
     drift_fingerprint: str
     actions: list[ActionResult] = Field(default_factory=list)
+    # fix_sshkey3 Step 2 (contract item 7): the post-regeneration production
+    # SSH scan's own SshPreflightEntry records (phase/route/port/generation/
+    # fingerprints), captured per round regardless of outcome -- this is the
+    # artifact evidence a live verification proves the exact scan decision
+    # from, not just the flattened enrollment-gate summary on `ReconcileData`.
+    ssh_preflight: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ReconcileData(BaseModel):
@@ -112,16 +118,22 @@ class ReconcileData(BaseModel):
     ssh_preflight: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class _Interrupted(Exception):
-    pass
+class RoundOutcome(BaseModel):
+    """`_execute_round`'s always-returned result (fix_sshkey3 Step 2, contract item 6).
 
+    `terminal_errors` non-empty means the round stops here, but `summary`
+    still holds every `ActionResult` that actually ran before the stop --
+    the caller always appends it to `data.rounds`, so a successful
+    IPAM/bootstrap mutation is never silently dropped just because a later
+    step in the same round (production regeneration, the post-regen SSH
+    scan, a store read) failed. `had_side_effects` is true iff at least one
+    appended action succeeded, and tells the caller whether a final
+    read-only drift refresh is warranted before reporting `final_drift`.
+    """
 
-class _SshPostRegenScanFailed(Exception):
-    """A post-production-regeneration offered-key scan found a mismatch/unreachable host."""
-
-    def __init__(self, errors: list[EnvelopeError]) -> None:
-        super().__init__("ssh post-regeneration scan failed")
-        self.errors = errors
+    summary: RoundSummary
+    terminal_errors: list[EnvelopeError] = Field(default_factory=list)
+    had_side_effects: bool = False
 
 
 def _ssh_scan_errors(entries: list["SshPreflightEntry"]) -> list[EnvelopeError]:
@@ -250,6 +262,7 @@ def _run_apply(
     final_drift_result: DriftResult | None = None
     final_generated_at = ""
     final_snapshot: SourceSnapshot | None = None
+    final_state_unknown = False
     plan: ReconcilePlan | None = None
     state = "failed"
     errors: list[EnvelopeError] = []
@@ -356,25 +369,38 @@ def _run_apply(
 
         op.emit("round_started", f"reconcile round {round_index} started", round=round_index)
         try:
-            round_summary = _execute_round(
+            outcome = _execute_round(
                 cfg, op, artifacts, round_index, plan, snapshot, now, command_runner, interrupted, ssh_probe
             )
-        except _Interrupted:
-            state = "failed"
-            errors = [EnvelopeError(code="interrupted", message="reconcile was interrupted during action execution")]
-            break
-        except _SshPostRegenScanFailed as exc:
-            state, errors = "failed", exc.errors
-            break
-        except SshStoreReadError as exc:
-            state = "failed"
-            errors = [EnvelopeError(code="ssh_store_read_failed", message=str(exc))]
-            break
         except (ConfigError, NautobotError) as exc:
+            # Truly unexpected failures _execute_round itself cannot classify
+            # (e.g. the bootstrap NautobotClient construction above its own
+            # try/finally). No action ran yet in that case, so there is
+            # nothing to append to data.rounds.
             state = "failed"
             errors = [EnvelopeError(code="reconcile_round_failed", message=str(exc))]
             break
-        data.rounds.append(round_summary)
+        # fix_sshkey3 Step 2 (contract item 6): `outcome.summary` is appended
+        # unconditionally -- interruption, an unavailable production
+        # regeneration, a post-regen SSH scan failure, or a store-read
+        # failure all still ran zero or more actions successfully first, and
+        # that evidence must survive into `data.rounds` rather than being
+        # discarded.
+        data.rounds.append(outcome.summary)
+        if outcome.terminal_errors:
+            state = "failed"
+            errors = outcome.terminal_errors
+            if outcome.had_side_effects:
+                # Item 7: a pre-mutation drift snapshot (fetched at the top
+                # of this same round, before any action ran) must never be
+                # mislabeled as final once a mutation actually happened.
+                refreshed = fetch_and_compute_drift(cfg)
+                if isinstance(refreshed, EnvelopeError):
+                    final_drift_result = None
+                    final_state_unknown = True
+                else:
+                    final_snapshot, final_drift_result, final_generated_at = refreshed
+            break
     else:
         if plan is not None and plan.has_local_blocking_findings() and not plan.has_global_blocking_findings():
             # The round limit landed exactly when a known local blocker was
@@ -386,7 +412,18 @@ def _run_apply(
             state = "non_converged"
             errors = [EnvelopeError(code="max_rounds_reached", message=f"stopped after {rounds_limit} round(s)")]
 
-    if final_drift_result is not None:
+    if final_state_unknown:
+        # Item 7: the refresh attempted after a failure-with-side-effects
+        # itself failed -- report that final state is unknown instead of
+        # silently keeping the stale pre-mutation drift fetched at the start
+        # of the failed round.
+        errors = errors + [
+            EnvelopeError(
+                code="final_drift_unknown",
+                message="a mutation succeeded before this round failed, and the final drift refresh also failed",
+            )
+        ]
+    elif final_drift_result is not None:
         final_data = render_drift_data(final_drift_result, final_generated_at, final_snapshot)
         data.final_drift_path = str(
             artifacts.write_json(
@@ -395,8 +432,13 @@ def _run_apply(
         )
         data.summary = final_data.summary
         data.scope_summary = _scope_summary(final_drift_result.targets, scope, final_snapshot)
-        data.progress_made = bool(data.rounds)
         _write_dashboard(cfg, op, data, final_data)
+
+    # Item 7: progress is whether any action in any round actually
+    # succeeded, not merely whether a round's summary was appended (an
+    # unenrolled/store-read failure before any action ran also appends a
+    # summary with zero actions and must not count as progress).
+    data.progress_made = any(action.success for round_summary in data.rounds for action in round_summary.actions)
 
     return _finish(op, data, state, errors)
 
@@ -412,43 +454,63 @@ def _execute_round(
     command_runner: CommandRunner | None,
     interrupted: "_InterruptFlag",
     ssh_probe: SshProbeRunner,
-) -> RoundSummary:
+) -> RoundOutcome:
+    """Execute one round's actions and always return a `RoundOutcome`.
+
+    fix_sshkey3 Step 2 (contract item 6): never raises for an expected
+    terminal condition (interruption, unavailable production regeneration,
+    a post-regeneration SSH scan failure, a managed-store read failure) --
+    every one of those returns `summary` with whatever actions actually ran
+    before the failure, so the caller can append it to `data.rounds` instead
+    of discarding already-succeeded evidence. `had_side_effects` tells the
+    caller whether a final read-only drift refresh is warranted.
+    """
     summary = RoundSummary(round=round_index, drift_fingerprint=plan.drift_fingerprint)
     operation_generated_at = plan.drift_generated_at or snapshot.fetched_at.isoformat()
     bootstrap_actions = [a for a in plan.actions if a.reconciler_id in _BOOTSTRAP_LEDGER_RECONCILERS]
     service_actions = [a for a in plan.actions if a.reconciler_id not in _BOOTSTRAP_LEDGER_RECONCILERS]
+    had_side_effects = False
+
+    def _interrupted_outcome() -> RoundOutcome:
+        return RoundOutcome(
+            summary=summary,
+            terminal_errors=[EnvelopeError(code="interrupted", message="reconcile was interrupted during action execution")],
+            had_side_effects=had_side_effects,
+        )
 
     client = NautobotClient(cfg.nautobot.url, cfg.nautobot.resolve_token())
     try:
         for action in bootstrap_actions:
             if interrupted.is_set():
-                raise _Interrupted()
-            summary.actions.append(
-                _execute_action(
-                    cfg, op, artifacts, round_index, action, snapshot, client, now, command_runner, ssh_probe,
-                    generated_at=operation_generated_at,
-                )
+                return _interrupted_outcome()
+            result = _execute_action(
+                cfg, op, artifacts, round_index, action, snapshot, client, now, command_runner, ssh_probe,
+                generated_at=operation_generated_at,
             )
+            summary.actions.append(result)
+            had_side_effects = had_side_effects or result.success
     finally:
         client.close()
 
     regen_result, render_context = _regenerate_production_inventory(cfg)
     summary.actions.append(regen_result)
+    had_side_effects = had_side_effects or regen_result.success
 
-    # fix_sshkey Step 5 (Design Decision 5) / fix_sshkey2 Step 3: a route
+    # fix_sshkey Step 5 (Design Decision 5) / fix_sshkey3 Step 2: a route
     # created only by an IPAM action just above may not have been testable
-    # until now. Re-verify the production-resolved route for every
-    # service-phase SSH target before the first production playbook runs --
-    # presence in the trust store proved nothing about which key the *newly
-    # selected* route actually offers. The route is resolved from
-    # `render_context.source_snapshot`/`generated_at` -- the exact snapshot
-    # this round's regeneration just composed from, never the round-start
-    # `snapshot` above, which an IPAM/observation update earlier in this same
-    # round can have already made stale.
+    # until now. Re-verify every service-phase SSH target against
+    # `render_context.ssh_targets` -- the `ResolvedSshTarget` map this exact
+    # regeneration just composed -- before the first production playbook
+    # runs; presence in the trust store proved nothing about which key the
+    # *newly selected* route actually offers, and the target map (never the
+    # round-start `snapshot` above, which an IPAM/observation update earlier
+    # in this same round can have already made stale) is the one source of
+    # truth for route/port/generation.
     if render_context is None:
         if service_actions:
-            raise _SshPostRegenScanFailed(
-                [
+            return RoundOutcome(
+                summary=summary,
+                terminal_errors=[
                     EnvelopeError(
                         code="production_regeneration_unavailable",
                         message=(
@@ -457,62 +519,68 @@ def _execute_round(
                             "no service action will run"
                         ),
                     )
-                ]
+                ],
+                had_side_effects=had_side_effects,
             )
     else:
         service_scan_targets = ssh_required_host_slugs(
             plan, reconciler_ids=frozenset({"service_profile", "dnsmasq_config"})
         )
         if service_scan_targets:
-            routes = resolve_production_routes(
-                render_context.source_snapshot, service_scan_targets, render_context.generated_at
-            )
-            verified = verify_offered_keys(
-                cfg, service_scan_targets, snapshot.desired, ssh_probe, route_overrides=RouteOverrides(routes)
-            )
+            try:
+                verified = verify_resolved_ssh_targets(
+                    cfg, service_scan_targets, render_context.ssh_targets, ssh_probe, round_index=round_index
+                )
+            except SshStoreReadError as exc:
+                return RoundOutcome(
+                    summary=summary,
+                    terminal_errors=[EnvelopeError(code="ssh_store_read_failed", message=str(exc))],
+                    had_side_effects=had_side_effects,
+                )
+            summary.ssh_preflight = [entry.model_dump() for entry in verified]
             scan_errors = _ssh_scan_errors(verified)
             if scan_errors:
-                raise _SshPostRegenScanFailed(scan_errors)
+                return RoundOutcome(summary=summary, terminal_errors=scan_errors, had_side_effects=had_side_effects)
 
         for action in service_actions:
             if interrupted.is_set():
-                raise _Interrupted()
-            summary.actions.append(
-                _execute_action(
-                    cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner, ssh_probe,
-                    generated_at=operation_generated_at,
-                )
+                return _interrupted_outcome()
+            result = _execute_action(
+                cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner, ssh_probe,
+                generated_at=operation_generated_at,
             )
+            summary.actions.append(result)
+            had_side_effects = had_side_effects or result.success
 
     observe_targets = sorted(
         {
-            target.slug
+            slug
             for action in plan.actions
             if action.requires_observation and action.reconciler_id != "observe_node"
-            for target in action.targets
-            if target.slug
+            for slug in action_host_slugs(action)
         }
     )
     if observe_targets:
-        summary.actions.append(
-            _run_observation_action(
-                cfg, op, artifacts, observe_targets, snapshot, now, command_runner, action_id="post_actuation_observation"
-            )
+        result = _run_observation_action(
+            cfg, op, artifacts, observe_targets, snapshot, now, command_runner, action_id="post_actuation_observation"
         )
+        summary.actions.append(result)
+        had_side_effects = had_side_effects or result.success
 
-    return summary
+    return RoundOutcome(summary=summary, terminal_errors=[], had_side_effects=had_side_effects)
 
 
 def _regenerate_production_inventory(cfg: Config) -> tuple[ActionResult, ProductionRenderContext | None]:
     """Regenerate the production inventory and return its render context alongside the action result.
 
-    fix_sshkey2 Step 3: the context is `None` whenever there is nothing a
-    caller could safely resolve a same-generation route from -- a
-    deployment-profiles load failure, no profiles configured at all, or a
-    failed render/atomic-install. Only a `None`-free `ActionResult(success=True)`
-    context may be handed to `resolve_production_routes` for post-regeneration
-    scanning; every other outcome must stop before any service action runs
-    (this function's caller enforces that).
+    fix_sshkey3 Step 2 (previously fix_sshkey2 Step 3): the context is
+    `None` whenever there is nothing a caller could safely resolve a
+    same-generation `ResolvedSshTarget` from -- a deployment-profiles load
+    failure, no profiles configured at all, or a failed render/atomic-
+    install. Only a `None`-free context's `ssh_targets` map may be handed to
+    `verify_resolved_ssh_targets` for post-regeneration scanning; every
+    other outcome must stop before any service action runs (this function's
+    caller enforces that).
     """
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     try:

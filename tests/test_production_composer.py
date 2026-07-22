@@ -170,6 +170,50 @@ def placement_effects(composition: ProductionComposition, slug):
     return node_record(composition, slug)["actual"]["production"]["placement_effects"]
 
 
+def test_ssh_targets_populated_for_every_included_node():
+    # fix_sshkey3 Step 2: ResolvedSshTarget is built from this exact
+    # composition run's own route/port/identity, one per node actually
+    # included in ssh_hosts.
+    from nctl_core.ssh_trust import derive_host_key_alias
+
+    node = linux_node("agweb")
+    composition = compose([node])
+
+    assert set(composition.ssh_targets) == {"agweb"}
+    target = composition.ssh_targets["agweb"]
+    assert target.slug == "agweb"
+    assert target.desired_node_id == node.id
+    assert target.alias == derive_host_key_alias(node.id)
+    assert target.route  # resolved via the same pipeline resolve_effective_route uses
+    assert target.generation_id == GENERATION_ID
+
+
+def test_ssh_targets_omits_a_node_skipped_by_local_composition_error():
+    # A node with a resolvable-looking source route but skipped from
+    # production composition (here: unresolved connection path, a
+    # NODE_LOCAL_CODES finding) must never get a ResolvedSshTarget -- a
+    # post-regeneration scan must treat it as unreachable, never resolve a
+    # route for it some other way.
+    bad_node = _bad_unresolved_connection_path()
+    good_node = linux_node("agweb")
+    composition = compose([bad_node, good_node])
+
+    assert "agbad" not in composition.inventory["all"]["children"]["ssh_hosts"]["hosts"]
+    assert "agbad" not in composition.ssh_targets
+    assert "agweb" in composition.ssh_targets
+
+
+def test_ssh_targets_empty_when_no_known_hosts_file_supplied():
+    # The drift comparator's internal composition (never rendered to disk)
+    # omits ssh_known_hosts_file entirely; no SSH trust vars means no
+    # targets either, not a best-effort guess.
+    node = linux_node("agweb")
+    composition = compose_production_inventory(
+        [node], PROFILES, generation_id=GENERATION_ID, generated_at=GENERATED_AT, deployment_profile_digest=DIGEST,
+    )
+    assert composition.ssh_targets == {}
+
+
 def not_applied_out_of_scope_entries(composition: ProductionComposition):
     """Every `not_applied`/`node_out_of_scope` placement effect across all nodes --
     the report-3.0 replacement for the old composer-owned `report["drift"]` list,

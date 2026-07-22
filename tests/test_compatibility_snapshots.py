@@ -105,7 +105,7 @@ FROZEN_DATA_FIELDS = {
         HostsIntentRenderData,
         {"schema_version", "summary", "inventory", "hosts", "skipped", "inventory_yaml", "export_json"},
     ),
-    "nctl.reconcile.v1": (
+    "nctl.reconcile.v2": (
         ReconcileData,
         {
             "operation_id",

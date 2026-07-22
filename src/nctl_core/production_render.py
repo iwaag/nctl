@@ -12,7 +12,7 @@ render-time safety check, not a long-running operation.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,7 @@ from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production.adapter import build_production_node_inputs
 from nctl_core.production.composer import (
     ContractError,
+    ResolvedSshTarget,
     compose_production_inventory,
     render_production_inventory_yml,
     render_production_report_json,
@@ -50,20 +51,22 @@ class ProductionRenderData(BaseModel):
 class ProductionRenderContext:
     """Everything a post-regeneration SSH preflight needs from one production render.
 
-    fix_sshkey2 Step 3 (Corrected contract 3): bundling `source_snapshot` and
-    `generated_at` alongside the envelope lets a caller resolve the exact
-    same-generation route (via `reconcile.ssh_preflight.resolve_production_routes`,
-    fed this *same* `source_snapshot`/`generated_at`) instead of an
-    independently re-fetched snapshot that could disagree with what was just
-    rendered. `envelope` is falsy (`envelope.ok is False`) whenever
-    `source_snapshot` was not actually usable for composition -- callers must
-    check that before trusting any route resolved against it.
+    fix_sshkey3 Step 2: `ssh_targets` (the `ResolvedSshTarget` map this exact
+    composition run built) is the one source of truth for a post-regeneration
+    scan's alias/route/port/generation -- `reconcile.ssh_preflight.
+    verify_resolved_ssh_targets` reads only from this map, never from a
+    separately re-resolved snapshot. `envelope` is falsy (`envelope.ok is
+    False`) whenever `source_snapshot` was not actually usable for
+    composition -- `ssh_targets` is then empty and callers must check
+    `envelope.ok` before trusting it. `source_snapshot`/`generated_at` remain
+    for other bootstrap-mode/report callers that still need the raw snapshot.
     """
 
     envelope: Envelope[ProductionRenderData]
     generation_id: str
     generated_at: str
     source_snapshot: SourceSnapshot
+    ssh_targets: dict[str, ResolvedSshTarget] = field(default_factory=dict)
 
 
 def build_production_render_context(cfg: Config, snapshot: SourceSnapshot) -> ProductionRenderContext:
@@ -116,6 +119,7 @@ def build_production_render_context(cfg: Config, snapshot: SourceSnapshot) -> Pr
         generation_id=generation_id,
         generated_at=generated_at,
         source_snapshot=snapshot,
+        ssh_targets=composition.ssh_targets,
     )
 
 

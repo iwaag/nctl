@@ -235,7 +235,7 @@ def test_submit_second_mutating_op_conflicts_with_running_operation_id(tmp_path,
         from nctl_core.reconcile.executor import ReconcileData
 
         data = ReconcileData(operation_id=operation_id, mode="apply", scope=PlanScope(kind="cluster"), event_log_path="")
-        return Envelope.build("nctl.reconcile.v1", data)
+        return Envelope.build("nctl.reconcile.v2", data)
 
     monkeypatch.setattr(runner_module, "run_reconcile", _slow_run_reconcile)
 

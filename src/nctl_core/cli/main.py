@@ -343,7 +343,7 @@ MaxRoundsOption = Annotated[
     Optional[int],
     typer.Option("--max-rounds", min=1, max=10, help="Override [reconcile].max_rounds for this run."),
 ]
-ReconcileJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.reconcile.v1 envelope as JSON.")]
+ReconcileJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.reconcile.v2 envelope as JSON.")]
 
 
 @app.command()
