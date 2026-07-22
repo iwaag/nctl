@@ -497,10 +497,20 @@ lock_path = "~/.local/state/nctl/ssh.lock"                # default
 ```
 
 `known_hosts_file` is a dedicated, nctl-managed known_hosts store keyed by the stable
-`nctl-node-<DesiredNode UUID>` `HostKeyAlias` (see `devdocs/small/fix_sshkey/plan.md`), not a
-credential and not a generated repo artifact: it is never committed, copied into an operation
-artifact, or written to Nautobot/nintent. `[ssh]` is optional; all three keys default as shown when
-the section is absent.
+`nctl-node-<DesiredNode UUID>` `HostKeyAlias` (see `devdocs/small/fix_sshkey/plan.md` and
+`devdocs/small/fix_sshkey2/plan.md`), not a credential and not a generated repo artifact: it is
+never committed, copied into an operation artifact, or written to Nautobot/nintent. `[ssh]` is
+optional; all three keys default as shown when the section is absent. `known_hosts_file`/`lock_path`
+resolve relative to `nctl.toml`'s own directory, not the process working directory, so enrollment,
+inventory rendering, preflight, and `apply dnsmasq` always agree on the same absolute path
+regardless of where a command happens to run from.
+
+The managed store's key is always the bare alias, independent of `ansible_port`: OpenSSH ignores
+the connection port entirely once `HostKeyAlias` is set, so a non-default-port node (e.g.
+`ansible_port = 2222`) is looked up exactly the same way as one on port 22. Only *legacy*
+known_hosts promotion (`nctl ssh enroll --from-known-hosts`, searching your ordinary OpenSSH
+known_hosts files) ever uses a port-qualified `[host]:port` name, and only for that search -- never
+for the managed store itself.
 
 ### Lifecycle
 
@@ -562,9 +572,22 @@ host variables (`nctl_ssh_host_key_alias`, `ansible_ssh_common_args` with
 `StrictHostKeyChecking=yes`), so a direct `ansible`/`ansible-playbook` invocation against either one
 fails closed exactly like `nctl` does, just with OpenSSH's generic `Host key verification failed`
 instead of a structured nctl error code. A hand-written or otherwise-sourced inventory that lacks
-these variables is outside the supported operational path: `nctl apply dnsmasq --inventory PATH`
-explicitly rejects one (`dnsmasq_inventory_untrusted_host`) rather than silently falling back to
-endpoint-keyed verification, and nothing else in nctl accepts an arbitrary inventory at all.
+these variables is outside the supported operational path: `nctl apply dnsmasq` rejects one
+(`dnsmasq_inventory_untrusted_host`) rather than silently falling back to endpoint-keyed
+verification -- for the normally configured inventory exactly as much as an explicit `--inventory`
+override, and in dry-run exactly as much as `--yes` (fix_sshkey2 Step 4; before that fix, only
+`--inventory` was checked, and only for alias/node-ID presence). Passing the variable check is not
+enough on its own either: `apply dnsmasq` also re-scans the route resolved from the inventory's own
+host vars and requires the currently offered key to match a managed entry before Ansible starts,
+failing closed with `ssh_host_key_unenrolled`/`ssh_host_key_mismatch`/`ssh_host_key_unreachable` as
+appropriate. Nothing else in nctl accepts an arbitrary inventory at all.
+
+`nctl reconcile --yes` applies the equivalent binding to its own production-regeneration step: the
+post-regeneration SSH scan always resolves its route from the exact `SourceSnapshot` and generation
+that was just composed and written, never a snapshot fetched earlier in the same round, and a
+production route that cannot be resolved for a target fails closed
+(`no_resolvable_production_route`) rather than falling back to mDNS -- mDNS selection is reserved
+for the bootstrap phase, which is the only phase guaranteed to still use it.
 
 ## Conventions
 
