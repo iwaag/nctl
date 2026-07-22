@@ -18,19 +18,26 @@ unchanged (Parity Gate B in `p2/report4.md`).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel
 
 from nctl_core.config import Config, ConfigError
-from nctl_core.dnsmasq import dnsmasq_export_payload, export_dnsmasq_records, render_dnsmasq_records_conf
+from nctl_core.dnsmasq import (
+    DnsmasqExport,
+    dnsmasq_content_sha256,
+    dnsmasq_export_payload,
+    export_dnsmasq_records,
+    render_dnsmasq_records_conf,
+)
 from nctl_core.dnsmasq_query import dnsmasq_inputs_from_snapshot
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
-from nctl_core.sources.snapshot import build_source_snapshot
+from nctl_core.sources.snapshot import SourceSnapshot, build_source_snapshot
 
-RENDER_DNSMASQ_SCHEMA = "nctl.render.dnsmasq.v1"
+RENDER_DNSMASQ_SCHEMA = "nctl.render.dnsmasq.v2"
 
 
 class DnsmasqRenderData(BaseModel):
@@ -41,6 +48,34 @@ class DnsmasqRenderData(BaseModel):
     dhcp_ranges: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     conf: str = ""
+    content_sha256: str = ""
+
+
+@dataclass(frozen=True)
+class DnsmasqRenderResult:
+    """The pure, I/O-free result of rendering one `SourceSnapshot` to dnsmasq bytes.
+
+    fix_sshkey3 Step 3: the single implementation `build_dnsmasq_render`
+    (CLI/apply) and, from Step 5 on, drift computation both call -- so "what
+    would `nctl render dnsmasq` produce right now" can never independently
+    drift between the two call sites.
+    """
+
+    export: DnsmasqExport
+    conf: str
+    content_sha256: str
+
+
+def compute_dnsmasq_render(snapshot: SourceSnapshot) -> DnsmasqRenderResult:
+    fetch = dnsmasq_inputs_from_snapshot(snapshot)
+    export = export_dnsmasq_records(
+        fetch.endpoints,
+        ip_ranges=fetch.ip_ranges,
+        endpoint_evaluations=fetch.endpoint_evaluations,
+        node_evaluations=fetch.node_evaluations,
+    )
+    conf = render_dnsmasq_records_conf(export)
+    return DnsmasqRenderResult(export=export, conf=conf, content_sha256=dnsmasq_content_sha256(conf))
 
 
 def build_dnsmasq_render(cfg: Config, operation_id: str | None = None) -> Envelope[DnsmasqRenderData]:
@@ -58,15 +93,9 @@ def build_dnsmasq_render(cfg: Config, operation_id: str | None = None) -> Envelo
         return _failed(EnvelopeError(code="nautobot_fetch_failed", message=str(exc)))
     finally:
         client.close()
-    fetch = dnsmasq_inputs_from_snapshot(snapshot)
 
-    export = export_dnsmasq_records(
-        fetch.endpoints,
-        ip_ranges=fetch.ip_ranges,
-        endpoint_evaluations=fetch.endpoint_evaluations,
-        node_evaluations=fetch.node_evaluations,
-    )
-    payload = dnsmasq_export_payload(export, generated_at=generated_at, operation_id=operation_id)
+    rendered = compute_dnsmasq_render(snapshot)
+    payload = dnsmasq_export_payload(rendered.export, generated_at=generated_at, operation_id=operation_id)
     data = DnsmasqRenderData(
         schema_version=payload["schema_version"],
         summary=payload["summary"],
@@ -74,7 +103,8 @@ def build_dnsmasq_render(cfg: Config, operation_id: str | None = None) -> Envelo
         dhcp_reservations=payload["dhcp_reservations"],
         dhcp_ranges=payload["dhcp_ranges"],
         skipped=payload["skipped"],
-        conf=render_dnsmasq_records_conf(export, generated_at=generated_at, operation_id=operation_id),
+        conf=rendered.conf,
+        content_sha256=rendered.content_sha256,
     )
     return Envelope.build(RENDER_DNSMASQ_SCHEMA, data, [])
 

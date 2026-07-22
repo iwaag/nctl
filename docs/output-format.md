@@ -61,7 +61,7 @@ See [`status.py`](../src/nctl_core/status.py) `StatusData` for the authoritative
 still yields real `dumps`/`submodules` data, with `ok: false` and a `nautobot_unreachable` entry
 in `errors`.
 
-## `nctl.apply.dnsmasq.v1`
+## `nctl.apply.dnsmasq.v2`
 
 The apply envelope cross-references `data.operation_id`, `data.event_log_path`, and the staged
 `data.artifact_path`. It also records the resolved inventory, selected target hosts, render

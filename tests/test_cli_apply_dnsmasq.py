@@ -19,7 +19,7 @@ def _envelope(ok=True):
         target_hosts=["agdnsmasq"],
     )
     errors = [] if ok else [EnvelopeError(code="ansible_dry_run_failed", message="boom")]
-    return Envelope.build("nctl.apply.dnsmasq.v1", data, errors)
+    return Envelope.build("nctl.apply.dnsmasq.v2", data, errors)
 
 
 def test_apply_dnsmasq_defaults_to_dry_run(monkeypatch):
@@ -53,7 +53,7 @@ def test_apply_dnsmasq_json_is_one_envelope(monkeypatch):
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["schema"] == "nctl.apply.dnsmasq.v1"
+    assert payload["schema"] == "nctl.apply.dnsmasq.v2"
     assert payload["data"]["operation_id"] == "01JTESTULID000000000000000"
 
 

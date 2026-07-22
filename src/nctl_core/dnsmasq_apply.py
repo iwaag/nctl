@@ -30,7 +30,7 @@ from nctl_core.reconcile.ssh_preflight import (
 )
 from nctl_core.ssh_enroll import SshProbeRunner, SshStoreReadError, default_ssh_probe_runner
 
-APPLY_DNSMASQ_SCHEMA = "nctl.apply.dnsmasq.v1"
+APPLY_DNSMASQ_SCHEMA = "nctl.apply.dnsmasq.v2"
 SETUP_PLAYBOOK = Path("playbooks/bootstrap/setup_dnsmasq.yml")
 DEPLOY_PLAYBOOK = Path("playbooks/dnsmasq/deploy_dnsmasq_records.yml")
 TARGET_GROUP = "dnsmasq_server"
@@ -45,6 +45,7 @@ class DnsmasqApplyData(BaseModel):
     target_group: str = TARGET_GROUP
     target_hosts: list[str] = Field(default_factory=list)
     render_summary: dict[str, Any] = Field(default_factory=dict)
+    content_sha256: str = ""
     ssh_preflight: list[dict[str, Any]] = Field(default_factory=list)
     setup: AnsibleRunResult | None = None
     ansible: AnsibleRunResult | None = None
@@ -106,7 +107,11 @@ def build_dnsmasq_apply(
 
     data.artifact_path = str(artifact_path)
     data.render_summary = render.data.summary
-    op.emit("rendered", "dnsmasq configuration rendered", artifact_path=str(artifact_path))
+    data.content_sha256 = render.data.content_sha256
+    op.emit(
+        "rendered", "dnsmasq configuration rendered",
+        artifact_path=str(artifact_path), content_sha256=render.data.content_sha256,
+    )
 
     resolved_inventory = (
         inventory.expanduser().resolve()

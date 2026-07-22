@@ -53,11 +53,11 @@ at its current field set and may only gain fields:
 | `nctl.status.v1` | `StatusData` (`nctl_core.status`) |
 | `nctl.drift.v1` | `DriftData` (`nctl_core.drift_render`) |
 | `nctl.dashboard.v1` | `DashboardData` (`nctl_core.dashboard_render`) |
-| `nctl.apply.dnsmasq.v1` | `DnsmasqApplyData` (`nctl_core.dnsmasq_apply`) |
-| `nctl.render.dnsmasq.v1` | `DnsmasqRenderData` (`nctl_core.dnsmasq_render`) |
+| `nctl.apply.dnsmasq.v2` | `DnsmasqApplyData` (`nctl_core.dnsmasq_apply`) |
+| `nctl.render.dnsmasq.v2` | `DnsmasqRenderData` (`nctl_core.dnsmasq_render`) |
 | `nctl.render.production.v1` | `ProductionRenderData` (`nctl_core.production_render`) |
 | `nctl.render.hosts_intent.v1` | `HostsIntentRenderData` (`nctl_core.hosts_intent_render`) |
-| `nctl.reconcile.v1` | `ReconcileData` (`nctl_core.reconcile.executor`) |
+| `nctl.reconcile.v2` | `ReconcileData` (`nctl_core.reconcile.executor`) |
 | `nctl.ops.list.v1` | `OpsListData` (`nctl_core.ops_render`) |
 | `nctl.ops.show.v1` | `OpsShowData` (`nctl_core.ops_render`) |
 | `nctl.serve.v1` | `ServeData` (`nctl_core.serve.runtime`) |

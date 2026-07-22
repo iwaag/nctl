@@ -79,7 +79,7 @@ FROZEN_DATA_FIELDS = {
         DashboardData,
         {"html_path", "drift_json_path", "generated_at", "summary", "severity_summary", "status_push", "dashboard_url"},
     ),
-    "nctl.apply.dnsmasq.v1": (
+    "nctl.apply.dnsmasq.v2": (
         DnsmasqApplyData,
         {
             "operation_id",
@@ -90,12 +90,13 @@ FROZEN_DATA_FIELDS = {
             "target_group",
             "target_hosts",
             "render_summary",
+            "content_sha256",
             "ansible",
         },
     ),
-    "nctl.render.dnsmasq.v1": (
+    "nctl.render.dnsmasq.v2": (
         DnsmasqRenderData,
-        {"schema_version", "summary", "dns_records", "dhcp_reservations", "dhcp_ranges", "skipped", "conf"},
+        {"schema_version", "summary", "dns_records", "dhcp_reservations", "dhcp_ranges", "skipped", "conf", "content_sha256"},
     ),
     "nctl.render.production.v1": (
         ProductionRenderData,

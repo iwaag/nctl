@@ -201,7 +201,7 @@ drift/event artifacts only when it stops short of `converged`.
   log are writable and refuses to proceed if they aren't (`artifact_write_failed`) — a mutating run
   never proceeds without a place to record what it did.
 
-The `nctl.reconcile.v1` envelope's `data` carries `operation_id`, `mode`, `scope`, terminal `state`
+The `nctl.reconcile.v2` envelope's `data` carries `operation_id`, `mode`, `scope`, terminal `state`
 (`planned | already_converged | converged | manual_intervention_required | non_converged | failed`),
 `event_log_path`, `artifact_dir`, `plan_path`, initial/final drift paths, per-round action results
 (`rounds`), `manual_review`/`unsupported` records (target + diff code + evidence), scope/global

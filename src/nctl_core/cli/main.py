@@ -155,7 +155,7 @@ OutOption = Annotated[
     Optional[Path],
     typer.Option("--out", help="Write the conf to this path instead of stdout (prints a summary instead)."),
 ]
-RenderJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.render.dnsmasq.v1 envelope as JSON.")]
+RenderJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.render.dnsmasq.v2 envelope as JSON.")]
 
 
 @render_app.command("dnsmasq")
@@ -303,7 +303,7 @@ def ops_show(
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
-ApplyJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.apply.dnsmasq.v1 envelope as JSON.")]
+ApplyJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.apply.dnsmasq.v2 envelope as JSON.")]
 YesOption = Annotated[bool, typer.Option("--yes", help="Apply changes instead of running the default check+diff dry-run.")]
 ApplyInventoryOption = Annotated[
     Optional[Path],
