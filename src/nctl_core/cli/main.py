@@ -51,6 +51,7 @@ from nctl_core.production_render import (
     write_production_artifacts,
 )
 from nctl_core.reconcile.executor import render_reconcile_text, run_reconcile
+from nctl_core.session import build_session_new, render_session_new_text
 from nctl_core.status import build_status, render_status_text
 from nctl_core.serve.runtime import build_serve_startup, render_serve_text, run_server
 from nctl_core.ssh_enroll import build_ssh_enroll, render_ssh_enroll_text
@@ -61,11 +62,13 @@ apply_app = typer.Typer(help="Apply rendered desired state through deployment au
 ops_app = typer.Typer(help="Inspect past and running operations from the event-log directory.")
 braindump_app = typer.Typer(help="Read and update the Braindump/Alignment Review exchange diary.")
 ssh_app = typer.Typer(help="Manage the local, alias-keyed SSH trust store nctl uses for actuation.")
+session_app = typer.Typer(help="Create isolated agent-workspace session folders under .local/workspace/.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
 app.add_typer(ops_app, name="ops")
 app.add_typer(braindump_app, name="braindump")
 app.add_typer(ssh_app, name="ssh")
+app.add_typer(session_app, name="session")
 
 
 @app.callback()
@@ -671,6 +674,38 @@ def ssh_enroll(
     )
     emit(envelope, json_output, render_ssh_enroll_text)
     if any(error.code in SSH_ENROLL_USAGE_CODES for error in envelope.errors):
+        raise typer.Exit(EXIT_USAGE)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+SessionTaskNameArgument = Annotated[
+    str, typer.Argument(help="Task name (matches an agentdocs/<task_name>/ manual), e.g. 'brainforge'.")
+]
+SessionTopicOption = Annotated[
+    Optional[str], typer.Option("--topic", help="One-word-ish topic to fold into the slug for readability.")
+]
+SessionJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.session.new.v1 envelope as JSON.")]
+
+SESSION_USAGE_CODES = ("invalid_task_name",)
+
+
+@session_app.command("new")
+def session_new(
+    task_name: SessionTaskNameArgument,
+    config: ConfigOption = None,
+    topic: SessionTopicOption = None,
+    json_output: SessionJsonOption = False,
+) -> None:
+    """Create a fresh, collision-free session folder under .local/workspace/<task_name>/.
+
+    Prints the created directory's absolute path (or the full envelope with --json). Only the
+    session directory itself is created -- subfolders like sources/reviews/evidence stay the
+    caller's responsibility to create lazily.
+    """
+    cfg = _load_config(config)
+    envelope = build_session_new(cfg, task_name, topic=topic)
+    emit(envelope, json_output, render_session_new_text)
+    if any(error.code in SESSION_USAGE_CODES for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
