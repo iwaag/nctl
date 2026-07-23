@@ -265,6 +265,16 @@ under its stable alias in `[ssh].known_hosts_file`. A missing entry fails the wh
 this is what prevented the original incident (`agdnsmasq`'s observation/IPAM succeeding, then
 failing on the production dnsmasq SSH connection). Ledger-only actions (`link_actual_node`,
 `reconcile_ipam`) never require enrollment, so an unrelated unenrolled host never blocks them.
+
+**IPAM eligibility is policy-aware, not `ip_policy=dhcp_reserved`-only** (ipam_policy plan): an
+endpoint with a `dhcp_reserved` IP is always automatic (`missing_actual_ip_address`/
+`actual_ip_address_not_linked` -> `reconcile_ipam`), matching prior behavior. A `static`/`external`
+endpoint is automatic only when its linked realized Device's observed `primary_ip_address` matches
+the desired host; otherwise drift reports one of `ipam_reconcile_observation_missing`/`_mismatch`/
+`_ambiguous` as a `manual_review` finding instead of silently repeating the same unresolved action
+every round. IPAM ledger reconciliation only creates/links the Nautobot `IPAddress` object when
+both an explicit desired IP and a matching self-observation already exist; it never actuates the
+host's own IP configuration and never assigns an `IPAddress` to an `Interface`.
 Presence in the trust store is re-verified against what a route currently offers, at two points:
 `observe_node` targets are scanned over mDNS before the bootstrap phase, and `service_profile`/
 `dnsmasq_config` targets are scanned again after production inventory regeneration, this time over
