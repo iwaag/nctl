@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 # a v1 report (from an un-upgraded collector) is rejected with a structured
 # DumpError, not silently accepted.
 EXPECTED_SCHEMA_VERSION = "nodeutils.inventory.v2"
+_NON_DUMP_FILENAMES = frozenset({"nctl-probe-config.yaml"})
 
 
 class DumpError(Exception):
@@ -74,7 +75,7 @@ def parse_dump_text(text: str, *, source: str = "report", suffix: str = ".json")
 
 
 def scan_dumps(dumps_dir: Path) -> DumpScanResult:
-    """Discover *.json/*.yaml/*.yml reports; one bad file doesn't stop the scan."""
+    """Discover report files while excluding nctl-owned collector configuration."""
     if not dumps_dir.is_dir():
         return DumpScanResult(dumps=[], errors=[f"dumps dir not found: {dumps_dir}"])
 
@@ -82,6 +83,7 @@ def scan_dumps(dumps_dir: Path) -> DumpScanResult:
         p
         for pattern in ("*.json", "*.yaml", "*.yml")
         for p in dumps_dir.glob(pattern)
+        if p.name not in _NON_DUMP_FILENAMES
     )
 
     dumps: list[NodeDump] = []

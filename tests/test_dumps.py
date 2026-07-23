@@ -77,3 +77,13 @@ def test_scan_dumps_mixed_valid_and_invalid(tmp_path):
     assert hostnames == ["agpc", "agstudio"]
     assert len(result.errors) == 1
     assert "broken.json" in result.errors[0]
+
+
+def test_scan_dumps_ignores_nctl_probe_config(tmp_path):
+    write_json(tmp_path / "agstudio.json", {**VALID, "identity": {"hostname": "agstudio"}})
+    (tmp_path / "nctl-probe-config.yaml").write_text("service_probe_hints: {}\n")
+
+    result = scan_dumps(tmp_path)
+
+    assert [dump.identity.hostname for dump in result.dumps] == ["agstudio"]
+    assert result.errors == []
