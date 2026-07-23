@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Union
 
 from nctl_core.drift.evaluation_snapshot import evaluate_all_nodes
-from nctl_core.drift.model import Target
+from nctl_core.drift.model import DiffRecord, Target
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .model import Classification, ReconcileAction
@@ -108,17 +108,51 @@ def plan_link_actual_node(target: Target, snapshot: SourceSnapshot) -> Union[Rec
     )
 
 
-def plan_reconcile_ipam(target: Target, claimed_codes: list[str]) -> ReconcileAction:
+def plan_reconcile_ipam(target: Target, diffs: list[DiffRecord]) -> ReconcileAction:
+    """Pin the exact eligible endpoint ids this action claims to close (ipam_policy p6 Step 4).
+
+    Only an eligible create/link gap ever reaches this reconciler group
+    (`classify.py` routes an unsatisfied-observation gap to `manual_review`
+    instead), so every diff here already carries endpoint identity/eligibility
+    evidence in `diff.desired["expected"]` (Step 3). Pinning it here -- not
+    just trusting the Job to rediscover the same set later -- lets
+    `ledger.py`'s artifact verification (Step 4) catch a mismatch between what
+    was planned and what the Job actually processed.
+    """
+
+    codes = sorted({diff.code for diff in diffs})
+    eligible_endpoints = []
+    for diff in diffs:
+        expected = (diff.desired or {}).get("expected") or {}
+        endpoint_id = expected.get("endpoint_id")
+        if not endpoint_id:
+            continue
+        eligible_endpoints.append(
+            {
+                "endpoint_id": endpoint_id,
+                "endpoint_name": expected.get("endpoint_name"),
+                "ip_policy": expected.get("ip_policy"),
+                "ip_address": expected.get("ip_address"),
+                "gap_code": diff.code,
+            }
+        )
+    eligible_endpoints.sort(key=lambda entry: entry["endpoint_id"])
+    eligible_endpoint_ids = [entry["endpoint_id"] for entry in eligible_endpoints]
     return ReconcileAction(
         id=f"reconcile_ipam:{target.slug}",
         reconciler_id=RECONCILE_IPAM.id,
         action_kind=RECONCILE_IPAM.action_kind,
         targets=[target],
-        claimed_diff_codes=sorted(set(claimed_codes)),
+        claimed_diff_codes=codes,
         reason="Trigger the retained Reconcile Desired IPAM Intent Job scoped to this node.",
+        evidence={
+            "desired_node_slug": target.slug,
+            "eligible_endpoint_ids": eligible_endpoint_ids,
+            "eligible_endpoints": eligible_endpoints,
+        },
         mutates=RECONCILE_IPAM.mutates,
         requires_observation=RECONCILE_IPAM.requires_observation,
-        parameters={"desired_node_slug": target.slug},
+        parameters={"desired_node_slug": target.slug, "eligible_endpoint_ids": eligible_endpoint_ids},
     )
 
 

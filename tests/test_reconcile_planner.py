@@ -177,6 +177,58 @@ def test_reconcile_ipam_action_depends_on_link_actual_node_for_same_node():
     assert by_reconciler["reconcile_ipam"].dependencies == [by_reconciler["link_actual_node"].id]
 
 
+def _ipam_endpoint_diff(node: DesiredNode, *, endpoint_id: str, code: str, ip_policy: str = "static") -> DiffRecord:
+    return DiffRecord(
+        target=Target(kind="node", slug=node.slug, name=node.name, id=node.id),
+        code=code,
+        severity=Severity.WARNING,
+        message=f"{node.slug}: {code}",
+        desired={
+            "expected": {
+                "endpoint_id": endpoint_id,
+                "endpoint_name": f"endpoint-{endpoint_id}",
+                "ip_policy": ip_policy,
+                "ip_address": "192.0.2.10",
+            }
+        },
+    )
+
+
+def test_reconcile_ipam_action_pins_exact_eligible_endpoint_ids():
+    node = _node("n1", "agweb")
+    snapshot = _snapshot(nodes=[node])
+    diffs = [
+        _ipam_endpoint_diff(node, endpoint_id="e1", code="missing_actual_ip_address"),
+        _ipam_endpoint_diff(node, endpoint_id="e2", code="actual_ip_address_not_linked"),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    [action] = plan.actions
+    assert action.reconciler_id == "reconcile_ipam"
+    assert action.evidence["eligible_endpoint_ids"] == ["e1", "e2"]
+    assert action.parameters["eligible_endpoint_ids"] == ["e1", "e2"]
+    endpoints_by_id = {entry["endpoint_id"]: entry for entry in action.evidence["eligible_endpoints"]}
+    assert endpoints_by_id["e1"]["gap_code"] == "missing_actual_ip_address"
+    assert endpoints_by_id["e2"]["gap_code"] == "actual_ip_address_not_linked"
+
+
+def test_reconcile_ipam_never_pins_a_manual_review_only_endpoint():
+    node = _node("n1", "agweb")
+    snapshot = _snapshot(nodes=[node])
+    diffs = [
+        _ipam_endpoint_diff(node, endpoint_id="e1", code="missing_actual_ip_address"),
+        _ipam_endpoint_diff(node, endpoint_id="e2", code="ipam_reconcile_observation_missing"),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    by_reconciler = {action.reconciler_id: action for action in plan.actions}
+    assert by_reconciler["reconcile_ipam"].evidence["eligible_endpoint_ids"] == ["e1"]
+    assert len(plan.manual_review) == 1
+    assert plan.manual_review[0].code == "ipam_reconcile_observation_missing"
+
+
 def test_link_actual_node_falls_back_to_manual_review_without_a_candidate():
     node = _node("n1", "agweb")
     snapshot = _snapshot(nodes=[node])  # no device candidates at all

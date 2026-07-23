@@ -280,6 +280,105 @@ def test_reconcile_ipam_rejects_out_of_scope_plan_rows(tmp_path):
     assert exc.value.code == "ipam_summary_out_of_scope_rows"
 
 
+@respx.mock
+def test_reconcile_ipam_rejects_missing_pinned_endpoint_id(tmp_path):
+    _mock_job_run(
+        _summary(
+            summary={"endpoints": 1},
+            plans=[
+                {
+                    "action": "noop",
+                    "desired_endpoint": {"id": "other-endpoint", "desired_node_slug": "agweb"},
+                }
+            ],
+        )
+    )
+    action = _ipam_action(evidence={"eligible_endpoint_ids": ["e1"]})
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_reconcile_ipam(_runner(tmp_path), action, artifact_relative_path="jobs/ipam.json")
+    assert exc.value.code == "ipam_summary_coverage_mismatch"
+    assert exc.value.detail["missing_endpoint_ids"] == ["e1"]
+
+
+@respx.mock
+def test_reconcile_ipam_rejects_endpoint_count_mismatch(tmp_path):
+    _mock_job_run(
+        _summary(
+            summary={"endpoints": 2},
+            plans=[{"action": "noop", "desired_endpoint": {"id": "e1", "desired_node_slug": "agweb"}}],
+        )
+    )
+    action = _ipam_action(evidence={"eligible_endpoint_ids": ["e1"]})
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_reconcile_ipam(_runner(tmp_path), action, artifact_relative_path="jobs/ipam.json")
+    assert exc.value.code == "ipam_summary_coverage_mismatch"
+
+
+@respx.mock
+def test_reconcile_ipam_rejects_zero_endpoint_artifact_when_none_pinned(tmp_path):
+    _mock_job_run(_summary(summary={"endpoints": 0}, plans=[]))
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_reconcile_ipam(_runner(tmp_path), _ipam_action(), artifact_relative_path="jobs/ipam.json")
+    assert exc.value.code == "ipam_summary_coverage_mismatch"
+
+
+@respx.mock
+def test_reconcile_ipam_separates_applied_from_unresolved_pinned_endpoints(tmp_path):
+    _mock_job_run(
+        _summary(
+            summary={"endpoints": 2},
+            plans=[
+                {
+                    "action": "create_ip_address_applied",
+                    "desired_endpoint": {"id": "e1", "desired_node_slug": "agweb"},
+                },
+                {
+                    "action": "conflict",
+                    "desired_endpoint": {"id": "e2", "desired_node_slug": "agweb"},
+                    "reasons": ["ip_address_type_conflict"],
+                },
+            ],
+        )
+    )
+    action = _ipam_action(evidence={"eligible_endpoint_ids": ["e1", "e2"]})
+
+    result = execute_reconcile_ipam(_runner(tmp_path), action, artifact_relative_path="jobs/ipam.json")
+
+    assert result.applied_endpoint_ids == ["e1"]
+    assert len(result.unresolved_expected_endpoints) == 1
+    assert result.unresolved_expected_endpoints[0]["desired_endpoint"]["id"] == "e2"
+
+
+@respx.mock
+def test_reconcile_ipam_unpinned_extra_endpoint_skip_does_not_count_as_unresolved(tmp_path):
+    # A node can have other explicit-IP endpoints the planner never pinned
+    # (not yet eligible) -- their skip must not fail an otherwise-successful
+    # pinned endpoint.
+    _mock_job_run(
+        _summary(
+            summary={"endpoints": 2},
+            plans=[
+                {"action": "noop", "desired_endpoint": {"id": "e1", "desired_node_slug": "agweb"}},
+                {
+                    "action": "skip",
+                    "desired_endpoint": {"id": "e2", "desired_node_slug": "agweb"},
+                    "reasons": ["observation_missing"],
+                },
+            ],
+        )
+    )
+    action = _ipam_action(evidence={"eligible_endpoint_ids": ["e1"]})
+
+    result = execute_reconcile_ipam(_runner(tmp_path), action, artifact_relative_path="jobs/ipam.json")
+
+    assert result.applied_endpoint_ids == ["e1"]
+    assert result.unresolved_expected_endpoints == []
+    assert len(result.skipped) == 1  # still surfaced in the full-artifact view
+
+
 def test_reconcile_ipam_rejects_wrong_action(tmp_path):
     action = _ipam_action(reconciler_id="link_actual_node")
     with pytest.raises(LedgerActionError) as exc:

@@ -82,6 +82,12 @@ class ActionResult(BaseModel):
     success: bool
     detail: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    # ipam_policy p6 Step 4: a partial reconcile_ipam Job run (one expected
+    # endpoint applied, another still conflicts) is not `success`, but the
+    # applied mutation still happened and must count toward `progress_made`
+    # rather than being indistinguishable from an action that mutated
+    # nothing at all.
+    mutated: bool = False
 
 
 class RoundSummary(BaseModel):
@@ -494,7 +500,9 @@ def _run_apply(
     # succeeded, not merely whether a round's summary was appended (an
     # unenrolled/store-read failure before any action ran also appends a
     # summary with zero actions and must not count as progress).
-    data.progress_made = any(action.success for round_summary in data.rounds for action in round_summary.actions)
+    data.progress_made = any(
+        action.success or action.mutated for round_summary in data.rounds for action in round_summary.actions
+    )
 
     return _finish(op, data, state, errors)
 
@@ -758,8 +766,37 @@ def _execute_action(
             ipam_result = execute_reconcile_ipam(
                 job_runner, action, artifact_relative_path=f"round-{round_index:02d}/jobs/ipam-{action.id}.json"
             )
-            detail = {"conflicts": ipam_result.conflicts, "skipped": ipam_result.skipped}
-            result = _actuation_result(op, action, target_slugs, True, detail, requires_observation=False)
+            # ipam_policy p6 Step 4: a successful JobResult alone is not
+            # successful reconciliation -- every endpoint id the planner
+            # pinned as eligible must have actually reached an
+            # applied/noop state. An unresolved conflict/skip on a pinned
+            # endpoint fails the action (manual_intervention_required at the
+            # operation level) even though the Job process itself succeeded;
+            # any endpoint that *was* applied still counts as `mutated`
+            # progress rather than being erased by the sibling failure.
+            success = not ipam_result.unresolved_expected_endpoints
+            detail = {
+                "conflicts": ipam_result.conflicts,
+                "skipped": ipam_result.skipped,
+                "eligible_endpoint_ids": ipam_result.eligible_endpoint_ids,
+                "applied_endpoint_ids": ipam_result.applied_endpoint_ids,
+                "unresolved_expected_endpoints": ipam_result.unresolved_expected_endpoints,
+            }
+            result = _actuation_result(
+                op,
+                action,
+                target_slugs,
+                success,
+                detail,
+                requires_observation=False,
+                mutated=bool(ipam_result.applied_endpoint_ids),
+            )
+            if not success:
+                result.error = (
+                    "reconcile_ipam: "
+                    f"{len(ipam_result.unresolved_expected_endpoints)} expected endpoint(s) did not reach "
+                    "an applied/noop state"
+                )
             return ExecutedAction(result=result)
         if action.reconciler_id in ("service_profile", "dnsmasq_config"):
             result = _run_playbook_action(
@@ -798,6 +835,7 @@ def _actuation_result(
     detail: dict[str, Any],
     *,
     requires_observation: bool,
+    mutated: bool | None = None,
 ) -> ActionResult:
     op.emit(
         "action_completed",
@@ -821,6 +859,7 @@ def _actuation_result(
         target_slugs=target_slugs,
         success=success,
         detail=detail,
+        mutated=success if mutated is None else mutated,
     )
 
 

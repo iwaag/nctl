@@ -191,7 +191,7 @@ def build_plan(
                 node_targets_by_slug[target.slug] = outcome.id
 
     for key, (target, codes, group_diffs) in sorted(automatic_groups.get("reconcile_ipam", {}).items()):
-        action = plan_reconcile_ipam(target, codes)
+        action = plan_reconcile_ipam(target, group_diffs)
         if target.slug and target.slug in node_targets_by_slug:
             action = action.model_copy(update={"dependencies": [node_targets_by_slug[target.slug]]})
         actions.append(action)

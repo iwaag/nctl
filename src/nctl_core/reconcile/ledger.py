@@ -62,12 +62,18 @@ class LinkActualNodeResult(BaseModel):
     candidate_name: str = ""
 
 
+_IPAM_APPLIED_ACTIONS = frozenset({"create_ip_address_applied", "link_ip_address_applied", "noop"})
+
+
 class IpamReconcileResult(BaseModel):
     desired_node_slug: str
     job_result: NautobotJobResult
     summary: dict[str, Any]
     conflicts: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    eligible_endpoint_ids: list[str] = []
+    applied_endpoint_ids: list[str] = []
+    unresolved_expected_endpoints: list[dict[str, Any]] = []
 
 
 def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) -> LinkActualNodeResult:
@@ -192,14 +198,58 @@ def execute_reconcile_ipam(
             f"{len(out_of_scope)} summary plan row(s) reference a node other than {node_slug!r}",
         )
 
+    # Endpoint coverage (ipam_policy p6 Step 4): the planner pinned the exact
+    # endpoint ids it expected this Job run to close (`reconcilers.
+    # plan_reconcile_ipam`), re-derived from the same fixed snapshot drift was
+    # computed from. A successful `JobResult` alone is not proof the Job
+    # actually processed the target endpoint -- verify the artifact names it.
+    eligible_endpoint_ids = [str(value) for value in (action.evidence.get("eligible_endpoint_ids") or [])]
+    plan_by_endpoint_id = {
+        str(plan["desired_endpoint"]["id"]): plan
+        for plan in plans
+        if isinstance(plan.get("desired_endpoint"), dict) and plan["desired_endpoint"].get("id")
+    }
+    if eligible_endpoint_ids:
+        missing_ids = [eid for eid in eligible_endpoint_ids if eid not in plan_by_endpoint_id]
+        if missing_ids:
+            raise LedgerActionError(
+                "ipam_summary_coverage_mismatch",
+                f"eligible endpoint id(s) {missing_ids} pinned at plan time are missing from the "
+                f"Job's plan rows for {node_slug!r}",
+                {"missing_endpoint_ids": missing_ids, "eligible_endpoint_ids": eligible_endpoint_ids},
+            )
+        endpoints_count = (summary.get("summary") or {}).get("endpoints")
+        if endpoints_count is not None and endpoints_count != len(plans):
+            raise LedgerActionError(
+                "ipam_summary_coverage_mismatch",
+                f"summary.endpoints={endpoints_count} disagrees with the plan-row count {len(plans)}",
+                {"endpoints_count": endpoints_count, "plan_row_count": len(plans)},
+            )
+    elif not plans:
+        raise LedgerActionError(
+            "ipam_summary_coverage_mismatch",
+            f"Job {IPAM_JOB_NAME!r} plan artifact contains zero endpoints for {node_slug!r}",
+        )
+
     conflicts = [plan for plan in plans if plan.get("action") == "conflict"]
     skipped = [plan for plan in plans if plan.get("action") == "skip"]
+    expected_plans = [plan_by_endpoint_id[eid] for eid in eligible_endpoint_ids] if eligible_endpoint_ids else plans
+    applied_endpoint_ids = [
+        str(plan["desired_endpoint"].get("id") or "")
+        for plan in expected_plans
+        if plan.get("action") in _IPAM_APPLIED_ACTIONS and isinstance(plan.get("desired_endpoint"), dict)
+    ]
+    applied_endpoint_ids = [value for value in applied_endpoint_ids if value]
+    unresolved_expected_endpoints = [plan for plan in expected_plans if plan.get("action") not in _IPAM_APPLIED_ACTIONS]
     return IpamReconcileResult(
         desired_node_slug=node_slug,
         job_result=job_result,
         summary=summary,
         conflicts=conflicts,
         skipped=skipped,
+        eligible_endpoint_ids=eligible_endpoint_ids,
+        applied_endpoint_ids=applied_endpoint_ids,
+        unresolved_expected_endpoints=unresolved_expected_endpoints,
     )
 
 

@@ -17,9 +17,10 @@ from nctl_core.reconcile.executor import run_reconcile
 from nctl_core.reconcile.ledger import IpamReconcileResult, LinkActualNodeResult
 from nctl_core.reconcile.lock import acquire_reconcile_lock
 from nctl_core.reconcile.model import ReconcileAction
-from nctl_core.sources.actual import ActualDevice, ActualSnapshot
+from nctl_core.sources.actual import ActualDevice, ActualIPAddress, ActualSnapshot
 from nctl_core.sources.desired import (
     DesiredEndpoint,
+    DesiredIPRange,
     DesiredNode,
     DesiredNodeOperationalOverride,
     DesiredSnapshot,
@@ -1591,6 +1592,108 @@ def test_successful_ledger_action_retained_when_observation_store_fails(tmp_path
     assert outcome.terminal_errors[0].code == "ssh_store_read_failed"
 
 
+def _ipam_action(ctx, **evidence_overrides) -> ReconcileAction:
+    return ReconcileAction(
+        id=f"reconcile_ipam:{ctx.node.slug}",
+        reconciler_id="reconcile_ipam",
+        action_kind="job",
+        targets=[Target(kind="node", slug=ctx.node.slug, name=ctx.node.name, id=ctx.node.id)],
+        claimed_diff_codes=["missing_actual_ip_address"],
+        reason="test",
+        mutates=True,
+        requires_observation=False,
+        parameters={"desired_node_slug": ctx.node.slug, "eligible_endpoint_ids": ["e1", "e2"]},
+        evidence={"desired_node_slug": ctx.node.slug, "eligible_endpoint_ids": ["e1", "e2"], **evidence_overrides},
+    )
+
+
+def _fake_job_result() -> "NautobotJobResult":
+    from nctl_core.jobs import NautobotJobResult
+
+    return NautobotJobResult(
+        job_name="Reconcile Desired IPAM Intent",
+        job_id="job-1",
+        job_result_id="result-1",
+        job_result_url="http://nautobot.test/job-results/result-1/",
+        status="completed",
+        poll_count=1,
+    )
+
+
+def test_reconcile_ipam_partial_conflict_is_not_reported_as_success(tmp_path, monkeypatch):
+    # ipam_policy p6 Step 4: one pinned endpoint applied, another still
+    # conflicts -- the action must be reported as failed (manual
+    # intervention still required for e2), but the applied mutation to e1
+    # must count as real progress, not be erased by the sibling failure.
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    action = _ipam_action(ctx)
+    plan = ctx.make_plan([action])
+
+    monkeypatch.setattr(
+        executor_module,
+        "execute_reconcile_ipam",
+        lambda job_runner, action, **kw: IpamReconcileResult(
+            desired_node_slug=ctx.node.slug,
+            job_result=_fake_job_result(),
+            summary={"schema_version": "nctl.ipam.reconcile.summary.v1"},
+            conflicts=[{"action": "conflict", "desired_endpoint": {"id": "e2"}}],
+            skipped=[],
+            eligible_endpoint_ids=["e1", "e2"],
+            applied_endpoint_ids=["e1"],
+            unresolved_expected_endpoints=[{"action": "conflict", "desired_endpoint": {"id": "e2"}}],
+        ),
+    )
+
+    monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
+    _patch_production_render(monkeypatch, lambda: ctx.snapshot)
+
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+    )
+
+    result = next(a for a in outcome.summary.actions if a.reconciler_id == "reconcile_ipam")
+    assert result.success is False
+    assert result.mutated is True
+    assert result.detail["applied_endpoint_ids"] == ["e1"]
+    assert result.detail["unresolved_expected_endpoints"][0]["desired_endpoint"]["id"] == "e2"
+    assert "1 expected endpoint(s)" in result.error
+
+
+def test_reconcile_ipam_fully_applied_is_success_and_mutated(tmp_path, monkeypatch):
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    action = _ipam_action(ctx)
+    plan = ctx.make_plan([action])
+
+    monkeypatch.setattr(
+        executor_module,
+        "execute_reconcile_ipam",
+        lambda job_runner, action, **kw: IpamReconcileResult(
+            desired_node_slug=ctx.node.slug,
+            job_result=_fake_job_result(),
+            summary={"schema_version": "nctl.ipam.reconcile.summary.v1"},
+            conflicts=[],
+            skipped=[],
+            eligible_endpoint_ids=["e1", "e2"],
+            applied_endpoint_ids=["e1", "e2"],
+            unresolved_expected_endpoints=[],
+        ),
+    )
+
+    monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
+    _patch_production_render(monkeypatch, lambda: ctx.snapshot)
+
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+    )
+
+    result = next(a for a in outcome.summary.actions if a.reconciler_id == "reconcile_ipam")
+    assert result.success is True
+    assert result.mutated is True
+    assert result.error is None
+
+
 def test_post_actuation_observation_store_failure_retains_deployment_evidence(tmp_path, monkeypatch):
     # Corrected contract 2, post-actuation boundary: a dnsmasq deployment
     # that already succeeded this round must stay in the round's evidence
@@ -1904,3 +2007,135 @@ deployment_profile_reconciliation:
     assert not any(
         c[0] == "ansible-playbook" and any("deploy_dnsmasq_records.yml" in str(a) for a in c) for c in ansible_calls
     )
+
+
+# --- real multi-round IPAM convergence (ipam_policy p6 Step 4) --------------
+#
+# Like the dnsmasq test above, this mocks only the true external boundaries --
+# the Nautobot snapshot fetch and the "Reconcile Desired IPAM Intent" Job
+# execution (`ledger.execute_reconcile_ipam`, since running the real Django
+# Job is out of reach for a unit test) -- and lets the real drift engine
+# (evaluate_endpoint_intent's eligibility gate), classify(), the planner's
+# endpoint-id pinning, and the executor's coverage-aware success/mutated
+# computation all run unmodified.
+
+
+def test_real_multi_round_ipam_convergence_for_non_dhcp_endpoint(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    ansible_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
+    (ansible_dir / "vars").mkdir(parents=True, exist_ok=True)
+    (ansible_dir / "vars" / "deployment_profiles.yml").write_text(
+        "deployment_profiles: {}\ndeployment_profile_reconciliation: {}\n"
+    )
+    node = _node("agdnsmasq").model_copy(update={"realized_device_id": "dev-1"})
+    endpoint = DesiredEndpoint(
+        id="ep-1",
+        name="primary",
+        endpoint_type="primary",
+        node_id=node.id,
+        node_slug=node.slug,
+        ip_address="192.0.2.10",
+        ip_policy="static",
+        dns_name="agdnsmasq.example.test",
+    )
+    route = "192.0.2.10"
+
+    static_range = DesiredIPRange(
+        id="range-1", name="lan", slug="lan", start_address="192.0.2.1", end_address="192.0.2.254",
+        range_policy="static_pool", lifecycle="active",
+    )
+
+    def make_snapshot(*, ip_created: bool) -> SourceSnapshot:
+        endpoint_row = endpoint.model_copy(update={"realized_ip_address_id": "ip-1"} if ip_created else {})
+        return SourceSnapshot(
+            desired=DesiredSnapshot(nodes=[node], endpoints=[endpoint_row], ip_ranges=[static_range]),
+            actual=ActualSnapshot(
+                devices=[
+                    ActualDevice(
+                        id="dev-1",
+                        name="agdnsmasq",
+                        facts={"primary_ip_address": route, "last_seen": datetime.now(timezone.utc).isoformat()},
+                    )
+                ],
+                ip_addresses=(
+                    [ActualIPAddress(id="ip-1", host=route, mask_length=32, dns_name="agdnsmasq.example.test")]
+                    if ip_created
+                    else []
+                ),
+            ),
+            fetched_at=datetime.now(timezone.utc),
+        )
+
+    call_count = {"n": 0}
+
+    def fetch_snapshot(cfg, client):
+        call_count["n"] += 1
+        # This test's node has no deployment placements, so
+        # `_regenerate_production_inventory` short-circuits without an extra
+        # fetch (its own "no deployment profiles configured" skip) -- round
+        # 0's own drift fetch is call 1, a real Job run would only make the
+        # IPAddress/link exist after it commits, which round 1's fresh fetch
+        # (call 2+) represents.
+        return make_snapshot(ip_created=call_count["n"] > 1)
+
+    monkeypatch.setattr("nctl_core.drift_render.build_source_snapshot", fetch_snapshot)
+    # No service placements exist in this snapshot, so an unavailable
+    # deployment-profile config would otherwise still surface as an
+    # unrelated global manual_review finding (drift_render.
+    # fetch_and_compute_drift loads it independently of _build_plan_or_error).
+    monkeypatch.setattr("nctl_core.drift_render.load_deployment_profiles", lambda playbook_dir: ({}, "digest"))
+    monkeypatch.setattr("nctl_core.drift_render.load_profile_reconciliation", lambda playbook_dir, names: {})
+    _no_op_deployment_profiles(monkeypatch)
+    _patch_production_render(monkeypatch, lambda: fetch_snapshot(cfg, None))
+    monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
+    _stub_dashboard(monkeypatch)
+
+    ipam_calls = []
+
+    def fake_execute_reconcile_ipam(job_runner, action, **kwargs):
+        ipam_calls.append(action)
+        eligible_ids = list(action.evidence.get("eligible_endpoint_ids") or [])
+        return IpamReconcileResult(
+            desired_node_slug=node.slug,
+            job_result=_fake_job_result(),
+            summary={
+                "schema_version": "nctl.ipam.reconcile.summary.v1",
+                "summary": {"endpoints": len(eligible_ids)},
+                "plans": [
+                    {
+                        "action": "create_ip_address_applied",
+                        "desired_endpoint": {"id": eid, "desired_node_slug": node.slug},
+                    }
+                    for eid in eligible_ids
+                ],
+            },
+            conflicts=[],
+            skipped=[],
+            eligible_endpoint_ids=eligible_ids,
+            applied_endpoint_ids=eligible_ids,
+            unresolved_expected_endpoints=[],
+        )
+
+    monkeypatch.setattr(executor_module, "execute_reconcile_ipam", fake_execute_reconcile_ipam)
+
+    # Round 0: explicit static IP + matching self-observation + missing
+    # IPAddress -> eligible -> missing_actual_ip_address -> reconcile_ipam
+    # pins exactly endpoint "ep-1" -> the (mocked) Job applies it.
+    round0 = run_reconcile(cfg, apply_changes=True, max_rounds=1)
+    assert len(round0.data.rounds) == 1
+    [ipam_action] = ipam_calls
+    assert ipam_action.evidence["eligible_endpoint_ids"] == ["ep-1"]
+    round0_actions = {a.reconciler_id: a for a in round0.data.rounds[0].actions}
+    assert round0_actions["reconcile_ipam"].success is True
+    assert round0_actions["reconcile_ipam"].mutated is True
+    assert round0.data.progress_made is True
+
+    # Round 1: real drift recomputed from the (now linked) fresh fetch -> no
+    # missing_actual_ip_address -> reconcile_ipam is not planned again ->
+    # converged.
+    ipam_calls.clear()
+    round1 = run_reconcile(cfg, apply_changes=True, max_rounds=1)
+    assert round1.ok, round1.errors
+    assert round1.data.state == "already_converged"
+    assert round1.data.rounds == []
+    assert ipam_calls == []
