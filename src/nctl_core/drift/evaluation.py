@@ -361,8 +361,37 @@ def evaluate_endpoint_intent(
     else:
         matches = _matching_ip_candidates(expected.get("ip_address"), ip_candidates)
         observed["ip_candidates"] = matches
-        if expected.get("ip_address") and not matches:
-            gaps.append({"code": "missing_actual_ip_address", "severity": "partial"})
+        expected_host = _host_address(expected.get("ip_address"))
+        self_observation = _endpoint_ipam_self_observation(node_realized_device, node_realized_vm)
+        observed["ipam_self_observation"] = self_observation
+        eligibility_basis = _resolve_ipam_eligibility(
+            expected.get("ip_policy"), expected_host, self_observation["observed_hosts"]
+        )
+        observed["ipam_eligibility_basis"] = eligibility_basis
+        endpoint_identity = {
+            "endpoint_id": desired_endpoint.id,
+            "endpoint_name": desired_endpoint.name,
+            "ip_policy": expected.get("ip_policy"),
+            "ip_address": expected_host,
+        }
+        if expected.get("ip_address") and eligibility_basis != "eligible":
+            gaps.append(
+                {
+                    "code": f"ipam_reconcile_observation_{eligibility_basis}",
+                    "severity": "needs_review",
+                    "expected": endpoint_identity,
+                    "actual": self_observation,
+                }
+            )
+        elif expected.get("ip_address") and not matches:
+            gaps.append(
+                {
+                    "code": "missing_actual_ip_address",
+                    "severity": "partial",
+                    "expected": endpoint_identity,
+                    "actual": {"ipam_state": "missing", **self_observation},
+                }
+            )
             actions.append(
                 {
                     "action": "create_or_link_ip_address",
@@ -373,7 +402,18 @@ def evaluate_endpoint_intent(
             )
         elif len(matches) == 1:
             actual_refs.append(matches[0]["actual_ref"])
-            gaps.append({"code": "actual_ip_address_not_linked", "severity": "partial"})
+            gaps.append(
+                {
+                    "code": "actual_ip_address_not_linked",
+                    "severity": "partial",
+                    "expected": endpoint_identity,
+                    "actual": {
+                        "ipam_state": "unlinked",
+                        "matching_ip_address": matches[0]["actual_ref"],
+                        **self_observation,
+                    },
+                }
+            )
             actions.append(
                 {
                     "action": "create_or_link_ip_address",
@@ -992,6 +1032,47 @@ def _host_address(value: Any) -> str:
         return str(ip_interface(text).ip)
     except ValueError:
         return text.split("/", maxsplit=1)[0]
+
+
+def _endpoint_ipam_self_observation(
+    node_realized_device: ActualDevice | None, node_realized_vm: ActualVirtualMachine | None
+) -> dict[str, Any]:
+    """Self-observation evidence for the non-`dhcp_reserved` IPAM eligibility gate.
+
+    Reads `ActualDevice.actual_facts().local_ip` -- the same
+    `primary_ip_address` custom field nauto's ingest Job writes -- never the
+    controller-local nodeutils cache. `ActualVirtualMachine` (Step 1) carries
+    no custom fields, so a linked VM contributes nothing here rather than a
+    guessed value; this is a structural fact of the current actual-source
+    schema, not a special case.
+    """
+
+    candidates: list[dict[str, Any]] = []
+    if node_realized_device is not None:
+        facts = node_realized_device.actual_facts()
+        host = _host_address(facts.local_ip)
+        if host:
+            candidates.append(
+                {"basis": "realized_device.primary_ip_address", "host": host, "last_seen": facts.collected_at}
+            )
+    return {"candidates": candidates, "observed_hosts": sorted({c["host"] for c in candidates})}
+
+
+def _resolve_ipam_eligibility(ip_policy: Any, desired_host: str, observed_hosts: list[str]) -> str:
+    """Return `"eligible"`, `"missing"`, `"mismatch"`, or `"ambiguous"`.
+
+    `dhcp_reserved` is always eligible without an observation (unchanged
+    reservation-intent behavior); `static`/`external` require exactly one
+    distinct observed host address matching the normalized desired host.
+    """
+
+    if _text(ip_policy) == "dhcp_reserved":
+        return "eligible"
+    if not observed_hosts:
+        return "missing"
+    if len(observed_hosts) > 1:
+        return "ambiguous"
+    return "eligible" if observed_hosts[0] == desired_host else "mismatch"
 
 
 def _ip_address_display(actual_ip: ActualIPAddress) -> str:

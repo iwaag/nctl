@@ -39,6 +39,12 @@ _DYNAMIC_CODES = {
     "missing_observed_system",
     "missing_mac_address",
     "missing_network_interface",
+    # ipam_policy: evaluation.py's `_resolve_ipam_eligibility` returns
+    # "missing"/"mismatch"/"ambiguous", interpolated into
+    # f"ipam_reconcile_observation_{eligibility_basis}".
+    "ipam_reconcile_observation_missing",
+    "ipam_reconcile_observation_mismatch",
+    "ipam_reconcile_observation_ambiguous",
 }
 
 
@@ -138,6 +144,11 @@ def test_observation_codes_route_to_observe_node(code):
         # shouldn't -- Out of scope forbids auto-removal, so this stays
         # manual forever, not just "unsupported for now")
         "service_observed_on_wrong_node",
+        # ipam_policy: unsatisfied self-observation condition for a non-
+        # dhcp_reserved endpoint's explicit IP.
+        "ipam_reconcile_observation_missing",
+        "ipam_reconcile_observation_mismatch",
+        "ipam_reconcile_observation_ambiguous",
     ],
 )
 def test_manual_review_table_from_plan_md_step5(code):

@@ -121,6 +121,14 @@ _MANUAL_REVIEW_CODES = frozenset(
         "dhcp_reserved_endpoint_in_dynamic_pool",
         "ip_policy_range_mismatch",
         "static_endpoint_in_dhcp_pool",
+        # ipam_policy: a non-dhcp_reserved endpoint's explicit IP does not (yet)
+        # have a satisfied self-observation condition -- registered MANUAL_REVIEW
+        # so the reconcile_ipam Job is never (re-)triggered for it; a
+        # dhcp_reserved endpoint is unaffected (still capable of reserving
+        # ledger state before the host is observed).
+        "ipam_reconcile_observation_missing",
+        "ipam_reconcile_observation_mismatch",
+        "ipam_reconcile_observation_ambiguous",
         # Service lifecycle/dependency/placement issues that need a human
         # decision, not an actuation.
         "service_lifecycle_inactive",

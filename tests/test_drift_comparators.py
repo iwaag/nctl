@@ -343,6 +343,26 @@ def test_endpoint_intent_matching_attributes_gap_to_owning_node_target():
     assert all(d.target.kind == "node" and d.target.slug == "agweb" for d in diffs)
 
 
+def test_endpoint_intent_matching_carries_endpoint_identity_for_observation_gap():
+    device = ActualDevice(id="dev-1", name="agweb.local", facts={})
+    node = DesiredNode(
+        id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device", realized_device_id="dev-1",
+    )
+    endpoint = DesiredEndpoint(
+        id="e1", name="primary", endpoint_type="primary", node_id="n1", node_slug="agweb",
+        ip_address="192.0.2.10/32", ip_policy="static", dns_name="agweb.example.test", generate_dnsmasq=True,
+    )
+    snapshot = make_snapshot(nodes=[node], endpoints=[endpoint], devices=[device])
+
+    diffs = list(comparators.endpoint_intent_matching(snapshot, CONTEXT))
+
+    observation_diff = next(d for d in diffs if d.code == "ipam_reconcile_observation_missing")
+    assert observation_diff.target.kind == "node" and observation_diff.target.slug == "agweb"
+    assert observation_diff.desired["expected"]["endpoint_id"] == "e1"
+    assert observation_diff.desired["expected"]["endpoint_name"] == "primary"
+    assert observation_diff.desired["expected"]["ip_policy"] == "static"
+
+
 def test_endpoint_intent_matching_satisfied_endpoint_is_silent():
     from nctl_core.sources.desired import DesiredIPRange
 

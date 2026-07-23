@@ -445,6 +445,85 @@ def test_missing_ip_and_missing_mac_are_partial():
     assert payload.deterministic_summary["dhcp_reservation_ready"] is False
 
 
+def test_dhcp_reserved_endpoint_missing_ip_needs_no_observation():
+    payload = evaluate_endpoint_intent(endpoint(ip_policy="dhcp_reserved"), ip_candidates=[])
+
+    gap_codes = [gap["code"] for gap in payload.gap_summary["gaps"]]
+    assert "missing_actual_ip_address" in gap_codes
+    assert not any(code.startswith("ipam_reconcile_observation_") for code in gap_codes)
+
+
+def test_static_endpoint_without_observation_is_manual_review_gap():
+    dev = actual_device(facts={})
+    desired_node = node(realized_device_id=dev.id)
+
+    payload = evaluate_endpoint_intent(
+        endpoint(node_id=desired_node.id, ip_policy="static"),
+        desired_node=desired_node,
+        node_realized_device=dev,
+        ip_candidates=[],
+    )
+
+    gap_codes = [gap["code"] for gap in payload.gap_summary["gaps"]]
+    assert gap_codes == ["ipam_reconcile_observation_missing"]
+    assert "missing_actual_ip_address" not in gap_codes
+
+
+def test_static_endpoint_with_matching_observation_is_automatic_gap():
+    dev = actual_device(facts={"primary_ip_address": "192.0.2.10", "last_seen": "2026-07-23T00:00:00Z"})
+    desired_node = node(realized_device_id=dev.id)
+
+    payload = evaluate_endpoint_intent(
+        endpoint(node_id=desired_node.id, ip_policy="static"),
+        desired_node=desired_node,
+        node_realized_device=dev,
+        ip_candidates=[],
+    )
+
+    assert payload.gap_summary["gaps"][0]["code"] == "missing_actual_ip_address"
+    gap = payload.gap_summary["gaps"][0]
+    assert gap["expected"]["endpoint_id"] == "22222222-2222-2222-2222-222222222222"
+    assert gap["expected"]["ip_policy"] == "static"
+
+
+def test_external_endpoint_with_mismatched_observation_is_manual_review_gap():
+    dev = actual_device(facts={"primary_ip_address": "198.51.100.5"})
+    desired_node = node(realized_device_id=dev.id)
+
+    payload = evaluate_endpoint_intent(
+        endpoint(node_id=desired_node.id, ip_policy="external"),
+        desired_node=desired_node,
+        node_realized_device=dev,
+        ip_candidates=[],
+    )
+
+    gap_codes = [gap["code"] for gap in payload.gap_summary["gaps"]]
+    assert gap_codes == ["ipam_reconcile_observation_mismatch"]
+
+
+def test_static_endpoint_observation_matches_by_host_portion():
+    dev = actual_device(facts={"primary_ip_address": "192.0.2.10/24"})
+    desired_node = node(realized_device_id=dev.id)
+
+    payload = evaluate_endpoint_intent(
+        endpoint(node_id=desired_node.id, ip_policy="static", ip_address="192.0.2.10/32"),
+        desired_node=desired_node,
+        node_realized_device=dev,
+        ip_candidates=[],
+    )
+
+    gap_codes = [gap["code"] for gap in payload.gap_summary["gaps"]]
+    assert "missing_actual_ip_address" in gap_codes
+    assert not any(code.startswith("ipam_reconcile_observation_") for code in gap_codes)
+
+
+def test_static_endpoint_without_realized_device_is_observation_missing():
+    payload = evaluate_endpoint_intent(endpoint(ip_policy="static"), ip_candidates=[])
+
+    gap_codes = [gap["code"] for gap in payload.gap_summary["gaps"]]
+    assert gap_codes == ["ipam_reconcile_observation_missing"]
+
+
 def test_multiple_mac_candidates_are_not_dhcp_ready():
     dev = actual_device()
     desired_node = node(realized_device_id=dev.id)
