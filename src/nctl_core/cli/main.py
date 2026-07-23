@@ -347,6 +347,14 @@ MaxRoundsOption = Annotated[
     typer.Option("--max-rounds", min=1, max=10, help="Override [reconcile].max_rounds for this run."),
 ]
 ReconcileJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.reconcile.v2 envelope as JSON.")]
+RefreshObservationOption = Annotated[
+    bool,
+    typer.Option(
+        "--refresh-observation",
+        "--refresh",
+        help="Force one fresh nodeutils collection/ingest for the scoped host, even if drift is converged.",
+    ),
+]
 
 
 @app.command()
@@ -354,6 +362,7 @@ def reconcile(
     host: HostArgument = None,
     config: ConfigOption = None,
     yes: ReconcileYesOption = False,
+    refresh_observation: RefreshObservationOption = False,
     max_rounds: MaxRoundsOption = None,
     json_output: ReconcileJsonOption = False,
 ) -> None:
@@ -365,9 +374,15 @@ def reconcile(
     and regenerates the dashboard from the same final drift payload it used to decide the result.
     """
     cfg = _load_config(config)
-    envelope = run_reconcile(cfg, host=host, apply_changes=yes, max_rounds=max_rounds)
+    envelope = run_reconcile(
+        cfg,
+        host=host,
+        apply_changes=yes,
+        refresh_observation=refresh_observation,
+        max_rounds=max_rounds,
+    )
     emit(envelope, json_output, render_reconcile_text)
-    if any(error.code in ("unknown_host",) for error in envelope.errors):
+    if any(error.code in ("unknown_host", "refresh_observation_requires_host") for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 

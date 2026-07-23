@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -82,6 +83,7 @@ inventory = "inventories/generated/hosts_intent.yml"
 [reconcile]
 max_rounds = 3
 lock_path = "{tmp_path / 'reconcile.lock'}"
+nodeutils_version = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [repo]
 root = "{tmp_path}"
@@ -269,6 +271,80 @@ def test_plan_mode_never_mutates_and_reports_planned(tmp_path, monkeypatch):
     assert called["n"] == 0
     assert envelope.data.plan_path
     assert (tmp_path / "events" / envelope.data.operation_id / "plan.json").is_file()
+
+
+def test_refresh_observation_plans_observe_for_converged_host(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
+    _sequence(monkeypatch, [_drift([_target_status(target, Status.CONVERGED)], nodes=[node])])
+
+    envelope = run_reconcile(
+        cfg,
+        host=node.slug,
+        apply_changes=False,
+        refresh_observation=True,
+    )
+
+    assert envelope.ok
+    assert envelope.data.state == "planned"
+    plan = json.loads(Path(envelope.data.plan_path).read_text())
+    assert [action["reconciler_id"] for action in plan["actions"]] == ["observe_node"]
+    assert plan["actions"][0]["targets"][0]["slug"] == node.slug
+    assert plan["actions"][0]["evidence"] == {"forced_refresh": True}
+    assert envelope.data.ssh_preflight[0]["status"] == "ready"
+
+
+def test_refresh_observation_executes_once_then_converges(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
+    converged = _drift([_target_status(target, Status.CONVERGED)], nodes=[node])
+    _sequence(monkeypatch, [converged, converged])
+    _stub_dashboard(monkeypatch)
+    calls = {"n": 0}
+
+    def fake_observation(*args, **kwargs):
+        calls["n"] += 1
+        return executor_module.ObservationResult(
+            ok=True,
+            nodeutils_version="a" * 40,
+            hosts=[],
+            collection=_fake_ansible_result(),
+            retrieval=_fake_ansible_result(),
+        )
+
+    monkeypatch.setattr(executor_module, "run_observation", fake_observation)
+
+    envelope = run_reconcile(
+        cfg,
+        host=node.slug,
+        apply_changes=True,
+        refresh_observation=True,
+    )
+
+    assert envelope.ok
+    assert envelope.data.state == "converged"
+    assert calls["n"] == 1
+    observations = [
+        action
+        for round_summary in envelope.data.rounds
+        for action in round_summary.actions
+        if action.reconciler_id == "observe_node"
+    ]
+    assert len(observations) == 1
+    assert observations[0].detail["nodeutils_version"] == "a" * 40
+
+
+def test_refresh_observation_requires_host_scope(tmp_path):
+    cfg = _config(tmp_path)
+
+    envelope = run_reconcile(cfg, apply_changes=False, refresh_observation=True)
+
+    assert not envelope.ok
+    assert envelope.errors[0].code == "refresh_observation_requires_host"
 
 
 def test_terminal_result_json_is_persisted_publicly_and_matches_the_envelope(tmp_path, monkeypatch):

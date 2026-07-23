@@ -59,7 +59,11 @@ def _config(tmp_path: Path) -> Config:
             "nautobot": {"url": "http://nautobot.invalid"},
             "inventory": {"dumps_dir": tmp_path / "dumps"},
             "ansible": {"playbook_dir": playbook_dir, "inventory": "unused.yml"},
-            "reconcile": {"max_report_age_hours": 72, "max_report_bytes": 4096},
+            "reconcile": {
+                "max_report_age_hours": 72,
+                "max_report_bytes": 4096,
+                "nodeutils_version": "a" * 40,
+            },
             "ssh": {"known_hosts_file": known_hosts_file},
             "source_path": tmp_path / "nctl.toml",
         }
@@ -259,6 +263,8 @@ def test_observation_collects_caches_and_ingests_all_hosts(tmp_path: Path) -> No
         "-i",
         str(tmp_path / "ansible/unused.yml"),
     ]
+    assert commands.calls[0][-2:] == ["-e", f"nodeutils_version={'a' * 40}"]
+    assert result.nodeutils_version == "a" * 40
     assert commands.calls[1][0] == "ansible"
     assert commands.calls[1][1:5] == [
         "-i",

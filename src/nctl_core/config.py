@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -103,6 +104,9 @@ class ReconcileConfig(StrictModel):
     ingest_policy_file: Path = Path("seed/nodeutils_ingest.yaml")
     service_observation_max_age_hours: int = Field(default=24, gt=0, le=8760)
     lock_path: Path = Path("~/.local/state/nctl/reconcile.lock")
+    # Normally resolved from the superproject's nodeutils gitlink. Packaged
+    # controllers without superproject metadata may pin the same full SHA here.
+    nodeutils_version: str | None = None
 
     @field_validator("remote_report_path")
     @classmethod
@@ -110,6 +114,16 @@ class ReconcileConfig(StrictModel):
         if not value.is_absolute():
             raise ValueError("remote_report_path must be absolute")
         return value
+
+    @field_validator("nodeutils_version")
+    @classmethod
+    def nodeutils_version_must_be_full_git_object_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.lower()
+        if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", normalized) is None:
+            raise ValueError("nodeutils_version must be a full 40- or 64-character Git object ID")
+        return normalized
 
     def resolved_lock_path(self) -> Path:
         return self.lock_path.expanduser()

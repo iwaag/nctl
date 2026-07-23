@@ -242,13 +242,26 @@ max_report_age_hours = 72
 ingest_policy_file = "seed/nodeutils_ingest.yaml"
 service_observation_max_age_hours = 24
 lock_path = "~/.local/state/nctl/reconcile.lock"
+# Source checkouts normally omit this: nctl resolves the superproject's
+# pinned nodeutils gitlink. Packaged controllers may set the same full SHA.
+# nodeutils_version = "0123456789abcdef0123456789abcdef01234567"
 ```
+
+Every observation passes an exact `nodeutils_version` commit to Ansible. In a
+normal source checkout this is the `nodeutils` gitlink recorded by the
+superproject commit, not the mutable GitHub `HEAD` and not whatever commit
+happens to be checked out in the submodule working tree. This keeps the remote
+collector schema coordinated with the local nctl reader. The resolved SHA is
+recorded in the operation event log and observation action result. If the
+superproject gitlink cannot be resolved, observation fails before Ansible
+runs; it never falls back to `HEAD`.
 
 **SSH trust preflight** (`devdocs/small/fix_sshkey/plan.md` Step 5): every round, before observation,
 Nautobot Jobs, inventory writes, or playbooks run, nctl checks that every node touched by an
 SSH-requiring action (`observe_node`, `service_profile`, `dnsmasq_config`) has at least one entry
 under its stable alias in `[ssh].known_hosts_file`. A missing entry fails the whole round with
-`ssh_host_key_unenrolled` and the exact `nctl ssh enroll <slug>` remediation, before any write --
+`ssh_host_key_unenrolled` and the verified-source `nctl ssh enroll <slug>
+--from-known-hosts`/`--fingerprint` remediation, before any write --
 this is what prevented the original incident (`agdnsmasq`'s observation/IPAM succeeding, then
 failing on the production dnsmasq SSH connection). Ledger-only actions (`link_actual_node`,
 `reconcile_ipam`) never require enrollment, so an unrelated unenrolled host never blocks them.
@@ -271,6 +284,13 @@ Ansible/Makefile sequence; `ansible_agdev/Makefile`'s `pipeline` target now runs
 command. `make bootstrap-inventory`/`make production-inventory` remain as standalone diagnostics —
 `reconcile` renders its own operation-scoped bootstrap inventory and regenerates the full production
 inventory itself, so it never shells out to either.
+
+`nctl reconcile HOST --refresh-observation` adds one explicit `observe_node`
+action to the first round even when the current drift is already converged.
+Without `--yes` it is a dry plan; with `--yes` it updates nodeutils to the
+superproject-pinned commit, collects and ingests one fresh report, then returns
+to the ordinary round planner so the refresh is not repeated indefinitely.
+Host scope is required to prevent an accidental whole-cluster observation.
 
 ### `lifecycle`
 

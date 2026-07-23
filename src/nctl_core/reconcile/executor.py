@@ -32,6 +32,7 @@ from nctl_core.config import Config, ConfigError
 from nctl_core.dashboard_render import DashboardData, render_dashboard_from_drift
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply
 from nctl_core.drift.engine import DriftResult, TargetStatus
+from nctl_core.drift.model import Target
 from nctl_core.drift_render import DriftData, fetch_and_compute_drift, render_drift_data
 from nctl_core.events import OperationLog
 from nctl_core.jobs import NautobotJobError, NautobotJobRunner
@@ -188,6 +189,7 @@ def run_reconcile(
     *,
     host: str | None = None,
     apply_changes: bool = False,
+    refresh_observation: bool = False,
     max_rounds: int | None = None,
     now: Callable[[], datetime] | None = None,
     command_runner: CommandRunner | None = None,
@@ -212,21 +214,49 @@ def run_reconcile(
         return _finish(op, data, "failed", [EnvelopeError(code="artifact_write_failed", message=str(exc))])
     data.artifact_dir = str(artifacts.root)
 
+    if refresh_observation and scope.kind != "host":
+        return _finish(
+            op,
+            data,
+            "failed",
+            [
+                EnvelopeError(
+                    code="refresh_observation_requires_host",
+                    message="--refresh-observation requires one DesiredNode slug",
+                )
+            ],
+        )
+
     if not apply_changes:
-        return _run_plan_only(cfg, op, data, artifacts, scope)
+        return _run_plan_only(cfg, op, data, artifacts, scope, refresh_observation)
 
     try:
         with acquire_reconcile_lock(cfg.reconcile.resolved_lock_path()):
             with _InterruptFlag() as interrupted:
                 return _run_apply(
-                    cfg, op, data, artifacts, scope, max_rounds, now, command_runner, interrupted, ssh_probe
+                    cfg,
+                    op,
+                    data,
+                    artifacts,
+                    scope,
+                    max_rounds,
+                    now,
+                    command_runner,
+                    interrupted,
+                    ssh_probe,
+                    refresh_observation,
                 )
     except ReconcileLockError as exc:
         return _finish(op, data, "failed", [EnvelopeError(code="reconcile_lock_contention", message=str(exc))])
 
 
 def _run_plan_only(
-    cfg: Config, op: OperationLog, data: ReconcileData, artifacts: OperationArtifacts, scope: PlanScope
+    cfg: Config,
+    op: OperationLog,
+    data: ReconcileData,
+    artifacts: OperationArtifacts,
+    scope: PlanScope,
+    refresh_observation: bool,
 ) -> Envelope[ReconcileData]:
     fetched = fetch_and_compute_drift(cfg)
     if isinstance(fetched, EnvelopeError):
@@ -238,6 +268,8 @@ def _run_plan_only(
     plan, plan_error = _build_plan_or_error(cfg, snapshot, drift_result, scope, generated_at)
     if plan_error is not None:
         return _finish(op, data, "failed", [plan_error])
+    if refresh_observation:
+        plan = _with_forced_observation(plan, snapshot, scope)
 
     data.plan_path = str(artifacts.write_json("plan.json", plan.model_dump(mode="json")))
     op.emit(
@@ -273,6 +305,7 @@ def _run_apply(
     command_runner: CommandRunner | None,
     interrupted: "_InterruptFlag",
     ssh_probe: SshProbeRunner | None,
+    refresh_observation: bool,
 ) -> Envelope[ReconcileData]:
     rounds_limit = max_rounds or cfg.reconcile.max_rounds
     previous_fingerprint: str | None = None
@@ -306,6 +339,8 @@ def _run_apply(
         if plan_error is not None:
             state, errors = "failed", [plan_error]
             break
+        if refresh_observation and round_index == 0:
+            plan = _with_forced_observation(plan, snapshot, scope)
         data.plan_path = str(artifacts.write_json("plan.json", plan.model_dump(mode="json")))
         op.emit(
             "plan_created",
@@ -358,7 +393,11 @@ def _run_apply(
                 errors = [
                     EnvelopeError(
                         code="ssh_host_key_unenrolled",
-                        message=f"unenrolled SSH host(s): {slugs}; run `nctl ssh enroll <slug>` for each",
+                        message=(
+                            f"unenrolled SSH host(s): {slugs}; for each host, verify with "
+                            "`nctl ssh enroll <slug> --from-known-hosts` (or an out-of-band "
+                            "`--fingerprint`), then repeat with `--yes`"
+                        ),
                         detail={"hosts": [entry.model_dump() for entry in unenrolled]},
                     )
                 ]
@@ -956,7 +995,10 @@ def _run_observation_action(
         action_kind="observation",
         target_slugs=target_slugs,
         success=result.ok,
-        detail={"hosts": [h.model_dump() for h in result.hosts]},
+        detail={
+            "nodeutils_version": result.nodeutils_version,
+            "hosts": [h.model_dump() for h in result.hosts],
+        },
         error=result.error,
     )
     return ExecutedAction(result=action_result)
@@ -1008,6 +1050,49 @@ def _build_plan_or_error(
     except UnclassifiedDiffCodeError as exc:
         return None, EnvelopeError(code="unclassified_diff_code", message=str(exc))
     return plan, None
+
+
+def _with_forced_observation(
+    plan: ReconcilePlan,
+    snapshot: SourceSnapshot,
+    scope: PlanScope,
+) -> ReconcilePlan:
+    """Force one scoped node observation in the first requested round.
+
+    A healthy drift snapshot normally has no observe_node action. Explicit
+    refresh must still update the collector/report once, then let the next
+    round's ordinary plan decide convergence without forcing another loop.
+    """
+
+    if scope.kind != "host" or not scope.host_slug:  # guarded by run_reconcile
+        raise ValueError("forced observation requires host scope")
+    node = next(n for n in snapshot.desired.nodes if n.slug == scope.host_slug)
+    evidence = {"forced_refresh": True}
+    actions = list(plan.actions)
+    for index, action in enumerate(actions):
+        if action.reconciler_id != "observe_node":
+            continue
+        if any(target.slug == node.slug for target in action.targets):
+            actions[index] = action.model_copy(
+                update={
+                    "reason": "Explicit observation refresh requested; " + action.reason,
+                    "evidence": {**action.evidence, **evidence},
+                }
+            )
+            return plan.model_copy(update={"actions": actions})
+
+    forced = ReconcileAction(
+        id="observe_node",
+        reconciler_id="observe_node",
+        action_kind="observation",
+        targets=[Target(kind="node", slug=node.slug, name=node.name, id=node.id)],
+        claimed_diff_codes=[],
+        reason="Explicit observation refresh requested for this node.",
+        evidence=evidence,
+        mutates=True,
+        requires_observation=False,
+    )
+    return plan.model_copy(update={"actions": [forced, *actions]})
 
 
 def _scope_summary(targets: list[TargetStatus], scope: PlanScope, snapshot: SourceSnapshot) -> dict[str, int]:

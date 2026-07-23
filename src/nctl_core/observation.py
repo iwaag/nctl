@@ -24,6 +24,7 @@ from nctl_core.nautobot import NautobotClient
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
 from nctl_core.reconcile.profiles import ProfileReconciliation, ProfileReconciliationError, load_profile_reconciliation
 from nctl_core.reconcile.ssh_preflight import STATUS_READY, check_ssh_enrollment
+from nctl_core.repo_versions import resolve_nodeutils_version
 from nctl_core.sources.desired import DesiredSnapshot
 from nctl_core.sources.actual import ActualSnapshot, fetch_actual_snapshot
 
@@ -42,6 +43,7 @@ class HostObservation(BaseModel):
 
 class ObservationResult(BaseModel):
     ok: bool
+    nodeutils_version: str = ""
     hosts: list[HostObservation] = Field(default_factory=list)
     collection: AnsibleRunResult
     retrieval: AnsibleRunResult
@@ -151,8 +153,13 @@ def run_observation(
     unenrolled = [entry for entry in check_ssh_enrollment(cfg, targets, snapshot) if entry.status != STATUS_READY]
     if unenrolled:
         slugs = ", ".join(sorted(entry.slug for entry in unenrolled))
-        raise ValueError(f"ssh_host_key_unenrolled: {slugs}; run `nctl ssh enroll <slug>` for each")
+        raise ValueError(
+            f"ssh_host_key_unenrolled: {slugs}; for each host, verify with "
+            "`nctl ssh enroll <slug> --from-known-hosts` (or an out-of-band "
+            "`--fingerprint`), then repeat with `--yes`"
+        )
 
+    nodeutils_version = resolve_nodeutils_version(cfg)
     generated_at = now.isoformat().replace("+00:00", "Z")
     inventory_path = artifacts.write_text(
         "bootstrap/hosts_intent.yml",
@@ -181,12 +188,18 @@ def run_observation(
     shared_inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
     limit = ",".join(targets)
     playbook = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent) / "playbooks/nautobot/run_nodeutils_collect.yml"
-    operation_log.emit("collection_started", "nodeutils collection started", hosts=targets)
+    operation_log.emit(
+        "collection_started",
+        "nodeutils collection started",
+        hosts=targets,
+        nodeutils_version=nodeutils_version,
+    )
     collection = runner.run(
         [
             "ansible-playbook", "-i", str(inventory_path), "-i", str(shared_inventory), str(playbook),
             "--limit", limit, "-e", "target_hosts=ssh_hosts",
             "-e", f"nodeutils_probe_config_dir={probe_dir}",
+            "-e", f"nodeutils_version={nodeutils_version}",
         ],
         mode="collect",
         artifact_stem="ansible/collect",
@@ -304,6 +317,7 @@ def run_observation(
     operation_log.emit("observation_completed", "nodeutils observation completed", ok=ok)
     return ObservationResult(
         ok=ok,
+        nodeutils_version=nodeutils_version,
         hosts=host_results,
         collection=collection,
         retrieval=retrieval,
