@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from nctl_core.nautobot import NautobotClient
 
@@ -43,9 +43,29 @@ ACTUAL_QUERY = """
     platform { name }
     _custom_field_data
   }
+  clusters {
+    id
+    name
+    cluster_type { name }
+    _custom_field_data
+  }
   virtual_machines {
     id
     name
+    cluster { id }
+    status { value }
+    role { name }
+    vcpus
+    memory
+    disk
+    _custom_field_data
+  }
+  vm_interfaces {
+    id
+    name
+    mac_address
+    virtual_machine { id }
+    _custom_field_data
   }
   interfaces {
     id
@@ -60,6 +80,7 @@ ACTUAL_QUERY = """
     mask_length
     dns_name
     interfaces { id }
+    vm_interfaces { id }
   }
 }
 """
@@ -194,9 +215,262 @@ class ActualDevice(BaseModel):
         return read_actual_facts(self.facts)
 
 
+# --------------------------------------------------------------------------------------
+# Proxmox typed actual state (Phase 2 Step 6).
+#
+# These models read only native Cluster/VirtualMachine/VMInterface fields plus the closed
+# `proxmox_*` allowlist documented in plan.md Section 5.4/5.6 and produced by
+# nauto/jobs/proxmox_upsert.py + proxmox_interfaces.py (verified against that source, not a
+# live schema, since no live Nautobot was reachable in this sandbox -- see report2.6.md).
+# Every nested model uses `extra="forbid"` so an unknown key inside a dedicated `proxmox_*`
+# custom field is a structured read error, not a silent pass-through. Unrelated custom-field
+# keys (e.g. `inventory_raw_json`, the Device fact allowlist above) are never read here --
+# each `_build_*` function below picks only the documented `proxmox_*` keys out of
+# `_custom_field_data` before handing them to these models.
+# --------------------------------------------------------------------------------------
+
+
+class ProxmoxObservationError(BaseModel):
+    """One bounded closed-code error, as emitted by build_observation_detail()."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_kind: str | None = None
+    scope_id: str | None = None
+    section: str | None = None
+    code: str | None = None
+
+
+class ProxmoxObservationDetail(BaseModel):
+    """`proxmox_observation_detail`: nauto's build_observation_detail() shape."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: str
+    omitted_error_count: int = 0
+    errors: list[ProxmoxObservationError] = []
+
+
+class ProxmoxLxcRootfs(BaseModel):
+    """`proxmox_lxc_rootfs`: nauto's build_lxc_rootfs() shape. Never populated for QEMU."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    storage: str | None = None
+    volume: str | None = None
+    size_gb: float | None = None
+
+
+class ProxmoxInterfaceDiagnostic(BaseModel):
+    """One bounded diagnostic entry inside `proxmox_interface_evidence[<slot>].diagnostics`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    config_slot: str | None = None
+    guest_interface_name: str | None = None
+    mac_address: str | None = None
+    reason: str | None = None
+
+
+class ProxmoxInterfaceEvidenceEntry(BaseModel):
+    """One `proxmox_interface_evidence[<slot>]` entry (slot name or `"unmatched"`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_observed_at: str | None = None
+    diagnostics: list[ProxmoxInterfaceDiagnostic] = []
+
+
+class ProxmoxManagedIpEntry(BaseModel):
+    """One `proxmox_managed_ip_evidence["managed"][<address>/<prefix>]` entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ip_id: str | None = None
+    evidence_observed_at: str | None = None
+
+
+class ProxmoxManagedIpEvidence(BaseModel):
+    """`proxmox_managed_ip_evidence`: only the ingestor-managed relation set (Section 5.5
+
+    "Interface/IP convergence"). Native IP relations not present in `managed` remain visible
+    on `ActualIPAddress.interface_ids`/future VM-interface relations but are not labeled here
+    as fresh Proxmox-observed evidence -- callers must not infer freshness for them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    managed: dict[str, ProxmoxManagedIpEntry] = {}
+    evidence_observed_at: str | None = None
+
+
+class ProxmoxClusterFacts(BaseModel):
+    """The closed `proxmox_*` allowlist read from a Cluster's `_custom_field_data`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_key: str | None = None
+    identity_source: str | None = None
+    observer_device_id: str | None = None
+    observed_node_names: list[str] = []
+    node_count: int | None = None
+    observed_at: str | None = None
+    observation_state: str | None = None
+    observation_detail: ProxmoxObservationDetail | None = None
+
+
+class ProxmoxVirtualMachineFacts(BaseModel):
+    """The closed `proxmox_*` allowlist read from a VirtualMachine's `_custom_field_data`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    guest_type: str | None = None
+    vmid: int | None = None
+    node: str | None = None
+    status: str | None = None
+    observed_at: str | None = None
+    observation_state: str | None = None
+    observation_detail: ProxmoxObservationDetail | None = None
+    lxc_rootfs: ProxmoxLxcRootfs | None = None
+    interface_evidence: dict[str, ProxmoxInterfaceEvidenceEntry] = {}
+
+
+class ProxmoxVMInterfaceFacts(BaseModel):
+    """The closed `proxmox_*` allowlist read from a VMInterface's `_custom_field_data`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    config_slot: str | None = None
+    guest_interface_name: str | None = None
+    bridge: str | None = None
+    interface_source: str | None = None
+    observed_at: str | None = None
+    presence: str | None = None
+    managed_ip_evidence: ProxmoxManagedIpEvidence | None = None
+
+
+class ProxmoxFactsReadError(BaseModel):
+    """A structured read error for one malformed dedicated `proxmox_*` custom field.
+
+    Produced when a `proxmox_*` value fails its strict nested model (Section 5.6: "Report
+    malformed dedicated JSON ... as a structured read error, not a silent skip or crash").
+    The owning object is still returned with `proxmox is None`; this error travels alongside
+    it in `ActualSnapshot.proxmox_read_errors` instead of raising out of the fetch.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    object_type: str
+    object_id: str
+    field: str
+    message: str
+
+
+# Closed allowlist: only these `proxmox_*` custom-field keys are ever read for each object
+# type. Anything else in `_custom_field_data` (including `inventory_raw_json` and unrelated
+# fields) is never inspected.
+_CLUSTER_PROXMOX_FIELDS = {
+    "scope_key": "proxmox_scope_key",
+    "identity_source": "proxmox_identity_source",
+    "observer_device_id": "proxmox_observer_device_id",
+    "observed_node_names": "proxmox_observed_node_names",
+    "node_count": "proxmox_node_count",
+    "observed_at": "proxmox_observed_at",
+    "observation_state": "proxmox_observation_state",
+    "observation_detail": "proxmox_observation_detail",
+}
+
+_VM_PROXMOX_FIELDS = {
+    "guest_type": "proxmox_guest_type",
+    "vmid": "proxmox_vmid",
+    "node": "proxmox_node",
+    "status": "proxmox_status",
+    "observed_at": "proxmox_observed_at",
+    "observation_state": "proxmox_observation_state",
+    "observation_detail": "proxmox_observation_detail",
+    "lxc_rootfs": "proxmox_lxc_rootfs",
+    "interface_evidence": "proxmox_interface_evidence",
+}
+
+_VMINTERFACE_PROXMOX_FIELDS = {
+    "config_slot": "proxmox_config_slot",
+    "guest_interface_name": "proxmox_guest_interface_name",
+    "bridge": "proxmox_bridge",
+    "interface_source": "proxmox_interface_source",
+    "observed_at": "proxmox_observed_at",
+    "presence": "proxmox_presence",
+    "managed_ip_evidence": "proxmox_managed_ip_evidence",
+}
+
+
+def _select_allowlisted(custom_fields: Mapping[str, Any], allowlist: dict[str, str]) -> dict[str, Any]:
+    """Copy only the allowlisted `proxmox_*` keys, dropping any key not in the mapping."""
+
+    data = custom_fields or {}
+    selected: dict[str, Any] = {}
+    for model_field, cf_key in allowlist.items():
+        if cf_key in data and data[cf_key] is not None:
+            selected[model_field] = data[cf_key]
+    return selected
+
+
+def _read_proxmox_facts(
+    *,
+    custom_fields: Mapping[str, Any] | None,
+    model: type[BaseModel],
+    allowlist: dict[str, str],
+    object_type: str,
+    object_id: str,
+    field_label: str,
+    errors: list[ProxmoxFactsReadError],
+) -> BaseModel | None:
+    """Read+validate one object's allowlisted `proxmox_*` fields into a strict model.
+
+    Returns ``None`` (and appends a bounded structured error) when the selected data fails
+    the strict model -- an unrelated/unknown nested key never silently passes through.
+    Returns ``None`` with no error when nothing allowlisted is present (host never observed).
+    """
+
+    data = custom_fields or {}
+    selected = _select_allowlisted(data, allowlist)
+    if not selected:
+        return None
+    try:
+        return model.model_validate(selected)
+    except ValidationError as exc:
+        errors.append(
+            ProxmoxFactsReadError(
+                object_type=object_type, object_id=object_id, field=field_label, message=str(exc)
+            )
+        )
+        return None
+
+
+class ActualCluster(BaseModel):
+    id: str
+    name: str
+    cluster_type: str | None = None
+    proxmox: ProxmoxClusterFacts | None = None
+
+
 class ActualVirtualMachine(BaseModel):
     id: str
     name: str
+    cluster_id: str | None = None
+    status: str | None = None
+    role: str | None = None
+    vcpus: int | None = None
+    memory: int | None = None
+    disk: int | None = None
+    proxmox: ProxmoxVirtualMachineFacts | None = None
+
+
+class ActualVMInterface(BaseModel):
+    id: str
+    name: str
+    mac_address: str | None = None
+    virtual_machine_id: str | None = None
+    proxmox: ProxmoxVMInterfaceFacts | None = None
 
 
 class ActualInterface(BaseModel):
@@ -213,6 +487,7 @@ class ActualIPAddress(BaseModel):
     mask_length: int
     dns_name: str | None = None
     interface_ids: list[str] = []
+    vm_interface_ids: list[str] = []
 
 
 class ActualSnapshot(BaseModel):
@@ -220,18 +495,26 @@ class ActualSnapshot(BaseModel):
     virtual_machines: list[ActualVirtualMachine] = []
     interfaces: list[ActualInterface] = []
     ip_addresses: list[ActualIPAddress] = []
+    clusters: list[ActualCluster] = []
+    vm_interfaces: list[ActualVMInterface] = []
+    proxmox_read_errors: list[ProxmoxFactsReadError] = []
 
 
 def fetch_actual_snapshot(client: NautobotClient) -> ActualSnapshot:
     data = client.graphql(ACTUAL_QUERY)
-    return ActualSnapshot(
+    read_errors: list[ProxmoxFactsReadError] = []
+    snapshot = ActualSnapshot(
         devices=[_build_device(row) for row in data["devices"]],
         virtual_machines=[
-            ActualVirtualMachine(id=row["id"], name=row["name"]) for row in data["virtual_machines"]
+            _build_virtual_machine(row, read_errors) for row in data["virtual_machines"]
         ],
         interfaces=[_build_interface(row) for row in data["interfaces"]],
         ip_addresses=[_build_ip_address(row) for row in data["ip_addresses"]],
+        clusters=[_build_cluster(row, read_errors) for row in data.get("clusters", [])],
+        vm_interfaces=[_build_vm_interface(row, read_errors) for row in data.get("vm_interfaces", [])],
+        proxmox_read_errors=read_errors,
     )
+    return snapshot
 
 
 def _build_device(row: dict[str, Any]) -> ActualDevice:
@@ -263,4 +546,70 @@ def _build_ip_address(row: dict[str, Any]) -> ActualIPAddress:
         mask_length=row["mask_length"],
         dns_name=row.get("dns_name"),
         interface_ids=[iface["id"] for iface in row.get("interfaces") or []],
+        vm_interface_ids=[iface["id"] for iface in row.get("vm_interfaces") or []],
+    )
+
+
+def _build_cluster(row: dict[str, Any], errors: list[ProxmoxFactsReadError]) -> ActualCluster:
+    cluster_type = row.get("cluster_type")
+    proxmox = _read_proxmox_facts(
+        custom_fields=row.get("_custom_field_data"),
+        model=ProxmoxClusterFacts,
+        allowlist=_CLUSTER_PROXMOX_FIELDS,
+        object_type="cluster",
+        object_id=row["id"],
+        field_label="proxmox",
+        errors=errors,
+    )
+    return ActualCluster(
+        id=row["id"],
+        name=row["name"],
+        cluster_type=cluster_type["name"] if cluster_type else None,
+        proxmox=proxmox,
+    )
+
+
+def _build_virtual_machine(row: dict[str, Any], errors: list[ProxmoxFactsReadError]) -> ActualVirtualMachine:
+    cluster = row.get("cluster")
+    status = row.get("status")
+    role = row.get("role")
+    proxmox = _read_proxmox_facts(
+        custom_fields=row.get("_custom_field_data"),
+        model=ProxmoxVirtualMachineFacts,
+        allowlist=_VM_PROXMOX_FIELDS,
+        object_type="virtual_machine",
+        object_id=row["id"],
+        field_label="proxmox",
+        errors=errors,
+    )
+    return ActualVirtualMachine(
+        id=row["id"],
+        name=row["name"],
+        cluster_id=cluster["id"] if cluster else None,
+        status=status["value"] if status else None,
+        role=role["name"] if role else None,
+        vcpus=row.get("vcpus"),
+        memory=row.get("memory"),
+        disk=row.get("disk"),
+        proxmox=proxmox,
+    )
+
+
+def _build_vm_interface(row: dict[str, Any], errors: list[ProxmoxFactsReadError]) -> ActualVMInterface:
+    vm = row.get("virtual_machine")
+    proxmox = _read_proxmox_facts(
+        custom_fields=row.get("_custom_field_data"),
+        model=ProxmoxVMInterfaceFacts,
+        allowlist=_VMINTERFACE_PROXMOX_FIELDS,
+        object_type="vm_interface",
+        object_id=row["id"],
+        field_label="proxmox",
+        errors=errors,
+    )
+    return ActualVMInterface(
+        id=row["id"],
+        name=row["name"],
+        mac_address=row.get("mac_address"),
+        virtual_machine_id=vm["id"] if vm else None,
+        proxmox=proxmox,
     )

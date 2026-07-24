@@ -14,6 +14,7 @@ from typing import Annotated, Optional
 import typer
 from pydantic import ValidationError
 
+from nctl_core.actual_render import build_actual, render_actual_text
 from nctl_core.braindump import (
     build_braindump_create,
     build_braindump_delete,
@@ -102,6 +103,24 @@ def status(config: ConfigOption = None, json_output: JsonOption = False) -> None
     cfg = _load_config(config)
     envelope = build_status(cfg)
     emit(envelope, json_output, render_status_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+ActualJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.actual.v1 envelope as JSON.")]
+
+
+@app.command()
+def actual(config: ConfigOption = None, json_output: ActualJsonOption = False) -> None:
+    """Read-only typed actual-state diagnostic: observer Device -> Proxmox Cluster -> guests.
+
+    Not drift and has no write path -- it renders only what nctl's typed actual reader
+    observed in Nautobot (native Cluster/VirtualMachine/VMInterface fields plus the
+    dedicated proxmox_* custom fields). It never infers desired ownership or the future
+    desired Cluster slug.
+    """
+    cfg = _load_config(config)
+    envelope = build_actual(cfg)
+    emit(envelope, json_output, render_actual_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
