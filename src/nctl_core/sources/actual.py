@@ -53,7 +53,7 @@ ACTUAL_QUERY = """
     id
     name
     cluster { id }
-    status { value }
+    status { name }
     role { name }
     vcpus
     memory
@@ -586,7 +586,7 @@ def _build_virtual_machine(row: dict[str, Any], errors: list[ProxmoxFactsReadErr
         id=row["id"],
         name=row["name"],
         cluster_id=cluster["id"] if cluster else None,
-        status=status["value"] if status else None,
+        status=status["name"] if status else None,
         role=role["name"] if role else None,
         vcpus=row.get("vcpus"),
         memory=row.get("memory"),

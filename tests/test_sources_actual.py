@@ -42,7 +42,7 @@ _AGDNSMASQ_VM_ROW = {
     "id": "vm-108",
     "name": "agdnsmasq",
     "cluster": {"id": "cluster-1"},
-    "status": {"value": "active"},
+    "status": {"name": "Active"},
     "role": {"name": "lxc-container"},
     "vcpus": 1,
     "memory": 512,
