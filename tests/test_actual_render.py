@@ -117,6 +117,23 @@ def test_render_actual_data_marks_managed_vs_unrelated_ip_relations():
     assert iface.unrelated_ip_ids == ["ip-foreign"]
 
 
+def test_render_actual_data_classifies_native_mask_mismatch_as_managed_by_id():
+    # sidefix2/plan.md Section 4.4: a shared IPAddress's native mask_length (here /32, e.g. an
+    # unrelated pre-existing DNS-facing row) is not the same thing as the exact observed-prefix
+    # evidence key (here /24) nauto records after adopting it. Classification must stay ID-based
+    # and must never read this mask mismatch as "unrelated".
+    snapshot = _aghub_snapshot()
+    snapshot.ip_addresses[0] = ActualIPAddress(
+        id="ip-108", host="192.168.0.108", mask_length=32, vm_interface_ids=["iface-108-net0"]
+    )
+
+    data = render_actual_data(snapshot)
+    iface = data.clusters[0].guests[0].interfaces[0]
+
+    assert iface.managed_ip_count == 1
+    assert iface.unrelated_ip_ids == ["ip-foreign"]
+
+
 def test_render_actual_text_shows_observer_cluster_and_guest_line():
     data = render_actual_data(_aghub_snapshot())
     envelope = Envelope.build("nctl.actual.v1", data)
