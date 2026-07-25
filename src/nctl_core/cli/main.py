@@ -140,7 +140,7 @@ OutOption = Annotated[
     Optional[Path],
     typer.Option("--out", help="Write the conf to this path instead of stdout (prints a summary instead)."),
 ]
-RenderJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.render.dnsmasq.v2 envelope as JSON.")]
+RenderJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.render.dnsmasq.v3 envelope as JSON.")]
 
 
 @render_app.command("dnsmasq")
