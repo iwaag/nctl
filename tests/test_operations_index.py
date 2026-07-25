@@ -132,6 +132,29 @@ def test_list_operations_missing_dir_is_empty(tmp_path):
     assert list_operations(tmp_path / "does-not-exist") == []
 
 
+def test_historical_result_json_with_removed_dashboard_field_is_listed_opaquely(tmp_path):
+    """remove_unused_surfaces p1: a `result.json` written before the server/dashboard removal can
+    contain fields (e.g. an old `dashboard` block) that no current schema defines. `nctl ops`
+    must list it as an ordinary artifact by name/size only -- never parse, rewrite, or reject its
+    contents on account of the removed shape."""
+    log = _finished_op(tmp_path)
+    artifacts = OperationArtifacts.create(tmp_path, log.operation_id)
+    artifacts.write_json(
+        "result.json",
+        {
+            "schema": "nctl.reconcile.v2",
+            "ok": True,
+            "dashboard": {"out_dir": "/old/path", "url": "http://old.example/"},
+            "reconciliation_status": "converged",
+        },
+    )
+    record = load_operation(tmp_path, log.operation_id)
+    assert [a.name for a in record.artifacts] == ["result.json"]
+    assert record.artifacts[0].size_bytes > 0
+    assert record.state == "finished"
+    assert record.ok is True
+
+
 def test_list_operations_over_real_phase4_layout(tmp_path):
     """An applying-reconcile-shaped fixture: JSONL + plan/round artifacts like Phase 4 writes."""
     log = OperationLog.start("reconcile", tmp_path)

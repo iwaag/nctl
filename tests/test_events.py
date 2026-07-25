@@ -50,3 +50,31 @@ def test_write_failure_does_not_raise(tmp_path):
     op = OperationLog.start("status", blocked / "events")
     # start() itself must not raise even though log_dir.mkdir() will fail.
     op.emit("step_started", "still works")
+
+
+def test_emit_returns_the_record_even_when_persistence_fails(tmp_path, capsys):
+    """remove_unused_surfaces p1: emit()'s return value is the durable contract's own promise,
+    independent of any subscriber/listener -- it must not become conditional on a successful
+    write or on anything downstream of the write."""
+    blocked = tmp_path / "not_a_dir"
+    blocked.write_text("i am a file, not a directory")
+    op = OperationLog.start("status", blocked / "events")
+    capsys.readouterr()
+    record = op.emit("step_started", "still returns a record", host_count=2)
+    assert record.event == "step_started"
+    assert record.message == "still returns a record"
+    assert record.data == {"host_count": 2}
+    assert record.operation_id == op.operation_id
+    assert record.seq == 1
+
+
+def test_write_failure_warns_at_most_once_per_operation_log(tmp_path, capsys):
+    blocked = tmp_path / "not_a_dir"
+    blocked.write_text("i am a file, not a directory")
+    capsys.readouterr()
+    op = OperationLog.start("status", blocked / "events")
+    op.emit("step_started", "one")
+    op.emit("step_completed", "two")
+    op.finish(ok=True)
+    stderr = capsys.readouterr().err
+    assert stderr.count("warning: failed to write event log") == 1
