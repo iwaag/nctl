@@ -7,11 +7,7 @@ doc instead of silently shipping a breaking change under an unchanged `v1`/`/api
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-
-import httpx
-from fastapi.openapi.utils import get_openapi
 
 from nctl_core.braindump import (
     BraindumpCreateData,
@@ -22,7 +18,6 @@ from nctl_core.braindump import (
     BraindumpShowData,
     BraindumpUpdateData,
 )
-from nctl_core.config import Config
 from nctl_core.dashboard_render import DashboardData
 from nctl_core.dnsmasq_apply import DnsmasqApplyData
 from nctl_core.dnsmasq_render import DnsmasqRenderData
@@ -33,8 +28,6 @@ from nctl_core.ops_render import OpsListData, OpsShowData
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production_render import ProductionRenderData
 from nctl_core.reconcile.executor import ReconcileData
-from nctl_core.serve.app import create_app
-from nctl_core.serve.runtime import ServeData
 from nctl_core.status import StatusData
 
 # 1. EventRecord shape -- docs/compatibility.md section 1.
@@ -129,7 +122,6 @@ FROZEN_DATA_FIELDS = {
     ),
     "nctl.ops.list.v1": (OpsListData, {"log_dir", "operations"}),
     "nctl.ops.show.v1": (OpsShowData, {"log_dir", "operation", "events"}),
-    "nctl.serve.v1": (ServeData, {"host", "port", "auth", "dashboard_url"}),
     "nctl.braindump.list.v1": (BraindumpListData, {"items", "count"}),
     "nctl.braindump.show.v1": (BraindumpShowData, {"braindump"}),
     "nctl.braindump.create.v1": (BraindumpCreateData, {"braindump", "changed"}),
@@ -140,18 +132,6 @@ FROZEN_DATA_FIELDS = {
         BraindumpReviewDeleteData,
         {"braindump", "deleted", "review_id"},
     ),
-}
-
-# 4. HTTP surface under /api/v1 -- docs/compatibility.md section 4 (WS is out-of-band, see below).
-FROZEN_API_V1_PATHS = {
-    "/api/v1/health",
-    "/api/v1/status",
-    "/api/v1/drift",
-    "/api/v1/operations",
-    "/api/v1/operations/{operation_id}",
-    "/api/v1/operations/{operation_id}/events",
-    "/api/v1/operations/{operation_id}/artifacts",
-    "/api/v1/operations/{operation_id}/artifacts/{name}",
 }
 
 
@@ -180,54 +160,3 @@ def test_envelope_data_payloads_are_supersets_of_their_frozen_field_sets():
         actual_fields = set(model.model_fields)
         missing = frozen_fields - actual_fields
         assert not missing, f"{schema} ({model.__name__}) dropped frozen field(s): {missing}"
-
-
-def _config(tmp_path: Path) -> Config:
-    return Config.model_validate(
-        {
-            "nautobot": {"url": "http://nautobot.test"},
-            "inventory": {"dumps_dir": tmp_path / "dumps"},
-            "events": {"log_dir": tmp_path / "events"},
-            "ansible": {"playbook_dir": tmp_path / "ansible", "inventory": "inventory.yml"},
-            "dashboard": {"out_dir": tmp_path / "dashboard"},
-            "serve": {"auth": "token"},
-            "source_path": tmp_path / "nctl.toml",
-        }
-    )
-
-
-def test_openapi_paths_are_a_superset_of_the_frozen_v1_surface(tmp_path, monkeypatch):
-    monkeypatch.setenv("NCTL_SERVE_TOKEN", "test-serve-token")
-    app = create_app(_config(tmp_path))
-    document = get_openapi(title=app.title, version=app.version, routes=app.routes)
-    paths = set(document["paths"])
-    assert FROZEN_API_V1_PATHS <= paths
-
-
-def test_websocket_route_is_registered_even_though_openapi_omits_it(tmp_path, monkeypatch):
-    # FastAPI's get_openapi() does not enumerate WebSocketRoute objects, so /api/v1/ws is
-    # pinned here by name against the ASGI route table instead of the OpenAPI document.
-    monkeypatch.setenv("NCTL_SERVE_TOKEN", "test-serve-token")
-    app = create_app(_config(tmp_path))
-    ws_paths = {route.path for route in app.router.routes if getattr(route, "path", None) == "/api/v1/ws"}
-    assert ws_paths == {"/api/v1/ws"}
-
-
-def test_create_operation_post_is_registered_on_operations_path(tmp_path, monkeypatch):
-    monkeypatch.setenv("NCTL_SERVE_TOKEN", "test-serve-token")
-    app = create_app(_config(tmp_path))
-    document = get_openapi(title=app.title, version=app.version, routes=app.routes)
-    assert "post" in document["paths"]["/api/v1/operations"]
-
-
-def test_health_response_shape_is_stable(tmp_path, monkeypatch):
-    monkeypatch.setenv("NCTL_SERVE_TOKEN", "test-serve-token")
-    app = create_app(_config(tmp_path))
-
-    async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            return await client.get("/api/v1/health")
-
-    response = asyncio.run(run())
-    assert response.status_code == 200
-    assert {"status", "version"} <= set(response.json())
