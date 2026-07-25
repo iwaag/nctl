@@ -5,6 +5,7 @@ server package while accidentally leaving a Typer command registration or lazy
 import behind. `dashboard` is intentionally retained until Phase 2.
 """
 
+import typer.main
 from typer.testing import CliRunner
 
 import nctl_core.cli.main as main
@@ -27,12 +28,16 @@ RETAINED_COMMANDS = {
 }
 
 
-def test_help_lists_exactly_the_retained_commands_and_no_serve():
+def test_registered_top_level_commands_are_exactly_the_retained_set():
+    click_app = typer.main.get_command(main.app)
+    assert set(click_app.commands) == RETAINED_COMMANDS
+
+
+def test_help_lists_every_retained_command():
     result = runner.invoke(main.app, ["--help"])
     assert result.exit_code == 0
     for command in RETAINED_COMMANDS:
         assert command in result.stdout, f"missing retained command: {command}"
-    assert "serve" not in result.stdout
 
 
 def test_serve_is_an_unknown_command_not_a_compatibility_path():

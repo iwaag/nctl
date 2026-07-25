@@ -31,7 +31,7 @@ from nctl_core.braindump import (
     render_braindump_show_text,
     render_braindump_update_text,
 )
-from nctl_core.config import Config, ConfigError, ConfigInvalidError, ServeConfig
+from nctl_core.config import Config, ConfigError
 from nctl_core.dashboard_render import build_dashboard, render_dashboard_text
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
 from nctl_core.dnsmasq_render import build_dnsmasq_render, render_dnsmasq_conf_text, render_dnsmasq_summary_text
@@ -54,7 +54,6 @@ from nctl_core.production_render import (
 from nctl_core.reconcile.executor import render_reconcile_text, run_reconcile
 from nctl_core.session import build_session_new, render_session_new_text
 from nctl_core.status import build_status, render_status_text
-from nctl_core.serve.runtime import build_serve_startup, render_serve_text, run_server
 from nctl_core.ssh_enroll import build_ssh_enroll, render_ssh_enroll_text
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
@@ -432,41 +431,6 @@ def lifecycle(
     if any(error.code in ("invalid_lifecycle", "unknown_node") for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
-
-
-ServeHostOption = Annotated[Optional[str], typer.Option("--host", help="Override [serve].host for this run.")]
-ServePortOption = Annotated[Optional[int], typer.Option("--port", min=1, max=65535, help="Override [serve].port.")]
-ServeJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.serve.v1 startup envelope as JSON.")]
-
-
-@app.command()
-def serve(
-    config: ConfigOption = None,
-    host: ServeHostOption = None,
-    port: ServePortOption = None,
-    json_output: ServeJsonOption = False,
-) -> None:
-    """Run the foreground HTTP subscriber API."""
-    cfg = _load_config(config)
-    try:
-        serve_values = cfg.serve.model_dump()
-        if host is not None:
-            serve_values["host"] = host
-        if port is not None:
-            serve_values["port"] = port
-        cfg = cfg.model_copy(update={"serve": ServeConfig.model_validate(serve_values)})
-        # Resolve now so startup fails before claiming that the server is listening.
-        if cfg.serve.auth == "token" and cfg.serve.resolve_token() is None:
-            raise ConfigInvalidError(
-                f"serve auth is enabled but no token was found in ${cfg.serve.token_env} or serve.token_file"
-            )
-    except (ConfigError, ValidationError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(EXIT_USAGE)
-
-    envelope = build_serve_startup(cfg)
-    emit(envelope, json_output, render_serve_text)
-    run_server(cfg)
 
 
 class AuthorshipChoice(str, Enum):
