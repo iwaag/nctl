@@ -1,8 +1,8 @@
-"""Schema snapshot tests enforcing docs/compatibility.md (Phase 5 Step 6).
+"""Schema snapshot tests enforcing docs/compatibility.md.
 
 Every set pinned here is a floor, not a ceiling: additions are fine (that's why these are
 `<=` checks, not `==`), but a rename/removal must fail loudly and point back at the policy
-doc instead of silently shipping a breaking change under an unchanged `v1`/`/api/v1` name.
+doc instead of silently shipping a breaking change under an unchanged `v1` name.
 """
 
 from __future__ import annotations
