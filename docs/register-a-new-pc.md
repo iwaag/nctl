@@ -1,5 +1,8 @@
 # Recipe: register a new PC
 
+> [!NOTE]
+> **Superseded Note (Interface Contract Phase 3):** The nintent Nautobot UI is read-only. UI add/edit/delete forms, `sources/add/`, and Quick Host Add (`nodes/quick-add/`) have been removed. Declare desired nodes and endpoints in `nauto/seed/intent_sources.yaml` and load them via the `Import Intent Sources` Job. Use `nctl lifecycle NODE` for lifecycle transitions.
+
 The literal current path from "here is a new machine" to "converged, running under nctl
 reconcile" — the intent-first flow Better Usability Phase 4 (`devdocs/big/better_usability/p4/`)
 consolidated. Every mechanism step below (accepted actual types, lifecycle, DNS/mDNS names) is
