@@ -18,7 +18,6 @@ from nctl_core.braindump import (
     BraindumpShowData,
     BraindumpUpdateData,
 )
-from nctl_core.dashboard_render import DashboardData
 from nctl_core.dnsmasq_apply import DnsmasqApplyData
 from nctl_core.dnsmasq_render import DnsmasqRenderData
 from nctl_core.drift_render import DriftData
@@ -68,10 +67,6 @@ FROZEN_ENVELOPE_ERROR_FIELDS = {"code", "message", "detail"}
 FROZEN_DATA_FIELDS = {
     "nctl.status.v1": (StatusData, {"operation_id", "nautobot", "dumps", "submodules"}),
     "nctl.drift.v1": (DriftData, {"generated_at", "summary", "severity_summary", "targets", "sources"}),
-    "nctl.dashboard.v1": (
-        DashboardData,
-        {"html_path", "drift_json_path", "generated_at", "summary", "severity_summary", "status_push", "dashboard_url"},
-    ),
     "nctl.apply.dnsmasq.v2": (
         DnsmasqApplyData,
         {
@@ -99,27 +94,6 @@ FROZEN_DATA_FIELDS = {
         HostsIntentRenderData,
         {"schema_version", "summary", "inventory", "hosts", "skipped", "inventory_yaml", "export_json"},
     ),
-    "nctl.reconcile.v2": (
-        ReconcileData,
-        {
-            "operation_id",
-            "mode",
-            "scope",
-            "state",
-            "event_log_path",
-            "artifact_dir",
-            "plan_path",
-            "initial_drift_path",
-            "final_drift_path",
-            "rounds",
-            "manual_review",
-            "unsupported",
-            "summary",
-            "scope_summary",
-            "dashboard",
-            "progress_made",
-        },
-    ),
     "nctl.ops.list.v1": (OpsListData, {"log_dir", "operations"}),
     "nctl.ops.show.v1": (OpsShowData, {"log_dir", "operation", "events"}),
     "nctl.braindump.list.v1": (BraindumpListData, {"items", "count"}),
@@ -133,6 +107,34 @@ FROZEN_DATA_FIELDS = {
         {"braindump", "deleted", "review_id"},
     ),
 }
+
+
+# `nctl.reconcile.v2` -- docs/compatibility.md section 3. Unlike the other schemas above, this
+# one is an *exact* assertion (not a floor): remove_unused_surfaces Phase 0 froze this exact
+# field set, and a hidden extra presentation field (e.g. a reintroduced `dashboard`) would
+# violate that frozen contract just as much as a dropped field would.
+FROZEN_RECONCILE_DATA_FIELDS = {
+    "operation_id",
+    "mode",
+    "scope",
+    "state",
+    "event_log_path",
+    "artifact_dir",
+    "plan_path",
+    "initial_drift_path",
+    "final_drift_path",
+    "rounds",
+    "manual_review",
+    "unsupported",
+    "summary",
+    "scope_summary",
+    "progress_made",
+    "ssh_preflight",
+}
+
+
+def test_reconcile_data_fields_are_exactly_the_frozen_set_with_no_dashboard_field():
+    assert set(ReconcileData.model_fields) == FROZEN_RECONCILE_DATA_FIELDS
 
 
 def test_event_record_fields_are_a_superset_of_the_frozen_set():

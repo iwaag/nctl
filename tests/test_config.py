@@ -151,6 +151,14 @@ def test_serve_section_is_rejected_as_unknown(tmp_path):
         Config.load(write_config(tmp_path, VALID + '\n[serve]\nhost = "127.0.0.1"\n'))
 
 
+def test_dashboard_section_is_rejected_as_unknown(tmp_path):
+    """remove_unused_surfaces p2: `dashboard` is deleted, not deprecated -- `[dashboard]` must
+    fail strict validation like any other unrecognized top-level section, not be silently
+    ignored or mapped to a compatibility alias."""
+    with pytest.raises(ConfigInvalidError, match="dashboard"):
+        Config.load(write_config(tmp_path, VALID + '\n[dashboard]\nout_dir = "/tmp/dash"\n'))
+
+
 def test_ssh_config_defaults_when_section_absent(tmp_path):
     cfg = Config.load(write_config(tmp_path))
     assert cfg.ssh.known_hosts_file == Path("~/.local/state/nctl/ssh/known_hosts")

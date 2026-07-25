@@ -1,8 +1,8 @@
-"""Top-level CLI surface contract for remove_unused_surfaces Phase 1 (plan.md Step 1/5.3).
+"""Top-level CLI surface contract for remove_unused_surfaces Phase 2 (plan.md Step 1/5.3).
 
 Protects a failure mode distinct from any single command's own tests: deleting the
-server package while accidentally leaving a Typer command registration or lazy
-import behind. `dashboard` is intentionally retained until Phase 2.
+dashboard package while accidentally leaving a Typer command registration or lazy
+import behind. `serve` was removed in Phase 1; `dashboard` is removed here.
 """
 
 import typer.main
@@ -16,7 +16,6 @@ RETAINED_COMMANDS = {
     "status",
     "actual",
     "drift",
-    "dashboard",
     "reconcile",
     "lifecycle",
     "render",
@@ -42,5 +41,11 @@ def test_help_lists_every_retained_command():
 
 def test_serve_is_an_unknown_command_not_a_compatibility_path():
     result = runner.invoke(main.app, ["serve"])
+    assert result.exit_code == 2
+    assert "no such command" in result.stderr.lower() or "no such command" in result.stdout.lower()
+
+
+def test_dashboard_is_an_unknown_command_not_a_compatibility_path():
+    result = runner.invoke(main.app, ["dashboard"])
     assert result.exit_code == 2
     assert "no such command" in result.stderr.lower() or "no such command" in result.stdout.lower()
