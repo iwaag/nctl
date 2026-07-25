@@ -1,11 +1,11 @@
-# Compatibility policy (frozen from Phase 5 onward)
+# Compatibility policy
 
-Phase 5 gives `nctl_core` external subscribers (HTTP/WebSocket clients, not just the CLI and a
-human reading its stdout). From this phase onward the shapes below are **frozen**: they may grow
-additively, but existing fields/names never change meaning or disappear within the same version.
-Schema snapshot tests in `tests/test_compatibility_snapshots.py` pin every shape listed here and
-fail CI if a change would break it — that failure is the enforcement mechanism, this document is
-the policy it enforces.
+The JSONL event log, operation artifacts, and CLI envelope shapes below are read by the CLI and
+by `nctl ops` as durable disk evidence, not published to or consumed by any external subscriber.
+They are still **frozen**: they may grow additively, but existing fields/names never change
+meaning or disappear within the same version. Schema snapshot tests in
+`tests/test_compatibility_snapshots.py` pin every shape listed here and fail CI if a change would
+break it — that failure is the enforcement mechanism, this document is the policy it enforces.
 
 "Frozen" means, concretely:
 
@@ -16,8 +16,7 @@ the policy it enforces.
   are always fine to add.
 
 A breaking change to any of these is only made by minting a new major version alongside the old
-one (`nctl.<command>.v2`, a new `/api/v2/` prefix) for a deprecation window — never by mutating
-`v1`/`/api/v1/` in place.
+one (`nctl.<command>.v2`) for a deprecation window — never by mutating `v1` in place.
 
 ## 1. `EventRecord` shape (`nctl_core.events.EventRecord`)
 
@@ -60,7 +59,6 @@ at its current field set and may only gain fields:
 | `nctl.reconcile.v2` | `ReconcileData` (`nctl_core.reconcile.executor`) |
 | `nctl.ops.list.v1` | `OpsListData` (`nctl_core.ops_render`) |
 | `nctl.ops.show.v1` | `OpsShowData` (`nctl_core.ops_render`) |
-| `nctl.serve.v1` | `ServeData` (`nctl_core.serve.runtime`) |
 | `nctl.braindump.list.v1` | `BraindumpListData` (`nctl_core.braindump`) |
 | `nctl.braindump.show.v1` | `BraindumpShowData` (`nctl_core.braindump`) |
 | `nctl.braindump.create.v1` | `BraindumpCreateData` (`nctl_core.braindump`) |
@@ -71,29 +69,6 @@ at its current field set and may only gain fields:
 
 A breaking change to any `data` shape above mints `nctl.<command>.v2` and keeps `v1` emitting
 its current shape for a deprecation window; it does not alter `v1` in place.
-
-## 4. HTTP/WS API surface (`/api/v1`)
-
-Every path under `/api/v1/*` is subject to the same additive-only rule as the envelopes: methods
-and response shapes for the paths below may gain fields/paths/methods but an existing
-method+path combination never removes or repurposes what it returns.
-
-Current frozen surface (see `nctl_core.serve.app.create_app`):
-
-- `GET /api/v1/health` — the only unauthenticated endpoint under `/api/v1`.
-- `GET /api/v1/status`, `GET /api/v1/drift` — latest persisted snapshots.
-- `GET /api/v1/operations`, `POST /api/v1/operations` — list / create.
-- `GET /api/v1/operations/{operation_id}` — one operation's record + terminal result.
-- `GET /api/v1/operations/{operation_id}/events` — JSONL replay by `after_seq`.
-- `GET /api/v1/operations/{operation_id}/artifacts`, `.../artifacts/{name}` — allowlisted
-  artifact listing/fetch.
-- `WS /api/v1/ws` — event stream (`EventRecord` frames, unchanged from the JSONL shape above).
-  FastAPI's generated `/openapi.json` does not enumerate WebSocket routes, so this path is
-  tracked here and in `tests/test_compatibility_snapshots.py` by name rather than via the
-  OpenAPI snapshot.
-
-`GET /`, `GET /openapi.json` are server-infrastructure routes, not part of the versioned API
-contract, and are not subject to this freeze.
 
 ## Out of scope for this policy
 

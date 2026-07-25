@@ -23,7 +23,6 @@ below assume `uv run --project nctl` prefixing `nctl`.
 | "Show one operation's detail" | `nctl ops show OPERATION_ID` |
 | "Show/update the Braindump diary" | `nctl braindump list` / `nctl braindump show ID` / `nctl braindump create ...` |
 | "Start a new agent session for a task" | `nctl session new TASK_NAME --topic TOPIC` |
-| "Serve the live dashboard/API" | `nctl serve` |
 
 ## nodeutils specifically
 
