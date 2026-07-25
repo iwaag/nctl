@@ -94,7 +94,7 @@ FROZEN_DATA_FIELDS = {
             "ansible",
         },
     ),
-    "nctl.render.dnsmasq.v2": (
+    "nctl.render.dnsmasq.v3": (
         DnsmasqRenderData,
         {"schema_version", "summary", "dns_records", "dhcp_reservations", "dhcp_ranges", "skipped", "conf", "content_sha256"},
     ),

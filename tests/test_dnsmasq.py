@@ -32,6 +32,7 @@ def endpoint(
     dnsmasq_record_type: str = "host_record",
     mdns_name: str | None = None,
     vpn_dns_name: str | None = None,
+    mac_address: str | None = None,
 ) -> dict:
     return {
         "id": f"endpoint-{name}",
@@ -45,16 +46,24 @@ def endpoint(
         "generate_dnsmasq": generate_dnsmasq,
         "ip_policy": ip_policy,
         "dnsmasq_record_type": dnsmasq_record_type,
+        "mac_address": mac_address,
     }
 
 
-def endpoint_evaluation(endpoint_obj: dict, *, mac_candidates=None, ready: bool = True) -> dict:
+def endpoint_evaluation(endpoint_obj: dict, *, mac_candidates=None, ready: bool = True, gap_codes=None) -> dict:
     return {
         str(endpoint_obj["id"]): {
-            "deterministic_summary": {"dhcp_reservation_ready": ready},
+            "deterministic_summary": {"dhcp_reservation_ready": ready, "gap_codes": gap_codes or []},
             "observed_facts": {"dhcp_mac_candidates": mac_candidates or []},
         }
     }
+
+
+def eval_row(endpoint_obj: dict, *, mac_candidates=None, ready: bool = True, gap_codes=None) -> dict:
+    """The single-row shape `resolve_dhcp_reservation(endpoint_evaluation=...)` takes directly
+    (as opposed to `endpoint_evaluation()`'s `{target_id: row}` map, which is what
+    `export_dnsmasq_records(endpoint_evaluations=...)` takes)."""
+    return endpoint_evaluation(endpoint_obj, mac_candidates=mac_candidates, ready=ready, gap_codes=gap_codes)[str(endpoint_obj["id"])]
 
 
 def ip_range(
@@ -411,6 +420,7 @@ def test_json_payload_separates_dns_reservations_ranges_and_skipped() -> None:
         "dhcp_reservations",
         "dhcp_ranges",
         "skipped",
+        "blocking_findings",
     ]
     assert payload["dns_records"][0]["line"] == "host-record=edge-1.example.test,192.0.2.10"
     assert payload["dhcp_reservations"][0]["line"] == "dhcp-host=aa:bb:cc:dd:ee:ff,edge-1.example.test,192.0.2.10"
@@ -506,3 +516,186 @@ def test_cross_repository_dnsmasq_v5_golden_bytes_and_digest() -> None:
 
     assert conf == expected
     assert dnsmasq_content_sha256(conf) == GOLDEN_DNSMASQ_SHA256
+
+
+# --- VM p3 Step 6: desired MAC as a safe dnsmasq consumer ---------------------
+
+
+def test_desired_mac_reservation_emitted_with_zero_actual_evidence() -> None:
+    """Rule 1: a complete desired endpoint with NO actual node/interface evidence
+    at all still gets a reservation, sourced entirely from the desired MAC."""
+    active = node("Edge 1", "edge-1", "active")
+    primary = endpoint(
+        name="primary",
+        desired_node=active,
+        dns_name="edge-1.example.test",
+        ip_address="192.0.2.10/32",
+        mac_address="aa:bb:cc:dd:ee:ff",
+    )
+
+    reservation = resolve_dhcp_reservation(primary)
+
+    assert reservation["skip_reasons"] == []
+    assert reservation["blocking"] is False
+    assert reservation["mac_address"] == "aa:bb:cc:dd:ee:ff"
+    assert reservation["mac_source"] == "desired_endpoint"
+    assert reservation["confidence"] == "deterministic_desired"
+    assert reservation["actual_ref"] is None
+    assert reservation["actual_mac_candidates"] == []
+    assert reservation["line"] == "dhcp-host=aa:bb:cc:dd:ee:ff,edge-1.example.test,192.0.2.10"
+
+
+def test_desired_mac_reservation_records_both_provenances_when_actual_agrees() -> None:
+    """Rule 2: desired MAC and the single reliable actual MAC candidate agree."""
+    active = node("Edge 1", "edge-1", "active")
+    primary = endpoint(
+        name="primary",
+        desired_node=active,
+        dns_name="edge-1.example.test",
+        ip_address="192.0.2.10/32",
+        mac_address="aa:bb:cc:dd:ee:ff",
+    )
+
+    reservation = resolve_dhcp_reservation(
+        primary,
+        endpoint_evaluation=eval_row(primary, mac_candidates=[mac_candidate(mac_address="aa:bb:cc:dd:ee:ff")]),
+    )
+
+    assert reservation["skip_reasons"] == []
+    assert reservation["blocking"] is False
+    assert reservation["mac_address"] == "aa:bb:cc:dd:ee:ff"
+    assert reservation["mac_source"] == "desired_endpoint"
+    assert reservation["confidence"] == "deterministic_desired"
+    assert reservation["actual_ref"] == {"object_type": "dcim.device", "id": "actual-node-1", "name": "Edge 1"}
+
+
+def test_desired_mac_reservation_blocks_on_disagreement_with_actual() -> None:
+    """Rule 3: desired MAC and a reliable single actual MAC candidate disagree --
+    not an ordinary reservation, contributes to whole-render blocking instead."""
+    active = node("Edge 1", "edge-1", "active")
+    primary = endpoint(
+        name="primary",
+        desired_node=active,
+        dns_name="edge-1.example.test",
+        ip_address="192.0.2.10/32",
+        mac_address="aa:bb:cc:dd:ee:ff",
+    )
+
+    reservation = resolve_dhcp_reservation(
+        primary,
+        endpoint_evaluation=eval_row(
+            primary,
+            mac_candidates=[mac_candidate(mac_address="11:22:33:44:55:66")],
+            gap_codes=["desired_mac_mismatch"],
+        ),
+    )
+
+    assert reservation["line"] == ""
+    assert reservation["blocking"] is True
+    assert reservation["skip_reasons"] == ["desired_mac_mismatch"]
+    assert reservation["actual_ref"] is None
+    assert reservation["confidence"] == "none"
+
+
+def test_no_desired_mac_is_byte_identical_to_pre_step6_behavior() -> None:
+    """Rule 4: an endpoint with no desired MAC renders exactly as before this step."""
+    active = node("Edge 1", "edge-1", "active")
+    primary = endpoint(
+        name="primary",
+        desired_node=active,
+        dns_name="edge-1.example.test",
+        ip_address="192.0.2.10/32",
+    )
+
+    reservation = resolve_dhcp_reservation(
+        primary,
+        endpoint_evaluation=eval_row(primary, mac_candidates=[mac_candidate()]),
+    )
+
+    assert reservation["skip_reasons"] == []
+    assert reservation["line"] == "dhcp-host=aa:bb:cc:dd:ee:ff,edge-1.example.test,192.0.2.10"
+    assert reservation["mac_address"] == "aa:bb:cc:dd:ee:ff"
+    assert reservation["mac_source"] == "actual_evidence"
+    assert reservation["confidence"] == "deterministic"
+    assert reservation["blocking"] is False
+
+
+def test_ambiguous_interface_is_promoted_to_blocking_on_an_otherwise_eligible_endpoint() -> None:
+    """Rule 5: multiple conflicting actual MAC candidates on an otherwise
+    DHCP-eligible endpoint promote to whole-file blocking, even with no desired MAC."""
+    active = node("Edge 1", "edge-1", "active")
+    primary = endpoint(
+        name="primary",
+        desired_node=active,
+        dns_name="edge-1.example.test",
+        ip_address="192.0.2.10/32",
+    )
+
+    reservation = resolve_dhcp_reservation(
+        primary,
+        endpoint_evaluation=eval_row(
+            primary,
+            mac_candidates=[
+                mac_candidate(mac_address="aa:bb:cc:dd:ee:ff", interface_name="eth0"),
+                mac_candidate(mac_address="11:22:33:44:55:66", interface_name="eth1"),
+            ],
+        ),
+    )
+
+    assert "ambiguous_interface" in reservation["skip_reasons"]
+    assert reservation["blocking"] is True
+
+
+def test_ambiguous_interface_is_not_blocking_when_endpoint_is_ordinarily_ineligible() -> None:
+    """An endpoint that was never going to get a reservation anyway (e.g.
+    generate_dnsmasq=false) is an ordinary skip, not a whole-file blocker."""
+    active = node("Edge 1", "edge-1", "active")
+    primary = endpoint(
+        name="primary",
+        desired_node=active,
+        dns_name="edge-1.example.test",
+        ip_address="192.0.2.10/32",
+        generate_dnsmasq=False,
+    )
+
+    reservation = resolve_dhcp_reservation(
+        primary,
+        endpoint_evaluation=eval_row(
+            primary,
+            mac_candidates=[
+                mac_candidate(mac_address="aa:bb:cc:dd:ee:ff", interface_name="eth0"),
+                mac_candidate(mac_address="11:22:33:44:55:66", interface_name="eth1"),
+            ],
+        ),
+    )
+
+    assert reservation["blocking"] is False
+
+
+def test_export_dnsmasq_records_collects_blocking_findings() -> None:
+    active = node("Edge 1", "edge-1", "active")
+    mismatched = endpoint(
+        name="mismatched",
+        desired_node=active,
+        dns_name="edge-1.example.test",
+        ip_address="192.0.2.10/32",
+        mac_address="aa:bb:cc:dd:ee:ff",
+    )
+
+    export = export_dnsmasq_records(
+        [mismatched],
+        endpoint_evaluations=endpoint_evaluation(
+            mismatched,
+            mac_candidates=[mac_candidate(mac_address="11:22:33:44:55:66")],
+            gap_codes=["desired_mac_mismatch"],
+        ),
+    )
+
+    assert export.dhcp_reservations == []
+    assert len(export.blocking_findings) == 1
+    finding = export.blocking_findings[0]
+    assert finding["code"] == "desired_mac_mismatch"
+    assert finding["desired_endpoint"] == "mismatched"
+    assert finding["desired_node_slug"] == "edge-1"
+    assert finding["desired_mac"] == "aa:bb:cc:dd:ee:ff"
+    assert export.summary["blocking_findings"] == 1

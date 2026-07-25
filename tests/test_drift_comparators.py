@@ -354,6 +354,29 @@ def test_endpoint_intent_matching_carries_endpoint_identity_for_observation_gap(
     assert observation_diff.desired["expected"]["ip_policy"] == "static"
 
 
+def test_endpoint_intent_matching_emits_desired_mac_mismatch_with_zero_comparator_changes():
+    """VM p3 Step 6: `evaluate_endpoint_intent`'s new `desired_mac_mismatch` gap
+    reaches `endpoint_intent_matching` for free -- it already iterates
+    `gap_summary.gaps` generically, no comparator-specific code needed."""
+    device = ActualDevice(id="dev-1", name="agweb.local")
+    interface = ActualInterface(id="iface-1", name="eth0", mac_address="11:22:33:44:55:66", device_id="dev-1")
+    node = DesiredNode(id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device", realized_device_id="dev-1")
+    endpoint = DesiredEndpoint(
+        id="e1", name="primary", endpoint_type="primary", node_id="n1", node_slug="agweb",
+        ip_address="192.0.2.10/32", ip_policy="dhcp_reserved", dns_name="agweb.example.test", generate_dnsmasq=True,
+        mac_address="aa:bb:cc:dd:ee:ff",
+    )
+    snapshot = make_snapshot(nodes=[node], endpoints=[endpoint], devices=[device], interfaces=[interface])
+
+    diffs = list(comparators.endpoint_intent_matching(snapshot, CONTEXT))
+
+    mismatch_diff = next(d for d in diffs if d.code == "desired_mac_mismatch")
+    assert mismatch_diff.target.kind == "node" and mismatch_diff.target.slug == "agweb"
+    assert mismatch_diff.severity.value == "error"
+    assert mismatch_diff.desired["expected"] == "aa:bb:cc:dd:ee:ff"
+    assert mismatch_diff.actual["actual"] == "11:22:33:44:55:66"
+
+
 def test_endpoint_intent_matching_satisfied_endpoint_is_silent():
     from nctl_core.sources.desired import DesiredIPRange
 

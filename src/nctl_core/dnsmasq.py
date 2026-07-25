@@ -8,7 +8,7 @@ the source; only input access changed from `getattr`-on-ORM to plain mappings
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 from ipaddress import ip_interface
 import json
@@ -24,6 +24,17 @@ SUPPORTED_RECORD_TYPES = frozenset({"host_record", "address", "cname"})
 # operation_id in the deployed bytes (see dnsmasq_content_sha256()).
 DNSMASQ_EXPORT_SCHEMA_VERSION = "5.0"
 
+# VM p3 Step 6: a `dhcp_reservation` skip whose code is one of these, on an
+# endpoint that is otherwise DHCP-eligible (its `_dhcp_skip_reasons()` base
+# completeness check is empty), is not an ordinary "correctly skipped this
+# one line" outcome -- it is a blocking conflict that must make the entire
+# shared dnsmasq managed file non-deployable (see `export_dnsmasq_records`'s
+# `blocking_findings` and `compute_dnsmasq_render`'s deployable/blocked
+# decision in `dnsmasq_render.py`). An endpoint that is ordinarily ineligible
+# (e.g. `generate_dnsmasq=false`, wrong lifecycle) is unaffected -- it was
+# never going to produce a reservation regardless of MAC evidence.
+DHCP_BLOCKING_SKIP_CODES = frozenset({"ambiguous_interface", "desired_mac_mismatch"})
+
 
 @dataclass(frozen=True)
 class DnsmasqExport:
@@ -34,6 +45,7 @@ class DnsmasqExport:
     dhcp_reservations: list[dict[str, Any]]
     dhcp_ranges: list[dict[str, Any]]
     skipped: list[dict[str, Any]]
+    blocking_findings: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +54,7 @@ class DnsmasqExport:
             "dhcp_reservations": self.dhcp_reservations,
             "dhcp_ranges": self.dhcp_ranges,
             "skipped": self.skipped,
+            "blocking_findings": self.blocking_findings,
         }
 
 
@@ -59,6 +72,7 @@ def export_dnsmasq_records(
     dhcp_reservations: list[dict[str, Any]] = []
     dhcp_ranges: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    blocking_findings: list[dict[str, Any]] = []
     dns_skipped_count = 0
     dhcp_skipped_count = 0
     range_skipped_count = 0
@@ -87,6 +101,8 @@ def export_dnsmasq_records(
             dhcp_skipped_count += 1
             if include_skipped:
                 skipped.append(_skip_entry(endpoint, "dhcp_reservation", reservation["skip_reasons"]))
+            if reservation.get("blocking"):
+                blocking_findings.append(_blocking_finding(endpoint, reservation))
         else:
             dhcp_reservations.append(reservation)
 
@@ -104,6 +120,7 @@ def export_dnsmasq_records(
     dhcp_reservations.sort(key=_dhcp_reservation_sort_key)
     dhcp_ranges.sort(key=_dhcp_range_sort_key)
     skipped.sort(key=_skip_sort_key)
+    blocking_findings.sort(key=_blocking_finding_sort_key)
     skipped_endpoint_details = sum(1 for entry in skipped if entry.get("item_type") in {"dns_record", "dhcp_reservation"})
     skipped_range_details = sum(1 for entry in skipped if entry.get("item_type") == "dhcp_range")
     summary = {
@@ -129,6 +146,7 @@ def export_dnsmasq_records(
         "skipped_ranges": range_skipped_count,
         "total_endpoints": total_count,
         "total_ranges": total_range_count,
+        "blocking_findings": len(blocking_findings),
     }
     return DnsmasqExport(
         summary=summary,
@@ -136,6 +154,7 @@ def export_dnsmasq_records(
         dhcp_reservations=dhcp_reservations,
         dhcp_ranges=dhcp_ranges,
         skipped=skipped,
+        blocking_findings=blocking_findings,
     )
 
 
@@ -145,9 +164,26 @@ def resolve_dhcp_reservation(
     endpoint_evaluation: Mapping[str, Any] | None = None,
     node_evaluation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return one DHCP reservation entry or a skipped entry for a desired endpoint."""
+    """Return one DHCP reservation entry or a skipped entry for a desired endpoint.
 
-    skip_reasons = _dhcp_skip_reasons(endpoint)
+    VM p3 Step 6: when the endpoint carries a desired MAC (`DesiredEndpoint.
+    mac_address`, threaded through by `dnsmasq_query._endpoint_mapping` as
+    `endpoint["mac_address"]`) and the endpoint's completeness contract holds
+    (`_dhcp_skip_reasons()` empty -- the same fields this function already
+    required), the desired MAC becomes authoritative evidence: a reservation
+    is emitted even with zero actual node/interface evidence at all (a new
+    guest's DHCP reservation can exist before it is observable), and any
+    conflict with the interface-derived actual evidence -- read from
+    `endpoint_evaluation.deterministic_summary.gap_codes`, the single shared
+    computation `drift/evaluation.py:evaluate_endpoint_intent` already
+    produced -- makes this entry `blocking` (see `DHCP_BLOCKING_SKIP_CODES`)
+    instead of an ordinary reservation. When no desired MAC is present, or
+    the completeness contract does not hold, behavior is byte-for-byte
+    identical to before this step: only actual (interface/primary-MAC)
+    evidence is considered.
+    """
+
+    base_skip_reasons = _dhcp_skip_reasons(endpoint)
     endpoint_data = _evaluation_data(endpoint_evaluation)
     node_data = _evaluation_data(node_evaluation)
     endpoint_summary = _mapping(endpoint_data.get("deterministic_summary"))
@@ -160,19 +196,29 @@ def resolve_dhcp_reservation(
     ]
     actual_refs = _unique_actual_refs(mac_candidates, node_actual_refs)
     normalized_mac_candidates = []
+    for candidate in mac_candidates:
+        mac_address = _normalize_mac(candidate.get("mac_address"))
+        if mac_address:
+            normalized_mac_candidates.append({**candidate, "mac_address": mac_address})
 
+    desired_mac = _normalize_mac(endpoint.get("mac_address"))
+    if desired_mac and not base_skip_reasons:
+        gap_codes = set(_list(endpoint_summary.get("gap_codes")))
+        return _resolve_desired_mac_reservation(
+            endpoint,
+            desired_mac=desired_mac,
+            gap_codes=gap_codes,
+            actual_refs=actual_refs,
+            normalized_mac_candidates=normalized_mac_candidates,
+        )
+
+    skip_reasons = list(base_skip_reasons)
     if not endpoint_data:
         skip_reasons.append("missing_endpoint_evaluation")
     if endpoint_summary and endpoint_summary.get("dhcp_reservation_ready") is False:
         skip_reasons.append("endpoint_evaluation_not_dhcp_ready")
     if len(actual_refs) != 1:
         skip_reasons.append("missing_actual_node" if not actual_refs else "ambiguous_actual_node")
-
-    for candidate in mac_candidates:
-        mac_address = _normalize_mac(candidate.get("mac_address"))
-        if mac_address:
-            normalized = {**candidate, "mac_address": mac_address}
-            normalized_mac_candidates.append(normalized)
 
     if not mac_candidates:
         skip_reasons.append("missing_mac_address")
@@ -187,6 +233,13 @@ def resolve_dhcp_reservation(
     mac_address = normalized_mac_candidates[0]["mac_address"] if normalized_mac_candidates else ""
     actual_ref = actual_refs[0] if len(actual_refs) == 1 else {}
     line = f"dhcp-host={mac_address},{dns_name},{ip_address}" if not skip_reasons else ""
+    skip_reasons = sorted(set(skip_reasons))
+    # VM p3 Step 6 (rule 5): an `ambiguous_interface` skip on an endpoint that
+    # is otherwise DHCP-eligible (`base_skip_reasons` empty) is promoted from
+    # "this one line is omitted" to a whole-shared-file blocker -- multiple
+    # conflicting actual MAC candidates are exactly as unsafe to silently
+    # resolve as a desired/actual disagreement.
+    blocking = not base_skip_reasons and "ambiguous_interface" in skip_reasons
     return {
         "actual_ref": actual_ref,
         "confidence": "deterministic" if not skip_reasons else "none",
@@ -201,7 +254,64 @@ def resolve_dhcp_reservation(
         "ip_policy": _text(endpoint.get("ip_policy")),
         "line": line,
         "mac_address": mac_address,
-        "skip_reasons": sorted(set(skip_reasons)),
+        "mac_source": "actual_evidence" if not skip_reasons else "",
+        "actual_mac_candidates": normalized_mac_candidates,
+        "skip_reasons": skip_reasons,
+        "blocking": blocking,
+    }
+
+
+def _resolve_desired_mac_reservation(
+    endpoint: Mapping[str, Any],
+    *,
+    desired_mac: str,
+    gap_codes: set[str],
+    actual_refs: list[dict[str, Any]],
+    normalized_mac_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    desired_node = _mapping(endpoint.get("desired_node"))
+    dns_name = _text(endpoint.get("dns_name"))
+    ip_address = _host_address(_text(endpoint.get("ip_address")))
+    actual_ref = actual_refs[0] if len(actual_refs) == 1 else None
+    blocking_codes = sorted(gap_codes & DHCP_BLOCKING_SKIP_CODES)
+
+    base = {
+        "desired_endpoint": _text(endpoint.get("name")),
+        "desired_endpoint_id": _pk(endpoint),
+        "desired_node": _text(desired_node.get("name")),
+        "desired_node_id": _pk(desired_node),
+        "desired_node_slug": _text(desired_node.get("slug")),
+        "dns_name": dns_name,
+        "endpoint_type": _text(endpoint.get("endpoint_type")),
+        "ip_address": ip_address,
+        "ip_policy": _text(endpoint.get("ip_policy")),
+        "mac_address": desired_mac,
+        "mac_source": "desired_endpoint",
+        "actual_mac_candidates": normalized_mac_candidates,
+    }
+
+    if blocking_codes:
+        # Rule 3/5: a desired/actual MAC conflict (or an ambiguous actual
+        # interface picture) is never silently resolved by trusting the
+        # desired MAC -- no ordinary reservation is emitted, and this
+        # endpoint contributes a whole-file blocking finding instead.
+        return {
+            **base,
+            "actual_ref": None,
+            "confidence": "none",
+            "line": "",
+            "skip_reasons": blocking_codes,
+            "blocking": True,
+        }
+
+    line = f"dhcp-host={desired_mac},{dns_name},{ip_address}"
+    return {
+        **base,
+        "actual_ref": actual_ref,
+        "confidence": "deterministic_desired",
+        "line": line,
+        "skip_reasons": [],
+        "blocking": False,
     }
 
 
@@ -257,6 +367,7 @@ def dnsmasq_export_payload(
         "dhcp_reservations": export.dhcp_reservations,
         "dhcp_ranges": export.dhcp_ranges,
         "skipped": export.skipped,
+        "blocking_findings": export.blocking_findings,
     }
 
 
@@ -405,6 +516,33 @@ def _dhcp_range_skip_reasons(ip_range: Mapping[str, Any], *, start_address: str,
         except ValueError:
             reasons.append("invalid_range_address")
     return reasons
+
+
+def _blocking_finding(endpoint: Mapping[str, Any], reservation: dict[str, Any]) -> dict[str, Any]:
+    """One structured finding for a `blocking` reservation, detailed enough for an
+    `EnvelopeError` (endpoint id, node slug, desired MAC, candidate list) -- see
+    `dnsmasq_render.py`'s deployable/blocked decision."""
+
+    desired_node = _mapping(endpoint.get("desired_node"))
+    codes = reservation["skip_reasons"]
+    return {
+        "code": codes[0] if len(codes) == 1 else "dnsmasq_render_blocked",
+        "codes": codes,
+        "desired_endpoint_id": _pk(endpoint),
+        "desired_endpoint": _text(endpoint.get("name")),
+        "desired_node_id": _pk(desired_node),
+        "desired_node_slug": _text(desired_node.get("slug")),
+        "desired_mac": _normalize_mac(endpoint.get("mac_address")) or None,
+        "actual_mac_candidates": reservation.get("actual_mac_candidates", []),
+    }
+
+
+def _blocking_finding_sort_key(finding: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        _text(finding.get("desired_node_slug")),
+        _text(finding.get("desired_endpoint")),
+        _text(finding.get("code")),
+    )
 
 
 def _skip_entry(endpoint: Mapping[str, Any], item_type: str, reasons: list[str]) -> dict[str, Any]:

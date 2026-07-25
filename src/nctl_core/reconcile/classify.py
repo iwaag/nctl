@@ -120,6 +120,11 @@ _MANUAL_REVIEW_CODES = frozenset(
         "dhcp_reserved_endpoint_in_dynamic_pool",
         "ip_policy_range_mismatch",
         "static_endpoint_in_dhcp_pool",
+        # VM p3 Step 6: a desired endpoint's own MAC disagrees with the
+        # single reliable actual MAC candidate -- never auto-resolved, and
+        # (via `dnsmasq.DHCP_BLOCKING_SKIP_CODES`) blocks the whole shared
+        # dnsmasq render until a human resolves the conflict.
+        "desired_mac_mismatch",
         # ipam_policy: a non-dhcp_reserved endpoint's explicit IP does not (yet)
         # have a satisfied self-observation condition -- registered MANUAL_REVIEW
         # so the reconcile_ipam Job is never (re-)triggered for it; a

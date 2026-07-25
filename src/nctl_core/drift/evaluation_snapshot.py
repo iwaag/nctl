@@ -249,6 +249,18 @@ def _content_spec_by_service_id(
         return {}
     result: dict[str, ContentSpec] = {}
     desired_digest: str | None = None
+    # VM p3 Step 6: the dnsmasq render is now attempted at most once and its
+    # deployable/blocked state is cached alongside the digest -- a blocked
+    # render (a `desired_mac_mismatch`/promoted `ambiguous_interface`
+    # conflict on some endpoint) means there is no authoritative desired
+    # digest to compare against right now, so no `ContentSpec` is built for
+    # dnsmasq's service at all this round. This deliberately suppresses the
+    # (now-meaningless) `service_config_mismatch`/`service_config_
+    # observation_missing` comparison in `service_placement.py`; the actual
+    # "something is wrong" signal for drift/reconcile purposes is the
+    # endpoint-level `desired_mac_mismatch`/`ambiguous_interface` gap
+    # `endpoint_intent_matching` already emits independently.
+    dnsmasq_render_blocked = False
     for row in placement_rows:
         profile_name = row.get("deployment_profile")
         entry = profile_reconciliation.get(profile_name) if profile_name else None
@@ -257,10 +269,16 @@ def _content_spec_by_service_id(
         service_id = row.get("service_id")
         if not service_id or service_id in result:
             continue
-        if desired_digest is None:
+        if desired_digest is None and not dnsmasq_render_blocked:
             from nctl_core.dnsmasq_render import compute_dnsmasq_render  # local import: breaks an import cycle
 
-            desired_digest = compute_dnsmasq_render(snapshot).content_sha256
+            rendered = compute_dnsmasq_render(snapshot)
+            if rendered.blocked:
+                dnsmasq_render_blocked = True
+            else:
+                desired_digest = rendered.content_sha256
+        if dnsmasq_render_blocked:
+            continue
         # Only one managed_files key is supported in this phase (dnsmasq's "records").
         managed_file_key = next(iter(entry.action.managed_files))
         spec = entry.action.managed_files[managed_file_key]

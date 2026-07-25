@@ -65,6 +65,7 @@ def _endpoint_mapping(endpoint: DesiredEndpoint, node: DesiredNode | None) -> di
         "dns_name": endpoint.dns_name,
         "mdns_name": endpoint.mdns_name,
         "vpn_dns_name": endpoint.vpn_dns_name,
+        "mac_address": endpoint.mac_address,
         "generate_dnsmasq": endpoint.generate_dnsmasq,
         "dnsmasq_record_type": endpoint.dnsmasq_record_type,
         "desired_node": _node_mapping(node) if node is not None else {"id": endpoint.node_id, "slug": endpoint.node_slug},

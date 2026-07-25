@@ -137,6 +137,7 @@ def test_observation_codes_route_to_observe_node(code):
         "missing_interface_candidate",
         "invalid_ip_policy_range",
         "ambiguous_ip_policy_range",
+        "desired_mac_mismatch",
         # unresolved service dependencies / inactive lifecycle
         "unresolved_dependency",
         "service_lifecycle_inactive",

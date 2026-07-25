@@ -229,6 +229,21 @@ def test_reconcile_ipam_never_pins_a_manual_review_only_endpoint():
     assert plan.manual_review[0].code == "ipam_reconcile_observation_missing"
 
 
+def test_desired_mac_mismatch_is_manual_review_never_an_automatic_action():
+    """VM p3 Step 6: a `desired_mac_mismatch` diff never becomes an automatic
+    reconcile action -- it is a conflict a human must resolve."""
+    node = _node("n1", "agweb")
+    snapshot = _snapshot(nodes=[node])
+    diffs = [_node_diff(node, "desired_mac_mismatch")]
+
+    plan = _build(snapshot, diffs)
+
+    assert plan.actions == []
+    [record] = plan.manual_review
+    assert record.code == "desired_mac_mismatch"
+    assert classify("desired_mac_mismatch", target_kind="node").classification == Classification.MANUAL_REVIEW
+
+
 def test_link_actual_node_falls_back_to_manual_review_without_a_candidate():
     node = _node("n1", "agweb")
     snapshot = _snapshot(nodes=[node])  # no device candidates at all

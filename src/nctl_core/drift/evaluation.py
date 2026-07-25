@@ -459,6 +459,35 @@ def evaluate_endpoint_intent(
                 }
             )
 
+    # VM p3 Step 6: compare a desired endpoint's own MAC (`DesiredEndpoint.
+    # mac_address`, already canonicalized by the Step 1 read-model) against
+    # the interface-derived actual candidates computed just above -- the one
+    # shared computation both `drift/comparators.py` (drift/reconcile) and
+    # `dnsmasq_query.py`'s renderer path consume via `deterministic_summary`/
+    # `observed_facts`, so they can never disagree about a given endpoint's
+    # desired-MAC status.
+    desired_mac = _text(desired_endpoint.mac_address)
+    desired_mac_status = ""
+    if desired_mac:
+        if not mac_candidates:
+            desired_mac_status = "desired_only"
+        elif len(mac_candidates) == 1:
+            actual_mac = _text(mac_candidates[0].get("mac_address"))
+            if _norm(actual_mac) == _norm(desired_mac):
+                desired_mac_status = "agree"
+            else:
+                desired_mac_status = "mismatch"
+                gaps.append(
+                    {
+                        "code": "desired_mac_mismatch",
+                        "severity": "conflict",
+                        "expected": desired_mac,
+                        "actual": actual_mac,
+                    }
+                )
+        else:
+            desired_mac_status = "ambiguous_actual"
+
     if any(gap["severity"] == "conflict" for gap in gaps):
         status = "conflict"
     elif gaps:
@@ -476,6 +505,7 @@ def evaluate_endpoint_intent(
         "invalid_ip_policy_range",
         "static_endpoint_in_dhcp_pool",
         "dhcp_reserved_endpoint_in_dynamic_pool",
+        "desired_mac_mismatch",
     }
     dhcp_reservation_ready = (
         expected.get("ip_policy") == "dhcp_reserved"
@@ -491,6 +521,7 @@ def evaluate_endpoint_intent(
         "actual_ref_count": len(actual_refs),
         "dhcp_mac_candidate_count": len(mac_candidates),
         "dhcp_reservation_ready": dhcp_reservation_ready,
+        "desired_mac_status": desired_mac_status,
         "evaluation_scope": "endpoint_ip_and_dhcp_mac_candidates",
     }
     return EvaluationResult(

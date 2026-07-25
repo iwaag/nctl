@@ -4,6 +4,7 @@ import httpx
 import respx
 
 from nctl_core.config import Config
+from nctl_core.dnsmasq import dnsmasq_content_sha256
 from nctl_core.dnsmasq_render import (
     build_dnsmasq_render,
     render_dnsmasq_conf_text,
@@ -77,6 +78,109 @@ ONE_ENDPOINT_DESIRED_RESPONSE = {
 }
 
 
+DESIRED_MAC_NO_ACTUAL_EVIDENCE_RESPONSE = {
+    "data": {
+        "desired_nodes": [
+            {
+                "id": "node-1",
+                "slug": "edge-1",
+                "name": "Edge 1",
+                "lifecycle": "ACTIVE",
+                "node_type": "DEVICE",
+                "role": None,
+                "accepted_actual_types": ["DEVICE"],
+                "expected_spec": {},
+                "realized_device": None,
+                "realized_vm": None,
+            }
+        ],
+        "desired_endpoints": [
+            {
+                "id": "endpoint-1",
+                "name": "primary",
+                "endpoint_type": "PRIMARY",
+                "ip_address": "192.0.2.10/32",
+                "ip_policy": "DHCP_RESERVED",
+                "dns_name": "edge-1.example.test",
+                "mdns_name": None,
+                "vpn_dns_name": None,
+                "mac_address": "aa:bb:cc:dd:ee:ff",
+                "protocol": None,
+                "port": None,
+                "generate_dnsmasq": True,
+                "dnsmasq_record_type": "HOST_RECORD",
+                "realized_ip_address": None,
+                "desired_node": {"id": "node-1", "slug": "edge-1"},
+            }
+        ],
+        "desired_ip_ranges": [],
+        "desired_node_operational_overrides": [],
+        "desired_service_placements": [],
+        "desired_services": [],
+        "desired_dependencies": [],
+    }
+}
+
+
+def _desired_mac_mismatch_response(*, desired_mac: str, actual_mac: str) -> dict:
+    return {
+        "data": {
+            "desired_nodes": [
+                {
+                    "id": "node-1",
+                    "slug": "edge-1",
+                    "name": "Edge 1",
+                    "lifecycle": "ACTIVE",
+                    "node_type": "DEVICE",
+                    "role": None,
+                    "accepted_actual_types": ["DEVICE"],
+                    "expected_spec": {},
+                    "realized_device": {"id": "device-1"},
+                    "realized_vm": None,
+                }
+            ],
+            "desired_endpoints": [
+                {
+                    "id": "endpoint-1",
+                    "name": "primary",
+                    "endpoint_type": "PRIMARY",
+                    "ip_address": "192.0.2.10/32",
+                    "ip_policy": "DHCP_RESERVED",
+                    "dns_name": "edge-1.example.test",
+                    "mdns_name": None,
+                    "vpn_dns_name": None,
+                    "mac_address": desired_mac,
+                    "protocol": None,
+                    "port": None,
+                    "generate_dnsmasq": True,
+                    "dnsmasq_record_type": "HOST_RECORD",
+                    "realized_ip_address": None,
+                    "desired_node": {"id": "node-1", "slug": "edge-1"},
+                }
+            ],
+            "desired_ip_ranges": [],
+            "desired_node_operational_overrides": [],
+            "desired_service_placements": [],
+            "desired_services": [],
+            "desired_dependencies": [],
+        }
+    }
+
+
+DEVICE_WITH_INTERFACE_ACTUAL_RESPONSE = {
+    "data": {
+        "devices": [
+            {"id": "device-1", "name": "Edge 1", "serial": None, "platform": {"name": None}, "_custom_field_data": {}}
+        ],
+        "virtual_machines": [],
+        "interfaces": [
+            {"id": "iface-1", "name": "eth0", "mac_address": "11:22:33:44:55:66", "enabled": True, "device": {"id": "device-1"}}
+        ],
+        "ip_addresses": [],
+    }
+}
+
+
 def make_config(tmp_path) -> Config:
     config_path = tmp_path / "nctl.toml"
     config_path.write_text(
@@ -112,7 +216,7 @@ def test_build_dnsmasq_render_ok_with_one_endpoint(tmp_path):
     envelope = build_dnsmasq_render(cfg)
 
     assert envelope.ok is True
-    assert envelope.schema_name == "nctl.render.dnsmasq.v2"
+    assert envelope.schema_name == "nctl.render.dnsmasq.v3"
     assert envelope.data.schema_version == "5.0"
     assert envelope.data.summary["dns_records"] == 1
     assert "host-record=edge-1.example.test,192.0.2.10" in envelope.data.conf
@@ -210,7 +314,7 @@ def test_envelope_json_round_trips_expected_keys(tmp_path):
 
     parsed = json.loads(envelope.to_json())
 
-    assert parsed["schema"] == "nctl.render.dnsmasq.v2"
+    assert parsed["schema"] == "nctl.render.dnsmasq.v3"
     assert set(parsed["data"].keys()) == {
         "schema_version",
         "summary",
@@ -220,4 +324,101 @@ def test_envelope_json_round_trips_expected_keys(tmp_path):
         "skipped",
         "conf",
         "content_sha256",
+        "blocked",
+        "blocking_findings",
+        "partial_conf_preview",
     }
+
+
+# --- VM p3 Step 6: desired MAC as a safe dnsmasq consumer, through the real
+# SourceSnapshot -> compute_dnsmasq_render() path (fake GraphQL, not dict literals). ---
+
+
+@respx.mock
+def test_desired_mac_reservation_emitted_with_no_actual_evidence_at_all(tmp_path):
+    """Rule 1: a complete desired endpoint with no endpoint evaluation/actual
+    reference/Device/VM/interface at all still emits the reservation."""
+    _mock_graphql(DESIRED_MAC_NO_ACTUAL_EVIDENCE_RESPONSE, EMPTY_ACTUAL_RESPONSE)
+    cfg = make_config(tmp_path)
+
+    envelope = build_dnsmasq_render(cfg)
+
+    assert envelope.ok is True
+    assert envelope.data.blocked is False
+    reservation = envelope.data.dhcp_reservations[0]
+    assert reservation["mac_address"] == "aa:bb:cc:dd:ee:ff"
+    assert reservation["mac_source"] == "desired_endpoint"
+    assert reservation["confidence"] == "deterministic_desired"
+    assert reservation["actual_ref"] is None
+    assert "dhcp-host=aa:bb:cc:dd:ee:ff,edge-1.example.test,192.0.2.10" in envelope.data.conf
+    assert len(envelope.data.content_sha256) == 64
+
+
+@respx.mock
+def test_desired_mac_mismatch_blocks_the_whole_render(tmp_path):
+    _mock_graphql(
+        _desired_mac_mismatch_response(desired_mac="aa:bb:cc:dd:ee:ff", actual_mac="11:22:33:44:55:66"),
+        DEVICE_WITH_INTERFACE_ACTUAL_RESPONSE,
+    )
+    cfg = make_config(tmp_path)
+
+    envelope = build_dnsmasq_render(cfg)
+
+    assert envelope.ok is False
+    assert envelope.data.blocked is True
+    assert envelope.data.conf == ""
+    assert envelope.data.content_sha256 == ""
+    assert any(err.code == "desired_mac_mismatch" for err in envelope.errors)
+    finding = envelope.data.blocking_findings[0]
+    assert finding["desired_mac"] == "aa:bb:cc:dd:ee:ff"
+    assert finding["desired_node_slug"] == "edge-1"
+    # The diagnostic preview is explicitly not the authoritative `conf` field.
+    assert envelope.data.partial_conf_preview is not None
+    assert envelope.data.partial_conf_preview != envelope.data.conf
+
+
+@respx.mock
+def test_desired_mac_mismatch_then_resolved_round_trip(tmp_path):
+    """Item 8: a mismatch blocks the render; once desired/actual agree, the same
+    snapshot shape renders a normal deployable reservation again."""
+    cfg = make_config(tmp_path)
+
+    _mock_graphql(
+        _desired_mac_mismatch_response(desired_mac="aa:bb:cc:dd:ee:ff", actual_mac="11:22:33:44:55:66"),
+        DEVICE_WITH_INTERFACE_ACTUAL_RESPONSE,
+    )
+    blocked_envelope = build_dnsmasq_render(cfg)
+    assert blocked_envelope.ok is False
+    assert blocked_envelope.data.blocked is True
+
+    _mock_graphql(
+        _desired_mac_mismatch_response(desired_mac="11:22:33:44:55:66", actual_mac="11:22:33:44:55:66"),
+        DEVICE_WITH_INTERFACE_ACTUAL_RESPONSE,
+    )
+    resolved_envelope = build_dnsmasq_render(cfg)
+    assert resolved_envelope.ok is True
+    assert resolved_envelope.data.blocked is False
+    assert resolved_envelope.data.content_sha256
+
+    _mock_graphql(
+        _desired_mac_mismatch_response(desired_mac="aa:bb:cc:dd:ee:ff", actual_mac="11:22:33:44:55:66"),
+        DEVICE_WITH_INTERFACE_ACTUAL_RESPONSE,
+    )
+    blocked_again_envelope = build_dnsmasq_render(cfg)
+    assert blocked_again_envelope.ok is False
+    assert blocked_again_envelope.data.blocked is True
+
+
+@respx.mock
+def test_no_mac_fixture_render_is_byte_identical_regression(tmp_path):
+    """Rule 4 hard requirement: an existing no-desired-MAC fixture's render
+    output/digest is unaffected by this step."""
+    _mock_graphql(ONE_ENDPOINT_DESIRED_RESPONSE)
+    cfg = make_config(tmp_path)
+
+    envelope = build_dnsmasq_render(cfg)
+
+    assert envelope.ok is True
+    assert envelope.data.blocked is False
+    assert envelope.data.conf == "# Generated by nctl\n# schema_version: 5.0\nhost-record=edge-1.example.test,192.0.2.10\n"
+    assert envelope.data.content_sha256 == dnsmasq_content_sha256(envelope.data.conf)
