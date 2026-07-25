@@ -103,7 +103,6 @@ _MANUAL_REVIEW_CODES = frozenset(
         "realized_actual_type_not_accepted",
         "ambiguous_actual_node_candidates",
         "realized_device_missing",
-        "realized_vm_missing",
         "no_realized_object",
         "unsupported_actual_type",
         "serial_mismatch",

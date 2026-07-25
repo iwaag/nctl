@@ -109,12 +109,12 @@ def _placement_input(
 
 
 def _realized_state(node: DesiredNode, devices_by_id: dict[str, ActualDevice]) -> RealizedState | None:
+    # Guest-OS realization is Device-only (VM p3 Step 5 removed the legacy
+    # `DesiredNode.realized_vm` field outright); production composition
+    # remains out of scope for compute VMs, so there is no longer anything to
+    # detect here.
     if node.realized_device_id:
         device = devices_by_id.get(node.realized_device_id)
         facts = device.actual_facts() if device is not None else read_actual_facts({})
         return RealizedState(realized_type="device", facts=facts, nautobot_device_id=node.realized_device_id)
-    if node.realized_vm_id:
-        # Schema 1.0 supports nodeutils-backed Devices only; a realized VM is
-        # surfaced to the composer so it is skipped with unsupported_actual_type.
-        return RealizedState(realized_type="virtual_machine", facts=read_actual_facts({}))
     return None

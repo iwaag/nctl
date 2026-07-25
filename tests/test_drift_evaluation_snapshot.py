@@ -7,6 +7,7 @@ from nctl_core.drift.evaluation_snapshot import evaluate_all_endpoints, evaluate
 from nctl_core.reconcile.profiles import ManagedFileSpec, ProfileAction, ProfileReconciliation
 from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddress, ActualSnapshot
 from nctl_core.sources.desired import (
+    DesiredComputeInstance,
     DesiredDependency,
     DesiredEndpoint,
     DesiredNode,
@@ -38,6 +39,35 @@ def test_evaluate_all_nodes_resolves_realized_device_by_id():
 
     assert evaluations["n1"].status == "satisfied"
     assert evaluations["n1"].actual_refs[0]["id"] == "dev-1"
+
+
+def test_evaluate_all_nodes_never_sees_compute_vm_realization_as_a_second_link():
+    """VM p3 Step 5: `DesiredNode.realized_vm(+_source)` was removed outright; guest-OS
+    realization is Device-only. A sibling `DesiredComputeInstance` with its own
+    `realized_vm_id` set (a structurally distinct object) must be architecturally
+    invisible to this path -- `evaluate_node_intent`'s signature has no `realized_vm`
+    slot to feed it into, so `multiple_realized_links` cannot fire through here, no
+    matter what the node's compute instance links to."""
+    device = ActualDevice(id="dev-1", name="agweb.local")
+    node = DesiredNode(
+        id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device",
+        realized_device_id="dev-1",
+    )
+    compute_instance = DesiredComputeInstance(
+        id="instance-1", desired_node_id="n1", platform_id="platform-1", instance_kind="virtual_machine",
+        vcpus=2, memory_mb=2048, root_disk_gb=20, config_schema_version="v1",
+        config={"template": "local:iso/debian.iso"}, realized_vm_id="vm-1", realized_vm_source="derived",
+    )
+    snapshot = SourceSnapshot(
+        desired=DesiredSnapshot(nodes=[node], compute_instances=[compute_instance]),
+        actual=ActualSnapshot(devices=[device]),
+        fetched_at=datetime.now(timezone.utc),
+    )
+
+    evaluations = evaluate_all_nodes(snapshot)
+
+    assert evaluations["n1"].status == "satisfied"
+    assert all(gap["code"] != "multiple_realized_links" for gap in evaluations["n1"].gap_summary["gaps"])
 
 
 def test_evaluate_all_endpoints_uses_matching_node_evaluation_for_mac_candidates():

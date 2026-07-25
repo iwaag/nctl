@@ -32,7 +32,6 @@ from .service_placement import ContentSpec, evaluate_placement_drift
 
 def evaluate_all_nodes(snapshot: SourceSnapshot) -> dict[str, EvaluationResult]:
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
-    vms_by_id = {vm.id: vm for vm in snapshot.actual.virtual_machines}
     interfaces_by_device_id = _interfaces_by_device_id(snapshot.actual.interfaces)
 
     results = {}
@@ -43,7 +42,6 @@ def evaluate_all_nodes(snapshot: SourceSnapshot) -> dict[str, EvaluationResult]:
             vm_candidates=snapshot.actual.virtual_machines,
             interfaces_by_device_id=interfaces_by_device_id,
             realized_device=devices_by_id.get(node.realized_device_id or ""),
-            realized_vm=vms_by_id.get(node.realized_vm_id or ""),
         )
     return results
 
@@ -53,7 +51,6 @@ def evaluate_all_endpoints(
 ) -> dict[str, EvaluationResult]:
     nodes_by_id = {node.id: node for node in snapshot.desired.nodes}
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
-    vms_by_id = {vm.id: vm for vm in snapshot.actual.virtual_machines}
     ip_addresses_by_id = {ip.id: ip for ip in snapshot.actual.ip_addresses}
     interfaces_by_device_id = _interfaces_by_device_id(snapshot.actual.interfaces)
 
@@ -68,7 +65,6 @@ def evaluate_all_endpoints(
             range_candidates=snapshot.desired.ip_ranges,
             node_evaluation=node_evaluations.get(endpoint.node_id) if desired_node is not None else None,
             node_realized_device=devices_by_id.get(desired_node.realized_device_id or "") if desired_node else None,
-            node_realized_vm=vms_by_id.get(desired_node.realized_vm_id or "") if desired_node else None,
             interfaces_by_device_id=interfaces_by_device_id,
         )
     return results

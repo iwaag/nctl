@@ -4,10 +4,15 @@ Planning (Step 5, `planner.py`/`reconcilers.py`) never mutates anything; the
 two functions here are the only places `nctl reconcile` writes to the
 ledger, matching Decision 5 exactly:
 
-- `execute_link_actual_node` -- one REST PATCH of `realized_device` or
-  `realized_vm` on a `DesiredNode` row through nintent's existing ViewSet,
-  guarded by a precondition check (never clear or replace an existing link)
-  and a post-PATCH refetch that asserts the exact link landed.
+- `execute_link_actual_node` -- one REST PATCH of `realized_device` on a
+  `DesiredNode` row through nintent's existing ViewSet, guarded by a
+  precondition check (never clear or replace an existing link) and a
+  post-PATCH refetch that asserts the exact link landed. (VM p3 Step 5: the
+  legacy `DesiredNode.realized_vm` field was removed outright, so this can no
+  longer link a `virtualization.virtualmachine` candidate onto a bare
+  `DesiredNode` -- VM linking is now `DesiredComputeInstance.realized_vm`, a
+  different object/endpoint, out of scope until a later compute-linking
+  phase.)
 - `execute_reconcile_ipam` -- triggers the retained "Reconcile Desired IPAM
   Intent" Job (host-scoped via its Step 6 `desired_node` parameter),
   requires the Job to succeed, downloads and validates its versioned
@@ -43,7 +48,6 @@ IPAM_SUMMARY_SCHEMA_VERSION = "nctl.ipam.reconcile.summary.v1"
 
 _CANDIDATE_FIELD_BY_OBJECT_TYPE = {
     "dcim.device": "realized_device",
-    "virtualization.virtualmachine": "realized_vm",
 }
 
 
@@ -77,7 +81,7 @@ class IpamReconcileResult(BaseModel):
 
 
 def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) -> LinkActualNodeResult:
-    """PATCH exactly one of `realized_device`/`realized_vm`, then refetch and assert it landed.
+    """PATCH `realized_device`, then refetch and assert it landed.
 
     Never clears or replaces an existing link: if the row already has either
     field set, this raises rather than PATCHing over it (Decision 5).
@@ -101,11 +105,11 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
         raise LedgerActionError("missing_candidate_id", "link_actual_node action's candidate has no id")
 
     before = _get_node(client, node_id)
-    if _linked_id(before.get("realized_device")) or _linked_id(before.get("realized_vm")):
+    if _linked_id(before.get("realized_device")):
         raise LedgerActionError(
             "node_already_linked",
             f"DesiredNode {target.slug!r} already has a realized link; refusing to replace it",
-            {"before": {"realized_device": before.get("realized_device"), "realized_vm": before.get("realized_vm")}},
+            {"before": {"realized_device": before.get("realized_device")}},
         )
 
     source_field = f"{field}_source"

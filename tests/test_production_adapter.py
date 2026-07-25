@@ -92,19 +92,6 @@ def test_build_production_node_inputs_handles_no_override_or_placements():
     assert node_input.realized is None
 
 
-def test_build_production_node_inputs_realized_vm_has_no_device_lookup():
-    node = DesiredNode(
-        id="node-3", slug="agvm", name="agvm", lifecycle="active", node_type="virtual_machine", realized_vm_id="vm-1"
-    )
-    snapshot = make_snapshot(nodes=[node])
-
-    [node_input] = build_production_node_inputs(snapshot)
-
-    assert node_input.realized is not None
-    assert node_input.realized.realized_type == "virtual_machine"
-    assert node_input.realized.nautobot_device_id is None
-
-
 def test_build_production_node_inputs_sorts_by_slug():
     nodes = [
         DesiredNode(id="node-z", slug="agz", name="agz", lifecycle="active", node_type="device"),

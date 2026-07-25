@@ -12,14 +12,17 @@ plain attribute access.
 Structural deviations from the ORM version, all a consequence of "typed
 read-models" not being the same shape as live Django relations:
 
-- The original walked `desired_node.realized_device`/`.realized_vm` directly
-  (a Django FK dereference). Here the caller resolves `realized_device_id`/
-  `realized_vm_id` against the `ActualSnapshot`'s device/VM lists and passes
-  the results in; a dangling id (references an object that no longer exists)
-  is *not* re-reported here — that is the Step 3 `node_existence`
-  comparator's `realized_device_missing`/`realized_vm_missing` job, so
-  `evaluate_node_intent` simply treats a dangling id as "not realized" and
-  falls through to candidate ranking, rather than duplicating the diagnostic.
+- The original walked `desired_node.realized_device` directly (a Django FK
+  dereference). Here the caller resolves `realized_device_id` against the
+  `ActualSnapshot`'s device list and passes the result in; a dangling id
+  (references an object that no longer exists) is *not* re-reported here —
+  that is the Step 3 `node_existence` comparator's `realized_device_missing`
+  job, so `evaluate_node_intent` simply treats a dangling id as "not
+  realized" and falls through to candidate ranking, rather than duplicating
+  the diagnostic. (VM p3 Step 5: the legacy `DesiredNode.realized_vm` field
+  was removed outright; guest-OS realization is Device-only now — compute VM
+  realization lives on `DesiredComputeInstance.realized_vm`, invisible to
+  this path by design.)
 - `ActualVirtualMachine` (Step 1) carries only `id`/`name` — no custom fields,
   no interfaces — because the Step 1 GraphQL query never fetched them (no
   current consumer needed VM facts). VM candidates therefore only ever score
@@ -216,13 +219,12 @@ def evaluate_node_intent(
     vm_candidates: Iterable[ActualVirtualMachine] = (),
     interfaces_by_device_id: Mapping[str, list[ActualInterface]] | None = None,
     realized_device: ActualDevice | None = None,
-    realized_vm: ActualVirtualMachine | None = None,
 ) -> EvaluationResult:
     """Compare a `DesiredNode` with actual Device/VM candidates."""
     interfaces_by_device_id = interfaces_by_device_id or {}
     expected = _expected_node_facts(desired_node)
     accepted_actual_types = set(expected["accepted_actual_types"])
-    realized = _realized_node_objects(desired_node, realized_device, realized_vm)
+    realized = _realized_node_objects(desired_node, realized_device)
     actual_refs: list[dict[str, Any]] = []
     observed: dict[str, Any] = {"candidates": []}
     gaps: list[dict[str, Any]] = []
@@ -333,7 +335,6 @@ def evaluate_endpoint_intent(
     range_candidates: Iterable[DesiredIPRange] | None = None,
     node_evaluation: EvaluationResult | None = None,
     node_realized_device: ActualDevice | None = None,
-    node_realized_vm: ActualVirtualMachine | None = None,
     interfaces_by_device_id: Mapping[str, list[ActualInterface]] | None = None,
 ) -> EvaluationResult:
     """Compare a `DesiredEndpoint` with actual IP and interface facts."""
@@ -362,7 +363,7 @@ def evaluate_endpoint_intent(
         matches = _matching_ip_candidates(expected.get("ip_address"), ip_candidates)
         observed["ip_candidates"] = matches
         expected_host = _host_address(expected.get("ip_address"))
-        self_observation = _endpoint_ipam_self_observation(node_realized_device, node_realized_vm)
+        self_observation = _endpoint_ipam_self_observation(node_realized_device)
         observed["ipam_self_observation"] = self_observation
         eligibility_basis = _resolve_ipam_eligibility(
             expected.get("ip_policy"), expected_host, self_observation["observed_hosts"]
@@ -435,7 +436,6 @@ def evaluate_endpoint_intent(
     interface_candidates = _interface_candidates_for_endpoint(
         desired_node,
         node_realized_device,
-        node_realized_vm,
         interfaces_by_device_id,
         node_evaluation,
     )
@@ -642,13 +642,10 @@ def _expected_service_facts(
 def _realized_node_objects(
     desired_node: DesiredNode,
     realized_device: ActualDevice | None,
-    realized_vm: ActualVirtualMachine | None,
 ) -> list[tuple[str, Any]]:
     realized = []
     if desired_node.realized_device_id and realized_device is not None:
         realized.append(("dcim.device", realized_device))
-    if desired_node.realized_vm_id and realized_vm is not None:
-        realized.append(("virtualization.virtualmachine", realized_vm))
     return realized
 
 
@@ -907,13 +904,12 @@ def _matching_ip_candidates(ip_address: Any, ip_candidates: Iterable[ActualIPAdd
 def _interface_candidates_for_endpoint(
     desired_node: DesiredNode | None,
     node_realized_device: ActualDevice | None,
-    node_realized_vm: ActualVirtualMachine | None,
     interfaces_by_device_id: Mapping[str, list[ActualInterface]],
     node_evaluation: EvaluationResult | None,
 ) -> list[dict[str, Any]]:
     actual_objects: list[tuple[str, Any]] = []
     if desired_node is not None:
-        actual_objects = _realized_node_objects(desired_node, node_realized_device, node_realized_vm)
+        actual_objects = _realized_node_objects(desired_node, node_realized_device)
 
     candidates = []
     for object_type, actual_node in actual_objects:
@@ -1034,17 +1030,14 @@ def _host_address(value: Any) -> str:
         return text.split("/", maxsplit=1)[0]
 
 
-def _endpoint_ipam_self_observation(
-    node_realized_device: ActualDevice | None, node_realized_vm: ActualVirtualMachine | None
-) -> dict[str, Any]:
+def _endpoint_ipam_self_observation(node_realized_device: ActualDevice | None) -> dict[str, Any]:
     """Self-observation evidence for the non-`dhcp_reserved` IPAM eligibility gate.
 
     Reads `ActualDevice.actual_facts().local_ip` -- the same
     `primary_ip_address` custom field nauto's ingest Job writes -- never the
-    controller-local nodeutils cache. `ActualVirtualMachine` (Step 1) carries
-    no custom fields, so a linked VM contributes nothing here rather than a
-    guessed value; this is a structural fact of the current actual-source
-    schema, not a special case.
+    controller-local nodeutils cache. Guest-OS realization is Device-only
+    (VM p3 Step 5 removed `DesiredNode.realized_vm`), so there is no VM
+    self-observation branch here.
     """
 
     candidates: list[dict[str, Any]] = []

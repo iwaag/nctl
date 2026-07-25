@@ -1,9 +1,11 @@
 """Initial comparators (Phase 2 Step 3).
 
 - `node_existence` — a lightweight, non-fuzzy existence check: does a desired
-  node's `realized_device_id`/`realized_vm_id` actually resolve in the actual
-  snapshot, and does a node whose operational config requires actual state
-  have *any* realized object at all? This is deliberately not the full
+  node's `realized_device_id` actually resolve in the actual snapshot, and
+  does a node whose operational config requires actual state have *any*
+  realized object at all? (VM p3 Step 5: the legacy `DesiredNode.realized_vm`
+  field was removed outright; guest-OS realization is Device-only now.) This
+  is deliberately not the full
   candidate-matching/ranking nintent's `evaluate_node_intent` does (scoring
   unlinked nodes against Device/VM candidates by name/serial) — that fuzzy
   matching is Step 4's evaluation port. Step 3 only checks the links that
@@ -34,7 +36,7 @@
   registered too (not removed) because it is a strictly faster, narrower
   check (dangling FK / policy-requires-realization) that a reader might want
   independent of the heavier candidate-scoring pass, and removing it would
-  make `realized_device_missing`/`realized_vm_missing`/`no_realized_object`
+  make `realized_device_missing`/`no_realized_object`
   indistinguishable from the fuzzy-matching codes in the diff stream.
   `endpoint_intent_matching` and `service_intent_matching` are registered
   under their own resource types (`"endpoint"`/`"service"`) for registry
@@ -88,7 +90,6 @@ _PLACEHOLDER_DIGEST = "0" * 64
 def node_existence(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
     override_by_node = {item.node_id: item for item in snapshot.desired.operational_overrides}
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
-    vms_by_id = {vm.id: vm for vm in snapshot.actual.virtual_machines}
 
     for node in snapshot.desired.nodes:
         target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
@@ -106,22 +107,9 @@ def node_existence(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[
                 desired={"realized_device_id": node.realized_device_id},
                 sources=["desired", "actual"],
             )
-        if node.realized_vm_id and node.realized_vm_id not in vms_by_id:
-            yield DiffRecord(
-                target=target,
-                code="realized_vm_missing",
-                severity=Severity.ERROR,
-                message=(
-                    f"{node.slug}: references realized_vm {node.realized_vm_id!r}, "
-                    "which no longer exists in Nautobot"
-                ),
-                desired={"realized_vm_id": node.realized_vm_id},
-                sources=["desired", "actual"],
-            )
         if (
             (operational_override is None or operational_override.declared_host_os is None)
             and not node.realized_device_id
-            and not node.realized_vm_id
         ):
             yield DiffRecord(
                 target=target,

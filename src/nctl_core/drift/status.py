@@ -38,7 +38,6 @@ UNKNOWN_CODES = frozenset(
         "no_realized_device",
         "no_realized_object",
         "realized_device_missing",
-        "realized_vm_missing",
         "unsupported_actual_type",
         "missing_actual_data",
         "stale_actual_data",

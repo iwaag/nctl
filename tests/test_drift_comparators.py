@@ -73,15 +73,6 @@ def test_node_existence_flags_dangling_realized_device():
     assert diffs[0].target.slug == "agweb"
 
 
-def test_node_existence_flags_dangling_realized_vm():
-    node = DesiredNode(id="n1", slug="agvm", name="agvm", lifecycle="active", node_type="virtual_machine", realized_vm_id="vm-gone")
-    snapshot = make_snapshot(nodes=[node])
-
-    diffs = list(comparators.node_existence(snapshot, CONTEXT))
-
-    assert [d.code for d in diffs] == ["realized_vm_missing"]
-
-
 def test_node_existence_ok_when_realized_device_exists():
     node = DesiredNode(id="n1", slug="agweb", name="agweb", lifecycle="active", node_type="device", realized_device_id="dev-1")
     device = ActualDevice(id="dev-1", name="agweb.local")
