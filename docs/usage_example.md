@@ -12,7 +12,6 @@ below assume `uv run --project nctl` prefixing `nctl`.
 | "What's the current drift on NODE?" | `nctl drift --host NODE` |
 | "What's the drift on a specific service?" | `nctl drift --service SERVICE` |
 | "Give me the overall cluster status" | `nctl status` |
-| "Regenerate the dashboard" | `nctl dashboard` |
 | "Mark NODE as planned/approved/active/deprecated/retired" | `nctl lifecycle NODE STATE` |
 | "Trust this SSH host key for NODE" | `nctl ssh enroll NODE --from-known-hosts` (add `--yes` to write) |
 | "Render dnsmasq config" | `nctl render dnsmasq` |

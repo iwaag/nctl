@@ -51,7 +51,6 @@ at its current field set and may only gain fields:
 |---|---|
 | `nctl.status.v1` | `StatusData` (`nctl_core.status`) |
 | `nctl.drift.v1` | `DriftData` (`nctl_core.drift_render`) |
-| `nctl.dashboard.v1` | `DashboardData` (`nctl_core.dashboard_render`) |
 | `nctl.apply.dnsmasq.v2` | `DnsmasqApplyData` (`nctl_core.dnsmasq_apply`) |
 | `nctl.render.dnsmasq.v3` | `DnsmasqRenderData` (`nctl_core.dnsmasq_render`) |
 | `nctl.render.production.v1` | `ProductionRenderData` (`nctl_core.production_render`) |

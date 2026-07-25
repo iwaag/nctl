@@ -79,7 +79,7 @@ def render_drift_data(
 
     Shared with `nctl reconcile` (Phase 4 Step 7), which computes its own
     full-cluster drift each round and must render it identically to `nctl
-    drift`/`nctl dashboard` rather than reimplementing this shape.
+    drift` rather than reimplementing this shape.
     """
 
     targets = _filter_targets(result.targets, host=host, service=service)

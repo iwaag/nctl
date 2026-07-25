@@ -108,7 +108,7 @@ up front so silence in the payload always means "nothing wrong", never "we forgo
 but a comparator may also emit a `"device"`-scoped or `"global"`-scoped diagnostic that isn't
 owned by one desired node or service (e.g. a production-composition contract error). Additions to
 this shape are cheap; renames are expensive — treat it as the stable Phase 3/4 interface it is
-(the dashboard's only input, and Phase 4's reconcile input).
+(Phase 4's reconcile input).
 
 ## `nctl.lifecycle.v1`
 
@@ -135,32 +135,6 @@ PATCH, never assumed from the request. `changed: false` means the node was alrea
 requested_state`). Errors are command-scoped (`invalid_lifecycle`, `unknown_node`,
 `lifecycle_update_rejected`, `lifecycle_confirmation_mismatch`) and never enter
 `drift.registry` or `reconcile.classify.CODE_CLASSIFICATION`.
-
-## `nctl.dashboard.v1`
-
-```json
-{
-  "data": {
-    "html_path": "/Users/x/.local/state/nctl/dashboard/index.html",
-    "drift_json_path": "/Users/x/.local/state/nctl/dashboard/drift.json",
-    "generated_at": "2026-07-16T11:10:48.075090+00:00",
-    "summary": {"converged": 3, "unknown": 2},
-    "severity_summary": {"error": 2, "warning": 9, "info": 0},
-    "status_push": {"pushed": true, "attempted": 5, "updated": 5, "skipped_no_row": 0, "failed": 0, "errors": []},
-    "dashboard_url": null
-  }
-}
-```
-
-`data.summary`/`data.severity_summary`/`data.generated_at` mirror the drift run that produced the
-page (or the `--from` payload's own fields, when given). `status_push` is only attempted for a
-successful drift payload with `push` enabled (the CLI default; `--no-push` skips it): `attempted`
-counts node/service targets considered, `updated` successful PATCHes, `skipped_no_row` targets
-with no matching ledger row, `failed` PATCH failures — each with a `"<kind> <slug-or-id>: <error>"`
-string in `errors`. Push failures never affect `ok`; only a drift-run failure or a file-write
-failure does (both surface in the top-level `errors` list, and — for a drift-run failure — inside
-the rendered page itself, since the page embeds this same envelope's drift data). `dashboard_url`
-echoes `[dashboard].url` from `nctl.toml` (`null` if unset) — informational only, never fetched.
 
 ## `nctl.braindump.*.v1`
 
@@ -226,8 +200,8 @@ are command-scoped: local-input codes (`invalid_braindump_id`, `invalid_authorsh
 `input_conflict`, `no_update_fields`, `input_file_error`, `input_file_invalid_utf8`) and
 `braindump_not_found` exit 2 (usage); REST validation/write, transport, race-recovery, and
 confirmation-mismatch codes exit 1 (failure) with no success claim. None of these codes, or the
-Braindump/Alignment Review data itself, enters `drift.registry`, `reconcile.classify`, dashboard
-health, or event-log actuation semantics.
+Braindump/Alignment Review data itself, enters `drift.registry`, `reconcile.classify`, or
+event-log actuation semantics.
 
 (`review_conflict` is reserved in the design plan for a review uniqueness conflict but is never
 emitted by the current implementation: `nctl braindump review`'s bounded race recovery resolves

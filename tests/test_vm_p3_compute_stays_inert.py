@@ -1,5 +1,5 @@
 """VM Phase 3 Step 5 point 5/7: valid compute collections must stay out of compute
-drift/planner/dashboard/reconcile dispatch entirely -- Step 5 only reads/types/
+drift/planner/reconcile dispatch entirely -- Step 5 only reads/types/
 validates `DesiredComputePlatform`/`DesiredComputeInstance`, it adds no comparator,
 reconciler, or plan action that even looks at them. Compute drift/matching/link
 planning is explicitly Phase 4 territory (plan.md Section 5.1).

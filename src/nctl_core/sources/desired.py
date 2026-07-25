@@ -36,9 +36,9 @@ platform/instance config validators). nctl does not import that nintent
 module (separate deployable, no shared runtime dependency); the logic is
 ported here deliberately kept behaviorally identical.
 
-Compute rows are read/typed/validated only -- no compute drift, planner,
-dashboard, or reconcile action is added in this step (Phase 4/5 territory per
-plan.md Section 5.1). A malformed compute platform/instance/endpoint-MAC row
+Compute rows are read/typed/validated only -- no compute drift, planner, or
+reconcile action is added in this step (Phase 4/5 territory per plan.md
+Section 5.1). A malformed compute platform/instance/endpoint-MAC row
 never raises out of `fetch_desired_snapshot()`; it is converted into a
 `DesiredSourceIssue` and excluded from the typed `compute_platforms`/
 `compute_instances` collections, while the rest of the snapshot (including

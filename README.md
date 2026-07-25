@@ -35,9 +35,6 @@ uv run nctl drift
 uv run nctl drift --host agstudio --json
 uv run nctl apply dnsmasq
 uv run nctl apply dnsmasq --yes
-uv run nctl dashboard
-uv run nctl dashboard --no-push
-uv run nctl dashboard --from ~/.local/state/nctl/dashboard/drift.json --out /tmp/preview
 uv run nctl reconcile
 uv run nctl reconcile agstudio
 uv run nctl reconcile agstudio --yes
@@ -136,44 +133,28 @@ with a mismatching managed-file digest is real `service_config_mismatch` drift a
 after deployment. The content contract covers only nctl's
 `/etc/dnsmasq.d/nintent-records.conf`, not every dnsmasq package default or `ansible.conf` setting.
 
-`dashboard` is the routine command for getting the drift picture in front of a human: it runs a
-fresh `nctl drift` internally, renders a single self-contained `index.html` (color-coded tiles,
-one per target, that expand on click into their diffs) alongside the exact `drift.json` payload
-that produced it, and — unless `--no-push` is given — writes each target's status back into
-nintent (see [Status legend](#status-legend) and "Status write-back" below). **Run `nctl
-dashboard`, not `nctl drift`, whenever you want the page updated** — `drift` itself never writes
-anything, by design. `--out DIR` overrides `[dashboard].out_dir`. `--from FILE` skips the live
-drift computation and re-renders (and, unless `--no-push`, re-pushes) a previously saved
-`nctl.drift.v1` envelope — useful for offline preview or replaying a saved payload. A failed
-drift run still produces a page: the envelope's `ok: false` and its errors are embedded and
-rendered visibly, so a broken run doesn't silently leave a stale-looking dashboard with no
-indication anything went wrong. Status-push failures never fail the command or block the file
-write — they degrade into the `status_push` counts in the returned `nctl.dashboard.v1` envelope
-(`attempted`/`updated`/`skipped_no_row`/`failed`, with a message per failed target).
+`nctl drift` is the supported way to get the current drift picture: it is a side-effect-free read
+computing fresh desired-versus-actual status on every call, printed as human text or (`--json`)
+the `nctl.drift.v1` envelope. It never writes a file and never pushes anything back into nintent —
+there is no separate regeneration command to remember to run instead.
 
 ### Status legend
 
-Dashboard tiles and nintent's reconciliation-status badges use one color mapping:
+`nctl drift` targets use one status vocabulary:
 
-| status | color | meaning |
-|---|---|---|
-| `converged` | green | no error-severity diffs |
-| `converging` | yellow | diffs exist, but a newer `apply`/`reconcile` operation targets this node than its latest actual observation — change is in flight |
-| `drifting` | red | an error-severity diff exists and nothing in flight explains it |
-| `unknown` | gray | required actual data is missing, stale, or never linked — nctl cannot see this target, which is different from it having drifted |
+| status | meaning |
+|---|---|
+| `converged` | no error-severity diffs |
+| `converging` | diffs exist, but a newer `apply`/`reconcile` operation targets this node than its latest actual observation — change is in flight |
+| `drifting` | an error-severity diff exists and nothing in flight explains it |
+| `unknown` | required actual data is missing, stale, or never linked — nctl cannot see this target, which is different from it having drifted |
 
-### Status write-back
-
-After a successful drift run and file write, `dashboard` PATCHes `reconciliation_status` +
-`reconciliation_checked_at` onto each target's ledger row in nintent (`DesiredNode` for
-`kind: "node"` targets, `DesiredService` for `kind: "service"`, matched by `target.id`) through
-the intent-catalog REST ViewSets — reads go through GraphQL project-wide, but this is a write, so
-it goes through REST per the project's read/write split. Nautobot being unreachable, a target
-having no ledger row (`skipped_no_row`), or any other PATCH failure only ever produces a warning
-entry in `status_push`; it never flips the command's `ok` or blocks the HTML/JSON write. These
-fields are a **derived cache of the last nctl run**, not a second source of truth — `nctl drift`
-remains authoritative; `reconciliation_checked_at` is what makes a stale cache visible in
-nintent's UI.
+For a specific bounded operation's outcome, use its `result.json` (embedded in `nctl reconcile`
+output, or read later via `nctl ops show`) rather than re-deriving it from a separately cached
+status. For historical operations, `nctl ops list`/`nctl ops show` read past and running
+operations directly from the on-disk event-log directory — they are operation history, not a
+live convergence cache, so always cross-check a historical result against a fresh `nctl drift` if
+the current state matters.
 
 ### `reconcile`
 
@@ -205,11 +186,6 @@ drift/event artifacts only when it stops short of `converged`.
   reaches a fresh `converged` status, but reachable/healthy targets still make progress. A host
   argument must resolve to exactly one desired-node slug; zero or multiple matches are a usage
   error (exit 2), not a run failure.
-- **Dashboard reuse**: every apply terminal path that has a valid full-cluster drift payload
-  refreshes the same dashboard/status cache from that exact payload — `build_drift` is never called
-  a second time, so the dashboard and the reconcile result can't disagree. A dashboard write-back
-  failure degrades to a warning in `data.dashboard` and never changes the reconcile terminal
-  `state`.
 - **Audit trail**: before `--yes` mutates anything, nctl verifies the operation directory and event
   log are writable and refuses to proceed if they aren't (`artifact_write_failed`) — a mutating run
   never proceeds without a place to record what it did.
@@ -218,7 +194,7 @@ The `nctl.reconcile.v2` envelope's `data` carries `operation_id`, `mode`, `scope
 (`planned | already_converged | converged | manual_intervention_required | non_converged | failed`),
 `event_log_path`, `artifact_dir`, `plan_path`, initial/final drift paths, per-round action results
 (`rounds`), `manual_review`/`unsupported` records (target + diff code + evidence), scope/global
-status summaries, `ssh_preflight` (below), and the `dashboard` result. The plan itself
+status summaries, and `ssh_preflight` (below). The plan itself
 (`<events.log_dir>/<operation_id>/plan.json`, schema `nctl.reconcile.plan.v1`) is both embedded in
 plan-mode output and persisted standalone; it never contains a Nautobot token, raw report content,
 or arbitrary shell text — actions carry typed parameters and claimed diff codes, not prose. Neither
@@ -338,7 +314,7 @@ this module and the CLI alone, not published to or consumed by any external subs
 typed interface to the exchange diary described in `devdocs/big/braindump/roadmap.md`: a
 **Braindump** is the user's free-form wish, and its at-most-one current **Alignment Review** is the
 AI agent's latest natural-language reply. Neither is executable input, and this command surface has
-no import path into `drift`, `reconcile`, dashboard, Jobs, nodeutils, or Ansible — reading or
+no import path into `drift`, `reconcile`, Jobs, nodeutils, or Ansible — reading or
 writing the diary never changes convergence status or triggers actuation.
 
 - `list [--json]` / `show ID [--json]` read through GraphQL only and never write. `list` returns a
@@ -404,21 +380,6 @@ The bootstrap `hosts_intent.yml` does not contain service groups and therefore c
 Each apply stores its rendered conf at
 `<events.log_dir>/<operation_id>/artifacts/dnsmasq-records.conf` and its JSON Lines event log at
 `<events.log_dir>/<operation_id>.jsonl`.
-
-## Dashboard configuration
-
-```toml
-[dashboard]
-out_dir = "~/.local/state/nctl/dashboard"   # default; where index.html + drift.json land
-url = "http://192.168.1.50/nctl-dashboard/" # optional: where out_dir is served on the LAN
-```
-
-`url` is purely informational — nctl never fetches it. It is surfaced in the
-`nctl.dashboard.v1` envelope's `dashboard_url` field and is the value to also set in nintent's
-`PLUGINS_CONFIG["nautobot_intent_catalog"]["dashboard_url"]` so the plugin's nav link and
-per-object "(view dashboard)" links point at the same place. The two settings are independent —
-nctl does not read nintent's plugin config, and nintent does not read `nctl.toml` — keep them in
-sync by hand when `out_dir`'s serving location changes.
 
 ## SSH trust configuration
 
