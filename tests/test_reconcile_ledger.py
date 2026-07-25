@@ -62,22 +62,50 @@ def _ipam_action(**overrides) -> ReconcileAction:
     return ReconcileAction(**data)
 
 
+def _graphql_desired_node_response(realized_device_id: str | None = None, realized_device_source: str = "derived") -> dict:
+    realized_device = {"id": realized_device_id} if realized_device_id else None
+    return {
+        "data": {
+            "desired_nodes": [
+                {
+                    "id": NODE_ID,
+                    "name": "agweb",
+                    "slug": "agweb",
+                    "node_type": "server",
+                    "lifecycle": "production",
+                    "role": "web",
+                    "realized_device": realized_device,
+                    "realized_device_source": realized_device_source if realized_device_id else None,
+                    "realized_cluster": None,
+                    "realized_cluster_source": None,
+                    "intent_source": None,
+                }
+            ],
+            "desired_endpoints": [],
+            "desired_ip_ranges": [],
+            "desired_node_operational_overrides": [],
+            "desired_service_placements": [],
+            "desired_services": [],
+            "desired_dependencies": [],
+            "desired_compute_platforms": [],
+            "desired_compute_instances": [],
+        }
+    }
+
+
 # --- execute_link_actual_node ----------------------------------------------
 
 
 @respx.mock
 def test_link_actual_node_happy_path():
-    respx.get(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
+    gql_route = respx.post(f"{BASE_URL}/api/graphql/").mock(
         side_effect=[
-            httpx.Response(200, json={"id": NODE_ID, "realized_device": None, "realized_vm": None}),
-            httpx.Response(200, json={
-                "id": NODE_ID, "realized_device": {"id": DEVICE_ID},
-                "realized_device_source": "derived", "realized_vm": None,
-            }),
+            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
+            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=DEVICE_ID, realized_device_source="derived")),
         ]
     )
     patch_route = respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID, "realized_device": DEVICE_ID})
+        return_value=httpx.Response(200, json={"id": NODE_ID, "realized_device": DEVICE_ID, "realized_device_source": "derived"})
     )
 
     result = execute_link_actual_node(_client(), _link_action())
@@ -89,15 +117,14 @@ def test_link_actual_node_happy_path():
         "realized_device": DEVICE_ID,
         "realized_device_source": "derived",
     }
+    assert gql_route.call_count == 2
 
 
 @respx.mock
 def test_link_actual_node_refuses_to_replace_an_existing_link():
-    respx.get(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID, "realized_device": {"id": "other-device"}})
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        return_value=httpx.Response(200, json=_graphql_desired_node_response(realized_device_id="other-device"))
     )
-    # No PATCH route registered: if the code tried to PATCH anyway, respx
-    # would raise for the unmocked call, which would also fail this test.
 
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
@@ -106,8 +133,8 @@ def test_link_actual_node_refuses_to_replace_an_existing_link():
 
 @respx.mock
 def test_link_actual_node_patch_failure_is_typed():
-    respx.get(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID, "realized_device": None, "realized_vm": None})
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        return_value=httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None))
     )
     respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
         return_value=httpx.Response(500, text="boom")
@@ -120,10 +147,10 @@ def test_link_actual_node_patch_failure_is_typed():
 
 @respx.mock
 def test_link_actual_node_refetch_mismatch_is_not_confirmed():
-    respx.get(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
         side_effect=[
-            httpx.Response(200, json={"id": NODE_ID, "realized_device": None, "realized_vm": None}),
-            httpx.Response(200, json={"id": NODE_ID, "realized_device": None, "realized_vm": None}),
+            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
+            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
         ]
     )
     respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
@@ -354,9 +381,6 @@ def test_reconcile_ipam_separates_applied_from_unresolved_pinned_endpoints(tmp_p
 
 @respx.mock
 def test_reconcile_ipam_unpinned_extra_endpoint_skip_does_not_count_as_unresolved(tmp_path):
-    # A node can have other explicit-IP endpoints the planner never pinned
-    # (not yet eligible) -- their skip must not fail an otherwise-successful
-    # pinned endpoint.
     _mock_job_run(
         _summary(
             summary={"endpoints": 2},
@@ -376,7 +400,7 @@ def test_reconcile_ipam_unpinned_extra_endpoint_skip_does_not_count_as_unresolve
 
     assert result.applied_endpoint_ids == ["e1"]
     assert result.unresolved_expected_endpoints == []
-    assert len(result.skipped) == 1  # still surfaced in the full-artifact view
+    assert len(result.skipped) == 1
 
 
 def test_reconcile_ipam_rejects_wrong_action(tmp_path):
