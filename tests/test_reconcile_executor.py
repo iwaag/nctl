@@ -506,6 +506,38 @@ def test_already_converged_when_no_diffs(tmp_path, monkeypatch):
     assert envelope.data.rounds == []
 
 
+def test_already_converged_terminal_artifacts_have_no_dashboard_write_or_status_patch(tmp_path, monkeypatch):
+    """remove_unused_surfaces p2 Section 6: a representative no-action terminal fixture must
+    retain result.json/plan/drift artifacts, must never write an index.html or dashboard-owned
+    root drift.json, must serialize no `dashboard` key, and must never attempt a Nautobot PATCH
+    for the retired reconciliation-cache fields -- proven with a fail-fast sentinel rather than a
+    mock, since `NautobotClient.rest_patch` has no reachable caller left in this code path."""
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    _sequence(monkeypatch, [_drift([])])
+
+    def _forbidden_patch(self, path, payload):
+        raise AssertionError(f"unexpected rest_patch call: {path} {payload}")
+
+    monkeypatch.setattr(executor_module.NautobotClient, "rest_patch", _forbidden_patch)
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert envelope.data.state == "already_converged"
+    assert envelope.ok
+    assert "dashboard" not in envelope.model_dump(mode="json")["data"]
+
+    artifact_dir = Path(envelope.data.artifact_dir)
+    all_paths = {p.name for p in artifact_dir.rglob("*")}
+    assert "result.json" in all_paths
+    assert "plan.json" in all_paths
+    assert "drift-final.json" in all_paths
+    assert "index.html" not in all_paths
+    assert "drift.json" not in all_paths
+    assert not (artifact_dir / "index.html").exists()
+    assert not (artifact_dir / "drift.json").exists()
+
+
 # --- manual block ------------------------------------------------------------
 
 
