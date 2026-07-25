@@ -21,14 +21,18 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
   lifecycle promotion step and no operational-config row are required before
   it's eligible for production composition.
 
-## Steps (Nautobot UI — no nautobot-server shell)
+## Steps (`nauto/seed/intent_sources.yaml` — no nautobot-server shell)
 
-Both models have full CRUD UI under `/plugins/intent-catalog/` (and `nodes`/
-`services`/`endpoints` also have a REST API, per `nctl/README_DEV.md`;
-`placements` is UI-only today).
+> [!NOTE]
+> **Superseded (Interface Contract Phase 3/4):** the nintent Nautobot UI is read-only; there is
+> no `/plugins/intent-catalog/services/add/` or `/plugins/intent-catalog/placements/add/` form
+> anymore. Declare both rows below in `nauto/seed/intent_sources.yaml` and load them with the
+> `Import Intent Sources` Job (`apply=false` to preview, then `apply=true`). `nodes` also has a
+> REST API for its narrow `lifecycle`/`realized_device` mutation fields, per
+> `nintent/README_DEV.md`; `services`/`endpoints`/`placements` have no REST API today.
 
-1. **Create a `DesiredService`** at `/plugins/intent-catalog/services/add/` —
-   one row per service, not per instance:
+1. **Add a `desired_services` entry** — one row per service, not per
+   instance:
    - `name` / `slug`: e.g. `dnsmasq`.
    - `display_name`: human label.
    - `service_type`: `service` (or the closest fit).
@@ -38,9 +42,9 @@ Both models have full CRUD UI under `/plugins/intent-catalog/` (and `nodes`/
      nothing promotes a service to `active` for you, so this is genuine
      intent you must state, not an oversight.
    - `intent_source`: required (non-null FK) — use a `manual` IntentSource
-     for hand-entered services; create one at
-     `/plugins/intent-catalog/sources/add/` (`slug="manual"`,
-     `source_type="manual"`) if none exists yet.
+     for hand-entered services; add one under the `intent_sources` root
+     (`slug: manual`, `source_type: manual`) if none exists yet, same as
+     [register-a-new-pc.md](register-a-new-pc.md#1-one-time-prerequisite-an-intentsource).
    - `catalog_namespace` / `catalog_metadata_name`: `default` / the service
      slug is enough for a manual entry (these plus `intent_source` are the
      row's uniqueness key).
@@ -50,8 +54,7 @@ Both models have full CRUD UI under `/plugins/intent-catalog/` (and `nodes`/
      from operator intent, so a re-analysis run can never overwrite what you
      put here).
 
-2. **Create a `DesiredServicePlacement`** at
-   `/plugins/intent-catalog/placements/add/`, binding that service to the
+2. **Add a `desired_service_placements` entry**, binding that service to the
    target node:
    - `desired_service`: the row from step 1.
    - `desired_node`: the target `DesiredNode` (e.g. `agdnsmasq`).
@@ -73,6 +76,9 @@ Both models have full CRUD UI under `/plugins/intent-catalog/` (and `nodes`/
      `127.0.0.1` only), which is the safe starting point; override only the
      knobs your deployment actually needs. A non-default `config` is genuine
      placement intent too — it is never inferred.
+
+3. **Preview, then apply** — run the `Import Intent Sources` Job with
+   `apply=false` and review its artifact before re-running with `apply=true`.
 
 ## Verify with drift before touching anything
 

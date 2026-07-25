@@ -14,7 +14,7 @@ from nctl_core.drift.model import DiffRecord, Severity, Status, Target
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.reconcile import executor as executor_module
 from nctl_core.reconcile.executor import run_reconcile
-from nctl_core.reconcile.ledger import IpamReconcileResult, LinkActualNodeResult
+from nctl_core.reconcile.ledger import IpamReconcileResult, LedgerActionError, LinkActualNodeResult
 from nctl_core.reconcile.lock import acquire_reconcile_lock
 from nctl_core.reconcile.model import ReconcileAction
 from nctl_core.sources.actual import ActualDevice, ActualIPAddress, ActualSnapshot
@@ -1575,6 +1575,46 @@ def test_successful_ledger_action_retained_when_observation_store_fails(tmp_path
     assert outcome.had_side_effects is True
     assert len(outcome.terminal_errors) == 1
     assert outcome.terminal_errors[0].code == "ssh_store_read_failed"
+
+
+def test_link_actual_node_confirmation_failure_after_successful_patch_is_recorded_not_dropped(tmp_path, monkeypatch):
+    """Interface Contract Phase 4 Step 1 item 8: a link_actual_node action whose PATCH succeeded
+    but whose post-PATCH GraphQL refetch failed to confirm the link (`node_link_not_confirmed`/
+    `node_link_source_not_confirmed`, raised by `execute_link_actual_node` itself) must still
+    appear in the round's evidence with its error code, not silently disappear -- a
+    `LedgerActionError` from a bootstrap-phase action is caught per-action and recorded, not
+    treated as a round-terminating error."""
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    link_action = ReconcileAction(
+        id="link-1",
+        reconciler_id="link_actual_node",
+        action_kind="ledger",
+        targets=[Target(kind="node", slug=ctx.node.slug, name=ctx.node.name, id=ctx.node.id)],
+        claimed_diff_codes=["actual_node_not_linked"],
+        reason="test",
+        mutates=True,
+        requires_observation=False,
+    )
+    plan = ctx.make_plan([link_action])
+
+    def _raise_not_confirmed(client, action):
+        raise LedgerActionError(
+            "node_link_not_confirmed",
+            "PATCH succeeded but refetch did not confirm the link",
+            {"after": None},
+        )
+
+    monkeypatch.setattr(executor_module, "execute_link_actual_node", _raise_not_confirmed)
+
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+    )
+
+    [link_result] = [a for a in outcome.summary.actions if a.reconciler_id == "link_actual_node"]
+    assert link_result.success is False
+    assert "node_link_not_confirmed" in link_result.error
+    assert outcome.terminal_errors == []
 
 
 def _ipam_action(ctx, **evidence_overrides) -> ReconcileAction:

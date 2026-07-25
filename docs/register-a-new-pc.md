@@ -1,57 +1,71 @@
 # Recipe: register a new PC
 
 > [!NOTE]
-> **Superseded Note (Interface Contract Phase 3):** The nintent Nautobot UI is read-only. UI add/edit/delete forms, `sources/add/`, and Quick Host Add (`nodes/quick-add/`) have been removed. Declare desired nodes and endpoints in `nauto/seed/intent_sources.yaml` and load them via the `Import Intent Sources` Job. Use `nctl lifecycle NODE` for lifecycle transitions.
+> **Superseded (Interface Contract Phase 3/4):** the nintent Nautobot UI is read-only. UI
+> add/edit/delete forms, `sources/add/`, and Quick Host Add (`nodes/quick-add/`) have been
+> deleted, not merely deprecated. Sections 1-3 below describe the current, only path: declare
+> the `IntentSource`, `DesiredNode`, and `DesiredEndpoint` rows in `nauto/seed/intent_sources.yaml`
+> and load them with the `Import Intent Sources` Job (`apply=false` to preview, then `apply=true`).
+> Use `nctl lifecycle NODE` for lifecycle transitions.
 
 The literal current path from "here is a new machine" to "converged, running under nctl
 reconcile" — the intent-first flow Better Usability Phase 4 (`devdocs/big/better_usability/p4/`)
-consolidated. Every mechanism step below (accepted actual types, lifecycle, DNS/mDNS names) is
-derived by default; you only ever supply genuine intent, and every derivation is visible with an
-explicit override control if you need one.
+consolidated, now expressed as YAML instead of a UI form. Every mechanism step below (accepted
+actual types, lifecycle, DNS/mDNS names) is derived by default; you only ever supply genuine
+intent, and every derivation is visible with an explicit override control if you need one.
 
 ## 1. One-time prerequisite: an `IntentSource`
 
 Every `DesiredNode`/`DesiredService` needs a non-null `intent_source` FK. If this is your first
-node, create one manual source once (`/plugins/intent-catalog/sources/add/`):
+node, add one entry under the `intent_sources` root of `nauto/seed/intent_sources.yaml`:
 
-- `slug`: `manual`
-- `source_type`: `Manual`
-- `enabled`: checked
+```yaml
+intent_sources:
+  - slug: manual
+    source_type: manual
+    enabled: true
+```
 
-Skip this step entirely if a `manual` source already exists — check
-`/plugins/intent-catalog/sources/` first.
+Skip this step entirely if a `manual` source already exists — check the existing
+`intent_sources` root, or the read-only `/plugins/intent-catalog/sources/` list page, first.
 
-## 2. Quick Host Add
+## 2. Declare the node and its endpoint in YAML
 
-Go to `/plugins/intent-catalog/nodes/quick-add/` and fill in only genuine identity/address/
-publishing choices:
+Add entries under the `desired_nodes` and `desired_endpoints` roots of the same file, filling in
+only genuine identity/address/publishing choices:
 
-- `name` / `slug`: the machine's name (slug auto-generates from name if left blank).
-- `node_type`: defaults to `device` (a physical machine) — the personal-cluster default since
-  Better Usability Phase 4. Change to `virtual_machine`/`container`/`service_host` only if this
-  registration genuinely isn't a physical device.
-- `lifecycle`: defaults to `active` (Better Usability Phase 3) — the node is live and eligible
-  for production composition the moment you save it. Leave it `planned` only if you deliberately
-  want to stage it before it takes effect (see `nctl lifecycle` below).
-- `ip_address` / `dns_name` / `mdns_name`: whatever addressing you actually have. Quick Host
-  Add's publishing defaults (`generate_dnsmasq=True`, `ip_policy=dhcp_reserved`) are a narrower,
-  named policy for this "one primary bootstrap endpoint" use case — they publish the address you
-  give and need one to produce dnsmasq records. Turn publishing off or pick `external`/`static`
-  directly if that's not what you want.
+- `name` / `slug`: the machine's name.
+- `node_type`: `device` (a physical machine) is the personal-cluster default since Better
+  Usability Phase 4. Use `virtual_machine`/`container`/`service_host` only if this registration
+  genuinely isn't a physical device.
+- `lifecycle`: `active` (Better Usability Phase 3) makes the node live and eligible for
+  production composition as soon as the Import Job applies it. Use `planned` only if you
+  deliberately want to stage it before it takes effect (see `nctl lifecycle` below).
+- the endpoint's `ip_address` / `dns_name` / `mdns_name`: whatever addressing you actually have.
+  `generate_dnsmasq: true` with `ip_policy: dhcp_reserved` is the narrower, named policy for a
+  "one primary bootstrap endpoint" use case — it publishes the address you give and needs one to
+  produce dnsmasq records. Turn publishing off or pick `external`/`static` directly if that's not
+  what you want.
 
-## 3. The visible derived node type, accepted actual types, lifecycle, and DNS/mDNS names
+Run the `Import Intent Sources` Job with `apply=false` first and review the proposed
+create/update actions in its artifact before applying; run again with `apply=true` once the
+preview matches what you intended.
 
-Above the "Accepted actual types override" field, the form shows a **derived preview** computed
-from your selected `node_type` (e.g. `device` → `device`). Leave the override field blank to use
-that derived value — this is the common case and needs no input. Only fill it in if this specific
+## 3. The derived node type, accepted actual types, lifecycle, and DNS/mDNS names
+
+`accepted_actual_types` is derived from `node_type` (e.g. `device` -> `device`) when omitted from
+the YAML — this is the common case and needs no input. Set it explicitly only if this specific
 node genuinely accepts more than one realized-object kind (e.g. a `service_host` that might
 realize as either a Nautobot Device or a VM).
 
-The success message after saving states the effective `accepted_actual_types` value and whether
-it was `derived` or `override`, so you can confirm what actually got recorded before moving on.
+The Import Job's preview/apply artifact states the effective `accepted_actual_types` value and
+whether it was `derived` or an explicit override, so you can confirm what actually got recorded
+before moving on. The read-only detail page for the node
+(`/plugins/intent-catalog/desired-nodes/<id>/`) shows the same recorded/effective values after
+apply.
 
-DNS/mDNS names default from the node's slug (`names.py`'s canonical-name rules) when left blank;
-an explicit value you type is recorded as `intent`, not `derived`.
+DNS/mDNS names default from the node's slug (`names.py`'s canonical-name rules) when omitted from
+the endpoint's YAML; an explicit value you supply is recorded as `intent`, not `derived`.
 
 ## 4. Inspect recorded/effective/application layers before mutating anything
 

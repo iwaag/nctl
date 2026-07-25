@@ -176,6 +176,93 @@ def test_link_actual_node_rejects_wrong_action():
     assert exc.value.code == "wrong_action"
 
 
+# --- Interface Contract Phase 4 Step 1 item 8: missing node-link boundaries -------------------
+
+
+def test_link_actual_node_rejects_absent_target_id():
+    action = _link_action(targets=[Target(kind="node", slug="agweb", name="agweb", id=None)])
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), action)
+    assert exc.value.code == "missing_target_id"
+
+
+def test_link_actual_node_rejects_absent_candidate_id():
+    action = _link_action(parameters={"candidate": {"object_type": "dcim.device"}})
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), action)
+    assert exc.value.code == "missing_candidate_id"
+
+
+@respx.mock
+def test_link_actual_node_reports_node_fetch_failed_when_node_is_absent_from_snapshot():
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"desired_nodes": [], "desired_endpoints": [], "desired_ip_ranges": [],
+                                 "desired_node_operational_overrides": [], "desired_service_placements": [],
+                                 "desired_services": [], "desired_dependencies": [], "desired_compute_platforms": [],
+                                 "desired_compute_instances": []}}
+        )
+    )
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), _link_action())
+    assert exc.value.code == "node_fetch_failed"
+
+
+@respx.mock
+def test_link_actual_node_rejects_graphql_error_before_patch():
+    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(500, text="boom"))
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), _link_action())
+    assert exc.value.code == "node_fetch_failed"
+
+
+@respx.mock
+def test_link_actual_node_rejects_slug_mismatch():
+    response = _graphql_desired_node_response(realized_device_id=None)
+    response["data"]["desired_nodes"][0]["slug"] = "some-other-slug"
+    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=response))
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), _link_action())
+    assert exc.value.code == "node_fetch_mismatch"
+    assert exc.value.detail["found_slug"] == "some-other-slug"
+    assert exc.value.detail["expected_slug"] == "agweb"
+
+
+@respx.mock
+def test_link_actual_node_refuses_partial_pre_existing_link_source_only():
+    """`realized_device_source` set without `realized_device_id` still counts as an existing
+    link for the never-clear-or-replace guard (Decision 5) -- not a benign half-empty state."""
+    response = _graphql_desired_node_response(realized_device_id=None)
+    response["data"]["desired_nodes"][0]["realized_device_source"] = "override"
+    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=response))
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), _link_action())
+    assert exc.value.code == "node_already_linked"
+
+
+@respx.mock
+def test_link_actual_node_rejects_wrong_confirmed_source_after_successful_patch():
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        side_effect=[
+            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
+            httpx.Response(
+                200, json=_graphql_desired_node_response(realized_device_id=DEVICE_ID, realized_device_source="override")
+            ),
+        ]
+    )
+    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
+        return_value=httpx.Response(200, json={"id": NODE_ID, "realized_device": DEVICE_ID, "realized_device_source": "override"})
+    )
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), _link_action())
+    assert exc.value.code == "node_link_source_not_confirmed"
+
+
 # --- execute_reconcile_ipam -------------------------------------------------
 
 
