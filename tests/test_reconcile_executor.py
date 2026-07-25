@@ -149,13 +149,6 @@ def _no_op_deployment_profiles(monkeypatch):
     monkeypatch.setattr(executor_module, "load_profile_reconciliation", lambda playbook_dir, names: {})
 
 
-def _stub_dashboard(monkeypatch, *, ok=True):
-    def fake(cfg, drift_envelope, **kwargs):
-        return Envelope.build("nctl.dashboard.v1", executor_module.DashboardData(), [] if ok else [EnvelopeError(code="x", message="dashboard failed")])
-
-    monkeypatch.setattr(executor_module, "render_dashboard_from_drift", fake)
-
-
 def _resolved_ssh_targets_for_snapshot(snapshot, generation_id, generated_at):
     """Mirror `compose_production_inventory`'s ResolvedSshTarget derivation for a stubbed render.
 
@@ -304,7 +297,6 @@ def test_refresh_observation_executes_once_then_converges(tmp_path, monkeypatch)
     target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
     converged = _drift([_target_status(target, Status.CONVERGED)], nodes=[node])
     _sequence(monkeypatch, [converged, converged])
-    _stub_dashboard(monkeypatch)
     calls = {"n": 0}
 
     def fake_observation(*args, **kwargs):
@@ -371,7 +363,6 @@ def test_operation_id_can_be_pre_assigned_by_a_caller(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     _no_op_deployment_profiles(monkeypatch)
     _sequence(monkeypatch, [_drift([])])
-    _stub_dashboard(monkeypatch)
 
     envelope = run_reconcile(cfg, apply_changes=True, operation_id="01ARZ3NDEKTSV4RRFFQ69G5FAV")
 
@@ -397,7 +388,6 @@ def test_apply_blocks_on_unenrolled_ssh_host_before_any_action_executes(tmp_path
     node = _unenrolled_node()
     diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="missing_actual_data", severity=Severity.ERROR, message="x")
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])], nodes=[node])])
-    _stub_dashboard(monkeypatch)
     observation_calls = {"n": 0}
     monkeypatch.setattr(
         executor_module,
@@ -455,7 +445,6 @@ def test_ledger_only_plan_not_blocked_by_unenrolled_host(tmp_path, monkeypatch):
     drifting = make_drift(Status.DRIFTING, [diff])
     converged = make_drift(Status.CONVERGED, [])
     _sequence(monkeypatch, [drifting, converged])
-    _stub_dashboard(monkeypatch)
     called = {"n": 0}
     monkeypatch.setattr(
         executor_module,
@@ -476,7 +465,6 @@ def test_apply_blocks_on_mismatched_offered_key_before_observation_runs(tmp_path
     node = _node()  # enrolled by _config() with FIXTURE_KEY_BLOB
     diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="missing_actual_data", severity=Severity.ERROR, message="x")
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])])])
-    _stub_dashboard(monkeypatch)
     observation_calls = {"n": 0}
     monkeypatch.setattr(
         executor_module,
@@ -510,7 +498,6 @@ def test_already_converged_when_no_diffs(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     _no_op_deployment_profiles(monkeypatch)
     _sequence(monkeypatch, [_drift([])])
-    _stub_dashboard(monkeypatch)
 
     envelope = run_reconcile(cfg, apply_changes=True)
 
@@ -528,7 +515,6 @@ def test_manual_review_blocks_before_any_mutation(tmp_path, monkeypatch):
     node = _node()
     diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="ambiguous_actual_node_candidates", severity=Severity.ERROR, message="x")
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
-    _stub_dashboard(monkeypatch)
     calls = {"n": 0}
     monkeypatch.setattr(executor_module, "AnsibleRunner", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
 
@@ -551,7 +537,6 @@ def test_no_progress_stops_before_max_rounds(tmp_path, monkeypatch):
     diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="missing_actual_data", severity=Severity.ERROR, message="x")
     drift = _drift([_target_status(diff.target, Status.UNKNOWN, [diff])])
     _sequence(monkeypatch, [drift, drift, drift])  # identical fingerprint every round
-    _stub_dashboard(monkeypatch)
     monkeypatch.setattr(
         executor_module,
         "run_observation",
@@ -583,7 +568,6 @@ def test_max_rounds_reached_when_progress_never_completes(tmp_path, monkeypatch)
     # A different code each round keeps the fingerprint changing, so it never
     # hits the no-progress check and instead exhausts max_rounds.
     _sequence(monkeypatch, [make_drift("missing_actual_data"), make_drift("stale_actual_data"), make_drift("invalid_actual_timestamp")])
-    _stub_dashboard(monkeypatch)
     monkeypatch.setattr(
         executor_module,
         "run_observation",
@@ -616,7 +600,6 @@ def test_observe_node_action_only_receives_node_slugs_for_service_diffs(tmp_path
         desired={"expected": {"node_slug": node.slug, "node_id": node.id}},
     )
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])], nodes=[node])])
-    _stub_dashboard(monkeypatch)
 
     captured = {}
 
@@ -701,7 +684,6 @@ def test_link_actual_node_action_executes_and_converges_next_round(tmp_path, mon
     drifting = make_drift(Status.DRIFTING, [diff])
     converged = make_drift(Status.CONVERGED, [])
     _sequence(monkeypatch, [drifting, converged])
-    _stub_dashboard(monkeypatch)
 
     link_calls = []
     monkeypatch.setattr(
@@ -743,7 +725,6 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
         },
     )
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
-    _stub_dashboard(monkeypatch)
 
     playbook_run_calls = {"n": 0}
     monkeypatch.setattr(
@@ -836,7 +817,6 @@ def test_production_write_failure_starts_no_service_ansible_process(tmp_path, mo
         "write_production_artifacts",
         lambda envelope, out_dir: EnvelopeError(code="inventory_validation_failed", message="ansible-inventory rejected the staged copy"),
     )
-    _stub_dashboard(monkeypatch)
 
     playbook_run_calls = {"n": 0}
     monkeypatch.setattr(
@@ -901,7 +881,6 @@ def test_service_phase_scans_freshly_regenerated_route_not_round_start_snapshot(
         },
     )
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
-    _stub_dashboard(monkeypatch)
 
     playbook_run_calls = {"n": 0}
 
@@ -1011,7 +990,6 @@ def test_independent_service_action_failure_does_not_block_the_other(tmp_path, m
         },
     )
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
-    _stub_dashboard(monkeypatch)
 
     node = _node()
     good_service = _service_and_placement("good-svc", "good", node)
@@ -1118,7 +1096,6 @@ def test_interruption_mid_round_retains_actions_completed_before_it(tmp_path, mo
         },
     )
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
-    _stub_dashboard(monkeypatch)
 
     node = _node()
     good_service = _service_and_placement("good-svc", "good", node)
@@ -1217,26 +1194,6 @@ def _service_and_placement(slug, profile, node):
     return service, placement
 
 
-# --- dashboard degradation -----------------------------------------------------
-
-
-def test_dashboard_failure_does_not_overwrite_terminal_state(tmp_path, monkeypatch):
-    cfg = _config(tmp_path)
-    _no_op_deployment_profiles(monkeypatch)
-    _sequence(monkeypatch, [_drift([])])
-    _stub_dashboard(monkeypatch, ok=False)
-
-    envelope = run_reconcile(cfg, apply_changes=True)
-
-    assert envelope.data.state == "already_converged"
-    assert envelope.ok
-    events = [
-        json.loads(line)
-        for line in (tmp_path / "events" / f"{envelope.data.operation_id}.jsonl").read_text().splitlines()
-    ]
-    assert any(e["event"] == "warning" for e in events)
-
-
 # --- unknown host -------------------------------------------------------------
 
 
@@ -1297,7 +1254,6 @@ def test_local_blocker_allows_independent_action_then_reports_manual_interventio
     round0 = make_drift(Status.DRIFTING, [link_diff])
     round1 = make_drift(Status.CONVERGED, [])
     _sequence(monkeypatch, [round0, round1])
-    _stub_dashboard(monkeypatch)
 
     link_calls = []
     monkeypatch.setattr(
@@ -1327,7 +1283,6 @@ def test_local_blocker_with_no_actions_terminates_without_mutation(tmp_path, mon
         code="unresolved_connection_path", severity=Severity.ERROR, message="x",
     )
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
-    _stub_dashboard(monkeypatch)
     calls = {"n": 0}
     monkeypatch.setattr(executor_module, "AnsibleRunner", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
 
@@ -1362,7 +1317,6 @@ def test_global_blocker_stops_before_any_action_even_with_actionable_drift(tmp_p
             )
         ],
     )
-    _stub_dashboard(monkeypatch)
     calls = {"n": 0}
     monkeypatch.setattr(
         executor_module, "execute_link_actual_node", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1)
@@ -1414,7 +1368,6 @@ def test_max_rounds_reached_with_a_known_local_blocker_reports_manual_interventi
 
     round0 = make_drift(Status.DRIFTING, [link_diff])
     _sequence(monkeypatch, [round0])  # max_rounds=1: only one round is ever fetched
-    _stub_dashboard(monkeypatch)
     monkeypatch.setattr(
         executor_module,
         "execute_link_actual_node",
@@ -2030,7 +1983,6 @@ deployment_profile_reconciliation:
     _patch_production_render(monkeypatch, lambda: fetch_snapshot(cfg, None))
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
     monkeypatch.setattr(executor_module, "run_observation", lambda *a, **kw: executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()))
-    _stub_dashboard(monkeypatch)
 
     inventory_payload = {
         "dnsmasq_server": {"hosts": ["agdnsmasq"]},
@@ -2175,7 +2127,6 @@ def test_real_multi_round_ipam_convergence_for_non_dhcp_endpoint(tmp_path, monke
     _no_op_deployment_profiles(monkeypatch)
     _patch_production_render(monkeypatch, lambda: fetch_snapshot(cfg, None))
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
-    _stub_dashboard(monkeypatch)
 
     ipam_calls = []
 

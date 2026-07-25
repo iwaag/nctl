@@ -2,8 +2,8 @@
 
 Ties Step 5's planner and Step 6's ledger execution into one operation:
 drift -> plan -> (plan mode stops here) -> execute actions in DAG order ->
-fresh observation -> final drift -> dashboard. See `p4/plan.md`'s "Apply
-mode execution per round" for the numbered steps this module implements.
+fresh observation -> final drift. See `p4/plan.md`'s "Apply mode execution
+per round" for the numbered steps this module implements.
 
 The round loop is deliberately collapsed relative to the plan's 9 numbered
 steps: each iteration begins by fetching one fresh full-cluster drift and
@@ -29,7 +29,6 @@ from pydantic import BaseModel, Field
 from nctl_core.ansible import AnsibleRunner, CommandRunner
 from nctl_core.artifacts import ArtifactError, OperationArtifacts
 from nctl_core.config import Config, ConfigError
-from nctl_core.dashboard_render import DashboardData, render_dashboard_from_drift
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply
 from nctl_core.drift.engine import DriftResult, TargetStatus
 from nctl_core.drift.model import Target
@@ -117,7 +116,6 @@ class ReconcileData(BaseModel):
     unsupported: list[dict[str, Any]] = Field(default_factory=list)
     summary: dict[str, int] = Field(default_factory=dict)
     scope_summary: dict[str, int] = Field(default_factory=dict)
-    dashboard: DashboardData | None = None
     progress_made: bool = False
     # Controller-local SSH trust readiness (fix_sshkey Step 5, Design Decision 5/6):
     # informational alongside drift/action state, never itself a drift code or
@@ -494,7 +492,6 @@ def _run_apply(
         )
         data.summary = final_data.summary
         data.scope_summary = _scope_summary(final_drift_result.targets, scope, final_snapshot)
-        _write_dashboard(cfg, op, data, final_data)
 
     # Item 7: progress is whether any action in any round actually
     # succeeded, not merely whether a round's summary was appended (an
@@ -1043,23 +1040,6 @@ def _run_observation_action(
     return ExecutedAction(result=action_result)
 
 
-def _write_dashboard(cfg: Config, op: OperationLog, data: ReconcileData, final_data: DriftData) -> None:
-    drift_envelope = Envelope.build("nctl.drift.v1", final_data, [])
-    try:
-        dashboard_envelope = render_dashboard_from_drift(cfg, drift_envelope)
-    except Exception as exc:  # dashboard/write-back failure must never overwrite the reconcile terminal reason
-        op.emit("warning", f"dashboard regeneration failed: {exc}", level="warning")
-        return
-    data.dashboard = dashboard_envelope.data
-    if not dashboard_envelope.ok:
-        op.emit(
-            "warning",
-            "dashboard regeneration reported errors",
-            level="warning",
-            errors=[e.model_dump() for e in dashboard_envelope.errors],
-        )
-
-
 def _build_plan_or_error(
     cfg: Config,
     snapshot: SourceSnapshot,
@@ -1180,19 +1160,18 @@ def _finish(op: OperationLog, data: ReconcileData, state: str, errors: list[Enve
         op.emit("non_converged", "reconcile stopped without full convergence", level="warning", state=state)
     envelope = Envelope(schema=RECONCILE_SCHEMA, generated_at=datetime.now(timezone.utc), ok=ok, data=data, errors=errors)
     # `result.json` must exist before the `finished` event is visible: callers (`nctl ops
-    # show`, the Phase 5 server) treat that event as the signal that the terminal envelope is
-    # ready to read, so persisting after `op.finish()` would leave a real, observed window
-    # where the operation shows "finished" but has no result yet.
+    # show`) treat that event as the signal that the terminal envelope is ready to read, so
+    # persisting after `op.finish()` would leave a real, observed window where the operation
+    # shows "finished" but has no result yet.
     _persist_terminal_result(data.artifact_dir, envelope)
     op.finish(ok=ok, message=state)
     return envelope
 
 
 def _persist_terminal_result(artifact_dir: str, envelope: Envelope[ReconcileData]) -> None:
-    """Write the terminal envelope as a public `result.json`, matching the exit criterion that
-    the artifact layout on disk is identical regardless of whether the CLI or the Phase 5 server
-    triggered the run. Never fatal: a `result.json` write failure must not turn a completed
-    reconcile into a reported failure.
+    """Write the terminal envelope as a public `result.json` for later `nctl ops show`
+    inspection. Never fatal: a `result.json` write failure must not turn a completed reconcile
+    into a reported failure.
     """
 
     if not artifact_dir:
