@@ -6,8 +6,8 @@ ledger, matching Decision 5 exactly:
 
 - `execute_link_actual_node` -- one REST PATCH of `realized_device` on a
   `DesiredNode` row through nintent's existing ViewSet, guarded by a
-  precondition check (never clear or replace an existing link) and a
-  post-PATCH refetch that asserts the exact link landed. (VM p3 Step 5: the
+  GraphQL precondition check (never clear or replace an existing link) and a
+  post-PATCH GraphQL refetch that asserts the exact link landed. (VM p3 Step 5: the
   legacy `DesiredNode.realized_vm` field was removed outright, so this can no
   longer link a `virtualization.virtualmachine` candidate onto a bare
   `DesiredNode` -- VM linking is now `DesiredComputeInstance.realized_vm`, a
@@ -20,12 +20,6 @@ ledger, matching Decision 5 exactly:
   stayed inside the requested scope. Conflicts/skips inside a successful Job
   run are returned, not swallowed -- Step 7's executor turns them into
   manual-review findings rather than reporting the action as converged.
-
-Neither function is closed-loop verified against a live Nautobot yet: Step 3
-recorded a 403 against the local dev instance before the intent-catalog
-token/config was refreshed. Both are implemented against the serializer/Job
-contracts documented in `p4/plan.md`'s "Risks to verify first" and exercised
-here with a fake `NautobotClient`/`NautobotJobRunner`.
 """
 
 from __future__ import annotations
@@ -38,6 +32,7 @@ from pydantic import BaseModel
 
 from nctl_core.jobs import NautobotJobResult, NautobotJobRunner
 from nctl_core.nautobot import NautobotClient, NautobotError
+from nctl_core.sources.desired import DesiredNode, fetch_desired_snapshot
 
 from .model import ReconcileAction
 
@@ -81,7 +76,7 @@ class IpamReconcileResult(BaseModel):
 
 
 def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) -> LinkActualNodeResult:
-    """PATCH `realized_device`, then refetch and assert it landed.
+    """PATCH `realized_device`, then refetch via GraphQL and assert it landed.
 
     Never clears or replaces an existing link: if the row already has either
     field set, this raises rather than PATCHing over it (Decision 5).
@@ -104,12 +99,12 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
     if not candidate_id:
         raise LedgerActionError("missing_candidate_id", "link_actual_node action's candidate has no id")
 
-    before = _get_node(client, node_id)
-    if _linked_id(before.get("realized_device")):
+    before = _get_desired_node_by_id(client, node_id, expected_slug=target.slug)
+    if before.realized_device_id or before.realized_device_source:
         raise LedgerActionError(
             "node_already_linked",
             f"DesiredNode {target.slug!r} already has a realized link; refusing to replace it",
-            {"before": {"realized_device": before.get("realized_device")}},
+            {"before": {"realized_device_id": before.realized_device_id, "realized_device_source": before.realized_device_source}},
         )
 
     source_field = f"{field}_source"
@@ -124,19 +119,18 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
             {"status_code": response.status_code, "body": response.text[:200]},
         )
 
-    after = _get_node(client, node_id)
-    linked_id = _linked_id(after.get(field))
-    if linked_id != candidate_id:
+    after = _get_desired_node_by_id(client, node_id, expected_slug=target.slug)
+    if after.realized_device_id != candidate_id:
         raise LedgerActionError(
             "node_link_not_confirmed",
-            f"expected DesiredNode {target.slug!r}.{field}={candidate_id!r}, refetch shows {linked_id!r}",
-            {"after": after.get(field)},
+            f"expected DesiredNode {target.slug!r}.{field}={candidate_id!r}, refetch shows {after.realized_device_id!r}",
+            {"after": after.realized_device_id},
         )
-    if after.get(source_field) != "derived":
+    if after.realized_device_source != "derived":
         raise LedgerActionError(
             "node_link_source_not_confirmed",
             f"expected DesiredNode {target.slug!r}.{source_field}='derived'",
-            {"after": after.get(source_field)},
+            {"after": after.realized_device_source},
         )
 
     return LinkActualNodeResult(
@@ -202,11 +196,6 @@ def execute_reconcile_ipam(
             f"{len(out_of_scope)} summary plan row(s) reference a node other than {node_slug!r}",
         )
 
-    # Endpoint coverage (ipam_policy p6 Step 4): the planner pinned the exact
-    # endpoint ids it expected this Job run to close (`reconcilers.
-    # plan_reconcile_ipam`), re-derived from the same fixed snapshot drift was
-    # computed from. A successful `JobResult` alone is not proof the Job
-    # actually processed the target endpoint -- verify the artifact names it.
     eligible_endpoint_ids = [str(value) for value in (action.evidence.get("eligible_endpoint_ids") or [])]
     plan_by_endpoint_id = {
         str(plan["desired_endpoint"]["id"]): plan
@@ -257,29 +246,29 @@ def execute_reconcile_ipam(
     )
 
 
-def _get_node(client: NautobotClient, node_id: str) -> dict[str, Any]:
-    response = client.rest_get(f"{INTENT_API_BASE}/nodes/{node_id}/")
-    if not response.is_success:
+def _get_desired_node_by_id(client: NautobotClient, node_id: str, expected_slug: str | None = None) -> DesiredNode:
+    try:
+        snapshot = fetch_desired_snapshot(client)
+    except Exception as exc:
         raise LedgerActionError(
             "node_fetch_failed",
-            f"cannot fetch DesiredNode {node_id}: HTTP {response.status_code}",
-            {"status_code": response.status_code},
+            f"cannot fetch desired snapshot for DesiredNode {node_id}: {exc}",
+        ) from exc
+
+    node = next((n for n in snapshot.nodes if n.id == node_id), None)
+    if node is None:
+        raise LedgerActionError(
+            "node_fetch_failed",
+            f"DesiredNode {node_id} not found in GraphQL desired snapshot",
+            {"node_id": node_id},
         )
-    body = response.json()
-    if not isinstance(body, dict):
-        raise LedgerActionError("node_fetch_invalid", f"DesiredNode {node_id} response is not an object")
-    return body
-
-
-def _linked_id(value: Any) -> str | None:
-    """Normalize a serialized FK value (nested object, plain id, or null) to an id or None."""
-
-    if value in (None, "", {}):
-        return None
-    if isinstance(value, dict):
-        linked = value.get("id") or value.get("pk")
-        return str(linked) if linked else None
-    return str(value)
+    if expected_slug and node.slug != expected_slug:
+        raise LedgerActionError(
+            "node_fetch_mismatch",
+            f"DesiredNode {node_id} has slug {node.slug!r}, expected {expected_slug!r}",
+            {"found_slug": node.slug, "expected_slug": expected_slug},
+        )
+    return node
 
 
 def _read_json(path: Path) -> dict[str, Any]:
