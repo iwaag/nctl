@@ -1,8 +1,7 @@
-"""VM Phase 3 Step 5 point 5/7: valid compute collections must stay out of compute
-drift/planner/reconcile dispatch entirely -- Step 5 only reads/types/
-validates `DesiredComputePlatform`/`DesiredComputeInstance`, it adds no comparator,
-reconciler, or plan action that even looks at them. Compute drift/matching/link
-planning is explicitly Phase 4 territory (plan.md Section 5.1).
+"""Valid compute collections remain inert outside an authorized realization roadmap.
+
+Compute rows are read and typed but no comparator, reconciler, or plan action dispatches on them.
+The test originated in VM Phase 3 and remains Tier A until a later roadmap explicitly replaces it.
 
 This test runs the *real* `run_comparators()`/`build_plan()` pipeline (not mocks)
 over a snapshot that includes a fully valid platform+instance and asserts zero

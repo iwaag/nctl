@@ -1,11 +1,8 @@
-"""Frozen executable contract for Phase 4 Decision 3 (p4/plan.md Step 4.1).
+"""Fail closed when deployment profiles are unavailable.
 
-Written before implementation: pins that a missing/unparsable/invalid
-`vars/deployment_profiles.yml` becomes a classified global ERROR
-`deployment_profiles_unavailable` instead of silently degrading to `{}`
-(current behavior documented in `drift_render.py`'s module docstring and
-`comparators.py`'s `"if not context.profiles: return"` guard). Currently
-failing because that degrade-to-`{}` behavior is still in place.
+A missing, unparsable, or invalid `vars/deployment_profiles.yml` is the classified global ERROR
+`deployment_profiles_unavailable`, never a silent empty-profile fallback. The test originated in
+the Phase 4 decision record but owns this lasting drift boundary.
 """
 
 import httpx

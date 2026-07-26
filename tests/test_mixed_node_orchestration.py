@@ -1,4 +1,4 @@
-"""Phase 4 Step 4.7: the mixed good/bad node matrix, run through the real pipeline
+"""Mixed-node drift/planning isolation through the real pipeline.
 (compute_drift -> build_plan), not synthetic diffs. Six nodes in one snapshot/plan:
 
 - aghealthy: converged, one active placement on a valid profile.
@@ -11,7 +11,7 @@
   reports production.state=out_of_scope (independent of whatever the separate identity-
   evaluation layer finds about the missing realized link).
 
-Asserts the healthy node's own status/diffs/plan actions are unaffected by any neighbor
+This regression originated in Phase 4. It asserts the healthy node's own status/diffs/plan actions are unaffected by any neighbor
 (cluster scope and host scope), every bad node gets its own precise diff, and every
 intent_effect_summary INFO diff is excluded from both plan scopes.
 """

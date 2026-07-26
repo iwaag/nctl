@@ -1,4 +1,4 @@
-"""Phase 3 Step 3.5: drift/reconcile isolation across a node's lifecycle transition.
+"""Drift/reconcile isolation across a node lifecycle transition.
 
 Composer-level "one bad node doesn't abort others" and the
 `active_placement_not_applied` finding itself are already covered extensively by
@@ -6,7 +6,7 @@ Composer-level "one bad node doesn't abort others" and the
 before/after transition framing plan.md Step 3.5 asks for: the same node/placement data evaluated
 at `planned`, then `active`, then back to `planned`, plus reconcile-planner isolation between a
 healthy and a locally blocked active node, and the "lifecycle command errors never enter
-drift/reconcile classification" guarantee (plan.md Decision 3).
+drift/reconcile classification" guarantee. The transition framing originated in Phase 3.
 """
 
 from __future__ import annotations

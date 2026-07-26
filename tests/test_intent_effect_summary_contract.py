@@ -1,10 +1,7 @@
-"""Frozen executable contract for Phase 4 Decision 2 (p4/plan.md Step 4.1).
+"""Production-policy diagnostics expose one canonical intent-effect summary.
 
-Written before implementation: pins that `production_policy` renames its
-per-node INFO diagnostic from `derived_value_provenance` to
-`intent_effect_summary`, with no old-code alias left behind. Currently
-failing because `comparators.py` still emits the old code
-(`nctl_core/drift/comparators.py:320`).
+The per-node INFO diagnostic is `intent_effect_summary`; the superseded
+`derived_value_provenance` code has no alias. This test originated in the Phase 4 decision record.
 """
 
 import httpx
