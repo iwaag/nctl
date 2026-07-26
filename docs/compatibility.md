@@ -1,77 +1,39 @@
-# Compatibility policy
+# Current-consumer contract policy
 
-The JSONL event log, operation artifacts, and CLI envelope shapes below are read by the CLI and
-by `nctl ops` as durable disk evidence, not published to or consumed by any external subscriber.
-They are still **frozen**: they may grow additively, but existing fields/names never change
-meaning or disappear within the same version. Schema snapshot tests in
-`tests/test_compatibility_snapshots.py` pin every shape listed here and fail CI if a change would
-break it — that failure is the enforcement mechanism, this document is the policy it enforces.
+The root repository's coordinated breaking-change rule governs nctl. JSONL event logs, operation
+artifacts, and CLI envelopes are local durable evidence read by current CLI, agent, and operator
+workflows; they are not an external subscriber API.
 
-"Frozen" means, concretely:
+A schema change is made in one matched-version rollout: update its writer, every current reader,
+documentation, and the exact contract test together. Do not retain obsolete writers, serializers,
+aliases, or versions solely for compatibility. A version label identifies the current contract;
+it does not require obsolete producers to run indefinitely.
 
-- an existing field is never renamed, removed, or repurposed to mean something else;
-- an existing field's type never narrows or changes in an incompatible way;
-- an existing event name, error `code`, or vocabulary entry never disappears or changes meaning;
-- new fields, new event names, new operations, and new envelope schemas (`nctl.<command>.v2`)
-  are always fine to add.
+Existing on-disk operation evidence is different: `nctl ops show` must continue to inspect it.
+When a historic artifact needs a removed presentation field, retain the smallest historical reader
+or provide an explicit offline migration. This does not require retaining the old writer or an
+obsolete dashboard schema.
 
-A breaking change to any of these is only made by minting a new major version alongside the old
-one (`nctl.<command>.v2`) for a deprecation window — never by mutating `v1` in place.
+## Named contracts
 
-## 1. `EventRecord` shape (`nctl_core.events.EventRecord`)
+| Contract | Writer | Current reader | Durable reader |
+|---|---|---|---|
+| `EventRecord` JSONL | `nctl_core.events` | `nctl ops list` / `show` | historical operation logs |
+| `nctl.drift.v1` | `nctl drift` | reconcile; AI/operator inspection | — |
+| `nctl.render.dnsmasq.v3` | `nctl render dnsmasq` | reconcile; Ansible actuation | — |
+| `nctl.render.hosts-intent.v1` | `nctl render hosts-intent` | inventory composition; Ansible | — |
+| `nctl.render.production.v1` | `nctl render production` | inventory composition; Ansible | — |
+| operations index/list/show | operations index and `nctl ops` | `nctl ops` | historical indexes and artifacts |
+| `nctl.reconcile.v2` | reconcile executor | operation artifacts; `nctl ops show` | historical operation results |
+| status, apply, lifecycle, SSH enrollment, and Braindump envelopes | their named command | CLI/agent caller of that command | — |
 
-Frozen field set: `ts`, `operation_id`, `op`, `seq`, `event`, `level`, `message`, `data`. See
-[event-log.md](event-log.md) for the meaning of each. New information goes into `data` or a new
-`event` name, never a new top-level field with overlapping meaning.
+`tests/test_current_consumer_contracts.py` pins the exact current shapes for these command
+envelopes. The operation-index tests own real JSONL/index write-read, corruption, restart, and
+historical-dashboard-field readability. Command tests own their command-specific behavior.
 
-## 2. Event vocabulary
+## Scope
 
-The following event names are frozen in meaning (renames/removals require a documented major
-bump; new names may be added freely):
-
-- Core (any operation): `started`, `step_started`, `step_completed`, `warning`, `failed`,
-  `finished`.
-- `apply dnsmasq`: `rendered`, `setup_started`, `setup_completed`, `setup_dry_run_completed`,
-  `dry_run_completed`, `apply_started`, `apply_completed`.
-- `reconcile` (Phase 4): `plan_created`, `round_started`, `action_started`, `action_completed`,
-  `actuation_completed`, `observation_completed`, `drift_resolved`, `non_converged`.
-- observation/collection (shared by `reconcile` and `status`-adjacent flows):
-  `collection_started`, `reports_retrieved`.
-
-Full semantics for each are documented in [event-log.md](event-log.md); this list exists so a
-removal or rename is mechanically detectable.
-
-## 3. `nctl.<command>.v1` envelopes (`nctl_core.output.Envelope`)
-
-The envelope wrapper itself (`schema`, `generated_at`, `ok`, `data`, `errors`) and
-`EnvelopeError` (`code`, `message`, `detail`) are frozen. Each command's `data` payload is frozen
-at its current field set and may only gain fields:
-
-| Schema | `data` model |
-|---|---|
-| `nctl.status.v1` | `StatusData` (`nctl_core.status`) |
-| `nctl.drift.v1` | `DriftData` (`nctl_core.drift_render`) |
-| `nctl.apply.dnsmasq.v2` | `DnsmasqApplyData` (`nctl_core.dnsmasq_apply`) |
-| `nctl.render.dnsmasq.v3` | `DnsmasqRenderData` (`nctl_core.dnsmasq_render`) |
-| `nctl.render.production.v1` | `ProductionRenderData` (`nctl_core.production_render`) |
-| `nctl.render.hosts_intent.v1` | `HostsIntentRenderData` (`nctl_core.hosts_intent_render`) |
-| `nctl.reconcile.v2` | `ReconcileData` (`nctl_core.reconcile.executor`) |
-| `nctl.ops.list.v1` | `OpsListData` (`nctl_core.ops_render`) |
-| `nctl.ops.show.v1` | `OpsShowData` (`nctl_core.ops_render`) |
-| `nctl.braindump.list.v1` | `BraindumpListData` (`nctl_core.braindump`) |
-| `nctl.braindump.show.v1` | `BraindumpShowData` (`nctl_core.braindump`) |
-| `nctl.braindump.create.v1` | `BraindumpCreateData` (`nctl_core.braindump`) |
-| `nctl.braindump.update.v1` | `BraindumpUpdateData` (`nctl_core.braindump`) |
-| `nctl.braindump.delete.v1` | `BraindumpDeleteData` (`nctl_core.braindump`) |
-| `nctl.braindump.review.v1` | `BraindumpReviewData` (`nctl_core.braindump`) |
-| `nctl.braindump.review_delete.v1` | `BraindumpReviewDeleteData` (`nctl_core.braindump`) |
-
-A breaking change to any `data` shape above mints `nctl.<command>.v2` and keeps `v1` emitting
-its current shape for a deprecation window; it does not alter `v1` in place.
-
-## Out of scope for this policy
-
-Consistent with [p5/plan.md](../../devdocs/vision/core_reconcile/p5/plan.md) Step 6: this is a
-policy freeze plus snapshot tests, not a JSON-Schema registry or codegen pipeline. Internal
-module layout, CLI flag names, and config file shape are not covered — only the wire/file
-contracts documented above.
+This is not a JSON-Schema registry or a promise of backwards-compatible runtime producers.
+Internal module layout, CLI flags, and configuration shape are outside this policy. A future
+change that requires retained evidence readability must document its minimal reader or offline
+migration before removing the old representation.

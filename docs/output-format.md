@@ -2,8 +2,9 @@
 
 > These envelopes are consumed by the CLI's `--json` output and read by human/agent callers
 > shelling out to the CLI, not by any external HTTP subscriber. The wrapper shape and each
-> command's `data` field set below are frozen per [compatibility.md](compatibility.md) —
-> additions are fine, renames/removals are not.
+> command's `data` field set below are current-consumer contracts under
+> [compatibility.md](compatibility.md). A coordinated change updates the writer, readers,
+> documentation, and exact contract together.
 
 Every command's `--json` output is a single JSON document on stdout, matching this shape
 (`nctl_core.output.Envelope`):
@@ -22,9 +23,9 @@ Every command's `--json` output is a single JSON document on stdout, matching th
 
 ## Fields
 
-- `schema` — `nctl.<command>.v1`. The suffix is bumped on any breaking change to `data`'s shape;
-  this is a pre-freeze project, so bump freely but always explicitly (never reuse a version
-  number for an incompatible shape).
+- `schema` — a current contract identifier such as `nctl.<command>.v1`. A coordinated breaking
+  change may update that identifier and every matched consumer; never reuse an identifier for an
+  incompatible shape, and do not retain an obsolete runtime writer solely for compatibility.
 - `generated_at` — ISO 8601 UTC timestamp of when the envelope was built.
 - `ok` — the machine verdict for the whole command. `True` iff `errors` is empty. The process
   exit code mirrors it: `0` when `ok`, `1` when a command ran but `ok` is `false`, `2` for a
@@ -66,9 +67,17 @@ in `errors`.
 
 The apply envelope cross-references `data.operation_id`, `data.event_log_path`, and the staged
 `data.artifact_path`. It also records the resolved inventory, selected target hosts, render
-summary, execution mode (`dry-run` or `apply`), and the Ansible command's exit code, stdout,
-stderr, and parsed per-host recap. A dry-run that reports changed hosts is still successful when
-Ansible exits zero; the diff is the deliverable.
+summary, execution mode (`dry-run` or `apply`), SSH preflight entries, daemon `setup` result, and
+the records-deploy Ansible command's exit code, stdout, stderr, and parsed per-host recap. A
+dry-run that reports changed hosts is still successful when Ansible exits zero; the diff is the
+deliverable.
+
+## `nctl.render.dnsmasq.v3`
+
+The renderer returns deterministic records, reservations, ranges, `conf`, and `content_sha256`
+for the current desired DNS data. `partial_conf_preview`, `blocked`, and `blocking_findings`
+describe a fail-closed render: blocked output is not authoritative deployable content. Reconcile
+and Ansible consume the successful render contract.
 
 ## `nctl.drift.v1`
 

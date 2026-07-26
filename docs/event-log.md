@@ -1,8 +1,9 @@
 # Event log format
 
 > This JSONL file is durable disk evidence consumed by the CLI and `nctl ops`, not by any external
-> subscriber. The record shape and the event vocabulary listed below are frozen per
-> [compatibility.md](compatibility.md) — additions are fine, renames/removals are not.
+> subscriber. The record shape is a current-consumer contract under
+> [compatibility.md](compatibility.md); a coordinated change updates its writer and readers
+> together while preserving any required historical reader.
 
 Long-running operations (and `status`, to exercise the convention end to end even though it's
 short) emit one JSON Lines file per run via `nctl_core.events.OperationLog`:
