@@ -47,9 +47,20 @@ _CANDIDATE_FIELD_BY_OBJECT_TYPE = {
 
 
 class LedgerActionError(NautobotError):
-    def __init__(self, code: str, message: str, detail: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        detail: dict[str, Any] | None = None,
+        *,
+        mutated: bool = False,
+    ) -> None:
         self.code = code
         self.detail = detail or {}
+        # The writer that crossed the external mutation boundary owns this
+        # evidence. Callers must not infer it from a planned action or an
+        # error-code allowlist.
+        self.mutated = mutated
         super().__init__(message)
 
 
@@ -119,18 +130,26 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
             {"status_code": response.status_code, "body": response.text[:200]},
         )
 
-    after = _get_desired_node_by_id(client, node_id, expected_slug=target.slug)
+    # A successful REST response is the mutation boundary. Every error from
+    # the mandatory GraphQL confirmation below must preserve that fact while
+    # still failing the action closed: confirmation is part of success.
+    try:
+        after = _get_desired_node_by_id(client, node_id, expected_slug=target.slug)
+    except LedgerActionError as exc:
+        raise LedgerActionError(exc.code, str(exc), exc.detail, mutated=True) from exc
     if after.realized_device_id != candidate_id:
         raise LedgerActionError(
             "node_link_not_confirmed",
             f"expected DesiredNode {target.slug!r}.{field}={candidate_id!r}, refetch shows {after.realized_device_id!r}",
             {"after": after.realized_device_id},
+            mutated=True,
         )
     if after.realized_device_source != "derived":
         raise LedgerActionError(
             "node_link_source_not_confirmed",
             f"expected DesiredNode {target.slug!r}.{source_field}='derived'",
             {"after": after.realized_device_source},
+            mutated=True,
         )
 
     return LinkActualNodeResult(

@@ -129,6 +129,7 @@ def test_link_actual_node_refuses_to_replace_an_existing_link():
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
     assert exc.value.code == "node_already_linked"
+    assert exc.value.mutated is False
 
 
 @respx.mock
@@ -143,6 +144,7 @@ def test_link_actual_node_patch_failure_is_typed():
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
     assert exc.value.code == "node_link_patch_failed"
+    assert exc.value.mutated is False
 
 
 @respx.mock
@@ -160,6 +162,71 @@ def test_link_actual_node_refetch_mismatch_is_not_confirmed():
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
     assert exc.value.code == "node_link_not_confirmed"
+    assert exc.value.mutated is True
+
+
+@respx.mock
+def test_link_actual_node_post_patch_graphql_failure_preserves_mutation_evidence():
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        side_effect=[
+            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
+            httpx.Response(500, text="boom"),
+        ]
+    )
+    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
+        return_value=httpx.Response(200, json={"id": NODE_ID})
+    )
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), _link_action())
+    assert exc.value.code == "node_fetch_failed"
+    assert exc.value.mutated is True
+
+
+@respx.mock
+def test_link_actual_node_post_patch_missing_node_preserves_mutation_evidence():
+    absent = {
+        "data": {
+            "desired_nodes": [], "desired_endpoints": [], "desired_ip_ranges": [],
+            "desired_node_operational_overrides": [], "desired_service_placements": [],
+            "desired_services": [], "desired_dependencies": [], "desired_compute_platforms": [],
+            "desired_compute_instances": [],
+        }
+    }
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        side_effect=[
+            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
+            httpx.Response(200, json=absent),
+        ]
+    )
+    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
+        return_value=httpx.Response(200, json={"id": NODE_ID})
+    )
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), _link_action())
+    assert exc.value.code == "node_fetch_failed"
+    assert exc.value.mutated is True
+
+
+@respx.mock
+def test_link_actual_node_post_patch_slug_mismatch_preserves_mutation_evidence():
+    mismatch = _graphql_desired_node_response(realized_device_id=DEVICE_ID, realized_device_source="derived")
+    mismatch["data"]["desired_nodes"][0]["slug"] = "some-other-slug"
+    respx.post(f"{BASE_URL}/api/graphql/").mock(
+        side_effect=[
+            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
+            httpx.Response(200, json=mismatch),
+        ]
+    )
+    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
+        return_value=httpx.Response(200, json={"id": NODE_ID})
+    )
+
+    with pytest.raises(LedgerActionError) as exc:
+        execute_link_actual_node(_client(), _link_action())
+    assert exc.value.code == "node_fetch_mismatch"
+    assert exc.value.mutated is True
 
 
 def test_link_actual_node_rejects_unsupported_candidate_type():
@@ -207,6 +274,7 @@ def test_link_actual_node_reports_node_fetch_failed_when_node_is_absent_from_sna
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
     assert exc.value.code == "node_fetch_failed"
+    assert exc.value.mutated is False
 
 
 @respx.mock
@@ -216,6 +284,7 @@ def test_link_actual_node_rejects_graphql_error_before_patch():
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
     assert exc.value.code == "node_fetch_failed"
+    assert exc.value.mutated is False
 
 
 @respx.mock
@@ -227,6 +296,7 @@ def test_link_actual_node_rejects_slug_mismatch():
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
     assert exc.value.code == "node_fetch_mismatch"
+    assert exc.value.mutated is False
     assert exc.value.detail["found_slug"] == "some-other-slug"
     assert exc.value.detail["expected_slug"] == "agweb"
 
@@ -261,6 +331,7 @@ def test_link_actual_node_rejects_wrong_confirmed_source_after_successful_patch(
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
     assert exc.value.code == "node_link_source_not_confirmed"
+    assert exc.value.mutated is True
 
 
 # --- execute_reconcile_ipam -------------------------------------------------

@@ -89,6 +89,11 @@ class ActionResult(BaseModel):
     mutated: bool = False
 
 
+def _action_had_side_effects(result: ActionResult) -> bool:
+    """Whether this result makes the round-start drift unsafe as final evidence."""
+    return result.success or result.mutated
+
+
 class RoundSummary(BaseModel):
     round: int
     drift_fingerprint: str
@@ -132,8 +137,9 @@ class RoundOutcome(BaseModel):
     IPAM/bootstrap mutation is never silently dropped just because a later
     step in the same round (production regeneration, the post-regen SSH
     scan, a store read) failed. `had_side_effects` is true iff at least one
-    appended action succeeded, and tells the caller whether a final
-    read-only drift refresh is warranted before reporting `final_drift`.
+    appended action succeeded or positively recorded a mutation, and tells
+    the caller whether a final read-only drift refresh is warranted before
+    reporting `final_drift`.
     """
 
     summary: RoundSummary
@@ -451,9 +457,9 @@ def _run_apply(
             state = "failed"
             errors = outcome.terminal_errors
             if outcome.had_side_effects:
-                # Item 7: a pre-mutation drift snapshot (fetched at the top
-                # of this same round, before any action ran) must never be
-                # mislabeled as final once a mutation actually happened.
+                # Item 7: a round-start drift snapshot must never be
+                # mislabeled as final once an action succeeded or positively
+                # recorded a mutation before full confirmation failed.
                 refreshed = fetch_and_compute_drift(cfg)
                 if isinstance(refreshed, EnvelopeError):
                     final_drift_result = None
@@ -475,12 +481,14 @@ def _run_apply(
     if final_state_unknown:
         # Item 7: the refresh attempted after a failure-with-side-effects
         # itself failed -- report that final state is unknown instead of
-        # silently keeping the stale pre-mutation drift fetched at the start
-        # of the failed round.
+        # silently keeping the stale round-start drift.
         errors = errors + [
             EnvelopeError(
                 code="final_drift_unknown",
-                message="a mutation succeeded before this round failed, and the final drift refresh also failed",
+                message=(
+                    "an action succeeded or a mutation was recorded before this round failed, "
+                    "and the final drift refresh also failed"
+                ),
             )
         ]
     elif final_drift_result is not None:
@@ -493,10 +501,10 @@ def _run_apply(
         data.summary = final_data.summary
         data.scope_summary = _scope_summary(final_drift_result.targets, scope, final_snapshot)
 
-    # Item 7: progress is whether any action in any round actually
-    # succeeded, not merely whether a round's summary was appended (an
-    # unenrolled/store-read failure before any action ran also appends a
-    # summary with zero actions and must not count as progress).
+    # Item 7: progress is whether any action in any round succeeded or
+    # positively recorded a mutation, not merely whether a round's summary
+    # was appended (an unenrolled/store-read failure before any action ran
+    # also appends a summary with zero actions and must not count as progress).
     data.progress_made = any(
         action.success or action.mutated for round_summary in data.rounds for action in round_summary.actions
     )
@@ -523,8 +531,9 @@ def _execute_round(
     a post-regeneration SSH scan failure, a managed-store read failure) --
     every one of those returns `summary` with whatever actions actually ran
     before the failure, so the caller can append it to `data.rounds` instead
-    of discarding already-succeeded evidence. `had_side_effects` tells the
-    caller whether a final read-only drift refresh is warranted.
+    of discarding completed or partially-mutated evidence.
+    `had_side_effects` tells the caller whether a final read-only drift
+    refresh is warranted.
     """
     summary = RoundSummary(round=round_index, drift_fingerprint=plan.drift_fingerprint)
     operation_generated_at = plan.drift_generated_at or snapshot.fetched_at.isoformat()
@@ -549,7 +558,7 @@ def _execute_round(
                 generated_at=operation_generated_at,
             )
             summary.actions.append(executed.result)
-            had_side_effects = had_side_effects or executed.result.success
+            had_side_effects = had_side_effects or _action_had_side_effects(executed.result)
             if executed.terminal_errors:
                 return RoundOutcome(
                     summary=summary, terminal_errors=executed.terminal_errors, had_side_effects=had_side_effects
@@ -559,7 +568,7 @@ def _execute_round(
 
     regen_result, render_context = _regenerate_production_inventory(cfg)
     summary.actions.append(regen_result)
-    had_side_effects = had_side_effects or regen_result.success
+    had_side_effects = had_side_effects or _action_had_side_effects(regen_result)
 
     # fix_sshkey Step 5 (Design Decision 5) / fix_sshkey3 Step 2: a route
     # created only by an IPAM action just above may not have been testable
@@ -615,7 +624,7 @@ def _execute_round(
                 generated_at=operation_generated_at,
             )
             summary.actions.append(executed.result)
-            had_side_effects = had_side_effects or executed.result.success
+            had_side_effects = had_side_effects or _action_had_side_effects(executed.result)
             if executed.terminal_errors:
                 return RoundOutcome(
                     summary=summary, terminal_errors=executed.terminal_errors, had_side_effects=had_side_effects
@@ -634,7 +643,7 @@ def _execute_round(
             cfg, op, artifacts, observe_targets, snapshot, now, command_runner, action_id="post_actuation_observation"
         )
         summary.actions.append(executed.result)
-        had_side_effects = had_side_effects or executed.result.success
+        had_side_effects = had_side_effects or _action_had_side_effects(executed.result)
         if executed.terminal_errors:
             return RoundOutcome(
                 summary=summary, terminal_errors=executed.terminal_errors, had_side_effects=had_side_effects
@@ -804,6 +813,7 @@ def _execute_action(
         raise LedgerActionError("unknown_reconciler", f"no executor for reconciler {action.reconciler_id!r}")
     except (LedgerActionError, NautobotJobError, NautobotError) as exc:
         code = getattr(exc, "code", "action_failed")
+        mutated = bool(getattr(exc, "mutated", False))
         op.emit(
             "action_completed",
             f"action {action.id} failed",
@@ -811,6 +821,7 @@ def _execute_action(
             action_id=action.id,
             reconciler_id=action.reconciler_id,
             success=False,
+            mutated=mutated,
             error=str(exc),
         )
         result = ActionResult(
@@ -820,6 +831,7 @@ def _execute_action(
             target_slugs=target_slugs,
             success=False,
             error=f"{code}: {exc}",
+            mutated=mutated,
         )
         return ExecutedAction(result=result)
 

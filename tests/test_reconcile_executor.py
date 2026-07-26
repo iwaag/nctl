@@ -1602,6 +1602,7 @@ def test_link_actual_node_confirmation_failure_after_successful_patch_is_recorde
             "node_link_not_confirmed",
             "PATCH succeeded but refetch did not confirm the link",
             {"after": None},
+            mutated=True,
         )
 
     monkeypatch.setattr(executor_module, "execute_link_actual_node", _raise_not_confirmed)
@@ -1613,8 +1614,14 @@ def test_link_actual_node_confirmation_failure_after_successful_patch_is_recorde
 
     [link_result] = [a for a in outcome.summary.actions if a.reconciler_id == "link_actual_node"]
     assert link_result.success is False
+    assert link_result.mutated is True
     assert "node_link_not_confirmed" in link_result.error
+    assert outcome.had_side_effects is True
     assert outcome.terminal_errors == []
+    events = [json.loads(line) for line in ctx.op.path.read_text().splitlines()]
+    failure_event = next(event for event in events if event["event"] == "action_completed" and event["level"] == "error")
+    assert failure_event["data"]["success"] is False
+    assert failure_event["data"]["mutated"] is True
 
 
 def _ipam_action(ctx, **evidence_overrides) -> ReconcileAction:
@@ -1683,6 +1690,7 @@ def test_reconcile_ipam_partial_conflict_is_not_reported_as_success(tmp_path, mo
     assert result.detail["applied_endpoint_ids"] == ["e1"]
     assert result.detail["unresolved_expected_endpoints"][0]["desired_endpoint"]["id"] == "e2"
     assert "1 expected endpoint(s)" in result.error
+    assert outcome.had_side_effects is True
 
 
 def test_reconcile_ipam_fully_applied_is_success_and_mutated(tmp_path, monkeypatch):
@@ -1717,6 +1725,54 @@ def test_reconcile_ipam_fully_applied_is_success_and_mutated(tmp_path, monkeypat
     assert result.success is True
     assert result.mutated is True
     assert result.error is None
+
+
+def test_reconcile_ipam_without_applied_endpoint_does_not_create_mutation_evidence(tmp_path, monkeypatch):
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    action = _ipam_action(ctx)
+    plan = ctx.make_plan([action])
+
+    monkeypatch.setattr(
+        executor_module,
+        "execute_reconcile_ipam",
+        lambda job_runner, action, **kw: IpamReconcileResult(
+            desired_node_slug=ctx.node.slug,
+            job_result=_fake_job_result(),
+            summary={"schema_version": "nctl.ipam.reconcile.summary.v1"},
+            conflicts=[{"action": "conflict", "desired_endpoint": {"id": "e1"}}],
+            skipped=[{"action": "skip", "desired_endpoint": {"id": "e2"}}],
+            eligible_endpoint_ids=["e1", "e2"],
+            applied_endpoint_ids=[],
+            unresolved_expected_endpoints=[
+                {"action": "conflict", "desired_endpoint": {"id": "e1"}},
+                {"action": "skip", "desired_endpoint": {"id": "e2"}},
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "_regenerate_production_inventory",
+        lambda cfg: (
+            executor_module.ActionResult(
+                action_id="regenerate_production_inventory",
+                reconciler_id="production_inventory",
+                action_kind="render",
+                success=False,
+                error="test regeneration failure",
+            ),
+            None,
+        ),
+    )
+
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+    )
+
+    result = next(a for a in outcome.summary.actions if a.reconciler_id == "reconcile_ipam")
+    assert result.success is False
+    assert result.mutated is False
+    assert outcome.had_side_effects is False
 
 
 def test_post_actuation_observation_store_failure_retains_deployment_evidence(tmp_path, monkeypatch):
@@ -1876,9 +1932,55 @@ def _blocked_dnsmasq_render_data():
     )
 
 
-def test_final_drift_refresh_failure_after_store_failure_reports_unknown(tmp_path, monkeypatch):
+def test_terminal_failure_after_mutated_confirmation_refreshes_final_drift(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
+    initial_diff = DiffRecord(target=target, code="actual_node_not_linked", severity=Severity.ERROR, message="x")
+    initial = _drift([_target_status(target, Status.DRIFTING, [initial_diff])], nodes=[node])
+    initial[0].actual = ActualSnapshot(devices=[ActualDevice(id="dev-1", name=node.name)])
+    _sequence(
+        monkeypatch,
+        [
+            initial,
+            _drift([_target_status(target, Status.CONVERGED, [])], generated_at="2026-07-17T00:00:05+00:00", nodes=[node]),
+        ],
+    )
+
+    def fake_execute_round(cfg, op, artifacts, round_index, plan, snapshot, now, command_runner, interrupted, ssh_probe):
+        summary = executor_module.RoundSummary(round=round_index, drift_fingerprint=plan.drift_fingerprint)
+        summary.actions.append(
+            executor_module.ActionResult(
+                action_id="link-1", reconciler_id="link_actual_node", action_kind="ledger",
+                target_slugs=[node.slug], success=False, mutated=True,
+                error="node_link_not_confirmed: PATCH succeeded but confirmation failed",
+            )
+        )
+        return executor_module.RoundOutcome(
+            summary=summary,
+            terminal_errors=[EnvelopeError(code="ssh_store_read_failed", message="store corrupted post-actuation")],
+            had_side_effects=True,
+        )
+
+    monkeypatch.setattr(executor_module, "_execute_round", fake_execute_round)
+
+    envelope = run_reconcile(cfg, apply_changes=True)
+
+    assert not envelope.ok
+    assert any(error.code == "ssh_store_read_failed" for error in envelope.errors)
+    assert len(envelope.data.rounds) == 1
+    action = envelope.data.rounds[0].actions[0]
+    assert action.success is False and action.mutated is True
+    assert envelope.data.progress_made is True
+    assert envelope.data.final_drift_path
+    assert envelope.data.summary == {"converged": 1}
+
+
+def test_final_drift_refresh_failure_after_mutated_confirmation_reports_unknown(tmp_path, monkeypatch):
     # Item 7 (fix_sshkey3 Step 2, reused unchanged by fix_sshkey4 Step 2): a
-    # terminal store failure with prior side effects triggers one final-drift
+    # terminal store failure after a successful PATCH whose confirmation
+    # failed triggers one final-drift
     # refresh; if that refresh itself fails, the run must report
     # `final_drift_unknown` rather than silently keeping the stale
     # pre-mutation drift. `_execute_round` is stubbed directly to a crafted
@@ -1910,7 +2012,8 @@ def test_final_drift_refresh_failure_after_store_failure_reports_unknown(tmp_pat
         summary.actions.append(
             executor_module.ActionResult(
                 action_id="link-1", reconciler_id="link_actual_node", action_kind="ledger",
-                target_slugs=[node.slug], success=True,
+                target_slugs=[node.slug], success=False, mutated=True,
+                error="node_link_not_confirmed: PATCH succeeded but confirmation failed",
             )
         )
         return executor_module.RoundOutcome(
@@ -1927,7 +2030,8 @@ def test_final_drift_refresh_failure_after_store_failure_reports_unknown(tmp_pat
     assert any(e.code == "ssh_store_read_failed" for e in envelope.errors)
     assert any(e.code == "final_drift_unknown" for e in envelope.errors)
     assert len(envelope.data.rounds) == 1
-    assert envelope.data.rounds[0].actions[0].success is True
+    assert envelope.data.rounds[0].actions[0].success is False
+    assert envelope.data.rounds[0].actions[0].mutated is True
     assert envelope.data.progress_made is True
     assert envelope.data.final_drift_path == ""
 
