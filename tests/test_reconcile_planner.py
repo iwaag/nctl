@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from nctl_core.drift.model import DiffRecord, Severity, Target
+from nctl_core.drift.evaluation_snapshot import evaluate_all_nodes
 from nctl_core.reconcile.classify import UnclassifiedDiffCodeError, classify
 from nctl_core.reconcile.fingerprint import compute_drift_fingerprint
 from nctl_core.reconcile.planner import HostScopeError, build_plan, select_scoped_diffs
@@ -138,6 +139,27 @@ def test_select_scoped_diffs_unknown_host_raises():
     snapshot = _snapshot(nodes=[_node("n1", "agweb")])
     with pytest.raises(HostScopeError):
         select_scoped_diffs([], PlanScope(kind="host", host_slug="ghost"), snapshot)
+
+
+def test_actual_without_desired_node_is_inert_and_never_plans_a_destructive_action():
+    """Tier A: observations outside desired state are not deletion candidates.
+
+    The real snapshot evaluator only evaluates declared DesiredNodes. Feeding an
+    actual-only Device through it must produce no drift/action now or on a
+    repeat; nctl has no reconciler permitted to delete, unlink, retire, or
+    replace that observation merely because desired state is absent.
+    """
+    snapshot = _snapshot(devices=[ActualDevice(id="actual-only-1", name="unmanaged-device")])
+
+    first_diffs = [diff for result in evaluate_all_nodes(snapshot).values() for diff in result.diffs]
+    first = _build(snapshot, first_diffs)
+    repeat_diffs = [diff for result in evaluate_all_nodes(snapshot).values() for diff in result.diffs]
+    repeated = _build(snapshot, repeat_diffs)
+
+    assert first_diffs == repeat_diffs == []
+    assert first.actions == repeated.actions == []
+    assert first.manual_review == repeated.manual_review == []
+    assert first.unsupported == repeated.unsupported == []
 
 
 # --- link_actual_node / reconcile_ipam -------------------------------------
