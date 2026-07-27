@@ -534,5 +534,8 @@ or `nctl.drift.v1` fixture whenever a new code affects target status or consumer
 ## Development
 
 ```bash
-uv run pytest
+uv run pytest -q --durations=20
 ```
+
+See the repository [test strategy command matrix](../README_DEV.md#test-strategy-command-matrix)
+for required conformance gates, prerequisites, and cleanup ownership.
