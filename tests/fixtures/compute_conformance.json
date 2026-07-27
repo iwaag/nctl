@@ -1,0 +1,1234 @@
+{
+  "schema": "compute-conformance/v1",
+  "constants": {
+    "PROVIDER_TYPE_CHOICES": [
+      "proxmox"
+    ],
+    "CONFIG_SCHEMA_VERSION_V1": "v1",
+    "INSTANCE_KIND_CHOICES": [
+      "container",
+      "virtual_machine"
+    ],
+    "POWER_STATE_CHOICES": [
+      "running",
+      "stopped"
+    ],
+    "LIFECYCLE_CHOICES": [
+      "planned",
+      "approved",
+      "active",
+      "deprecated",
+      "retired"
+    ],
+    "LINK_SOURCE_CHOICES": [
+      "derived",
+      "override"
+    ],
+    "VCPUS_MIN": 1,
+    "VCPUS_MAX": 8192,
+    "MEMORY_MB_MIN": 16,
+    "MEMORY_MB_MAX": 2147483647,
+    "ROOT_DISK_GB_MIN": 1,
+    "ROOT_DISK_GB_MAX": 2147483647,
+    "VMID_MIN": 100,
+    "VMID_MAX": 999999999,
+    "PROVENANCE_INSTANCE_OVERRIDE": "instance_override",
+    "PROVENANCE_PLATFORM_DEFAULT": "platform_default",
+    "PROVENANCE_UNRESOLVED": "unresolved",
+    "PROVENANCE_INTENT": "intent",
+    "COMPUTE_PRIMARY_ENDPOINT_MISSING": "compute_primary_endpoint_missing",
+    "COMPUTE_PRIMARY_ENDPOINT_AMBIGUOUS": "compute_primary_endpoint_ambiguous"
+  },
+  "cases": [
+    {
+      "id": "provider-ok",
+      "rule": "validate_provider_type",
+      "input": {
+        "value": "proxmox"
+      },
+      "result": {
+        "ok": "proxmox"
+      }
+    },
+    {
+      "id": "provider-bad",
+      "rule": "validate_provider_type",
+      "input": {
+        "value": "aws"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_provider_type",
+          "path": "provider_type",
+          "str": "invalid_provider_type: provider_type: only 'proxmox' is accepted"
+        }
+      }
+    },
+    {
+      "id": "lifecycle-ok",
+      "rule": "validate_compute_lifecycle",
+      "input": {
+        "value": "active"
+      },
+      "result": {
+        "ok": "active"
+      }
+    },
+    {
+      "id": "lifecycle-bad",
+      "rule": "validate_compute_lifecycle",
+      "input": {
+        "value": "enabled"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_lifecycle",
+          "path": "lifecycle",
+          "str": "invalid_lifecycle: lifecycle: must be one of planned, approved, active, deprecated, retired"
+        }
+      }
+    },
+    {
+      "id": "kind-ok",
+      "rule": "validate_instance_kind",
+      "input": {
+        "value": "container"
+      },
+      "result": {
+        "ok": "container"
+      }
+    },
+    {
+      "id": "kind-bad",
+      "rule": "validate_instance_kind",
+      "input": {
+        "value": "bad"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_instance_kind",
+          "path": "instance_kind",
+          "str": "invalid_instance_kind: instance_kind: must be one of container, virtual_machine"
+        }
+      }
+    },
+    {
+      "id": "power-ok",
+      "rule": "validate_power_state",
+      "input": {
+        "value": "running"
+      },
+      "result": {
+        "ok": "running"
+      }
+    },
+    {
+      "id": "power-bad",
+      "rule": "validate_power_state",
+      "input": {
+        "value": "paused"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_power_state",
+          "path": "desired_power_state",
+          "str": "invalid_power_state: desired_power_state: must be one of running, stopped"
+        }
+      }
+    },
+    {
+      "id": "source-ok",
+      "rule": "validate_link_source",
+      "input": {
+        "value": "derived"
+      },
+      "result": {
+        "ok": "derived"
+      }
+    },
+    {
+      "id": "source-bad",
+      "rule": "validate_link_source",
+      "input": {
+        "value": "manual"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_source",
+          "path": "realized_vm_source",
+          "str": "invalid_source: realized_vm_source: must be one of derived, override"
+        }
+      }
+    },
+    {
+      "id": "pair-ok",
+      "rule": "link_source_pairing_is_valid",
+      "input": {
+        "link_present": true,
+        "source": "derived"
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "pair-bad",
+      "rule": "link_source_pairing_is_valid",
+      "input": {
+        "link_present": true,
+        "source": null
+      },
+      "result": {
+        "ok": false
+      }
+    },
+    {
+      "id": "schema-none",
+      "rule": "validate_config_schema_version",
+      "input": {
+        "value": null
+      },
+      "result": {
+        "ok": "v1"
+      }
+    },
+    {
+      "id": "schema-bad",
+      "rule": "validate_config_schema_version",
+      "input": {
+        "value": "v2"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_config_schema_version",
+          "path": "config_schema_version",
+          "str": "invalid_config_schema_version: config_schema_version: only 'v1' is accepted"
+        }
+      }
+    },
+    {
+      "id": "platform-ok",
+      "rule": "validate_platform_config",
+      "input": {
+        "value": {
+          "cluster_name": " hub "
+        }
+      },
+      "result": {
+        "ok": {
+          "cluster_name": "hub"
+        }
+      }
+    },
+    {
+      "id": "platform-bad",
+      "rule": "validate_platform_config",
+      "input": {
+        "value": {
+          "bad": "x"
+        }
+      },
+      "result": {
+        "error": {
+          "code": "unknown_config_key",
+          "path": "config",
+          "str": "unknown_config_key: config: unknown keys: bad"
+        }
+      }
+    },
+    {
+      "id": "instance-ok",
+      "rule": "validate_instance_config",
+      "input": {
+        "value": {
+          "template": "x"
+        },
+        "instance_kind": "virtual_machine"
+      },
+      "result": {
+        "ok": {
+          "template": "x"
+        }
+      }
+    },
+    {
+      "id": "instance-bad",
+      "rule": "validate_instance_config",
+      "input": {
+        "value": {
+          "template": "x",
+          "unprivileged": true
+        },
+        "instance_kind": "virtual_machine"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_config_key",
+          "path": "config.unprivileged",
+          "str": "invalid_config_key: config.unprivileged: unprivileged is forbidden for virtual_machine"
+        }
+      }
+    },
+    {
+      "id": "mac-ok",
+      "rule": "normalize_mac_address",
+      "input": {
+        "value": "BC-24-11-23-DC-B7"
+      },
+      "result": {
+        "ok": "bc:24:11:23:dc:b7"
+      }
+    },
+    {
+      "id": "mac-bad",
+      "rule": "normalize_mac_address",
+      "input": {
+        "value": "bad"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_mac_address",
+          "path": null,
+          "str": "invalid_mac_address: must be six hex octets separated consistently by ':' or '-'"
+        }
+      }
+    },
+    {
+      "id": "ip-ok",
+      "rule": "endpoint_has_usable_ip",
+      "input": {
+        "endpoint": {
+          "endpoint_type": "primary",
+          "mac_address": "bc:24:11:23:dc:b7",
+          "mdns_name": "node.local",
+          "ip_policy": "static",
+          "ip_address": "192.0.2.10/24",
+          "dns_name": null,
+          "generate_dnsmasq": false
+        }
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "ip-bad",
+      "rule": "endpoint_has_usable_ip",
+      "input": {
+        "endpoint": {
+          "endpoint_type": "primary",
+          "mac_address": "bc:24:11:23:dc:b7",
+          "mdns_name": "node.local",
+          "ip_policy": "static",
+          "ip_address": "bad",
+          "dns_name": null,
+          "generate_dnsmasq": false
+        }
+      },
+      "result": {
+        "ok": false
+      }
+    },
+    {
+      "id": "address-ok",
+      "rule": "endpoint_satisfies_compute_address_contract",
+      "input": {
+        "endpoint": {
+          "endpoint_type": "primary",
+          "mac_address": "bc:24:11:23:dc:b7",
+          "mdns_name": "node.local",
+          "ip_policy": "static",
+          "ip_address": "192.0.2.10/24",
+          "dns_name": null,
+          "generate_dnsmasq": false
+        }
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "address-bad",
+      "rule": "endpoint_satisfies_compute_address_contract",
+      "input": {
+        "endpoint": {
+          "endpoint_type": "primary",
+          "mac_address": "bc:24:11:23:dc:b7",
+          "mdns_name": "node.local",
+          "ip_policy": "external",
+          "ip_address": "192.0.2.10/24",
+          "dns_name": null,
+          "generate_dnsmasq": false
+        }
+      },
+      "result": {
+        "ok": false
+      }
+    },
+    {
+      "id": "endpoint-zero",
+      "rule": "select_compute_primary_endpoint",
+      "input": {
+        "endpoints": []
+      },
+      "result": {
+        "ok": {
+          "selected": false,
+          "code": "compute_primary_endpoint_missing"
+        }
+      }
+    },
+    {
+      "id": "endpoint-one",
+      "rule": "select_compute_primary_endpoint",
+      "input": {
+        "endpoints": [
+          {
+            "endpoint_type": "primary",
+            "mac_address": "bc:24:11:23:dc:b7",
+            "mdns_name": "node.local",
+            "ip_policy": "static",
+            "ip_address": "192.0.2.10/24",
+            "dns_name": null,
+            "generate_dnsmasq": false
+          }
+        ]
+      },
+      "result": {
+        "ok": {
+          "selected": true,
+          "code": null
+        }
+      }
+    },
+    {
+      "id": "endpoint-two",
+      "rule": "select_compute_primary_endpoint",
+      "input": {
+        "endpoints": [
+          {
+            "endpoint_type": "primary",
+            "mac_address": "bc:24:11:23:dc:b7",
+            "mdns_name": "node.local",
+            "ip_policy": "static",
+            "ip_address": "192.0.2.10/24",
+            "dns_name": null,
+            "generate_dnsmasq": false
+          },
+          {
+            "endpoint_type": "primary",
+            "mac_address": "bc:24:11:23:dc:b7",
+            "mdns_name": "two.local",
+            "ip_policy": "static",
+            "ip_address": "192.0.2.10/24",
+            "dns_name": null,
+            "generate_dnsmasq": false
+          }
+        ]
+      },
+      "result": {
+        "ok": {
+          "selected": false,
+          "code": "compute_primary_endpoint_ambiguous"
+        }
+      }
+    },
+    {
+      "id": "endpoint-no-mac",
+      "rule": "select_compute_primary_endpoint",
+      "input": {
+        "endpoints": [
+          {
+            "endpoint_type": "primary",
+            "mac_address": null,
+            "mdns_name": "node.local",
+            "ip_policy": "static",
+            "ip_address": "192.0.2.10/24",
+            "dns_name": null,
+            "generate_dnsmasq": false
+          }
+        ]
+      },
+      "result": {
+        "ok": {
+          "selected": false,
+          "code": "compute_primary_endpoint_missing"
+        }
+      }
+    },
+    {
+      "id": "endpoint-no-mdns",
+      "rule": "select_compute_primary_endpoint",
+      "input": {
+        "endpoints": [
+          {
+            "endpoint_type": "primary",
+            "mac_address": "bc:24:11:23:dc:b7",
+            "mdns_name": "",
+            "ip_policy": "static",
+            "ip_address": "192.0.2.10/24",
+            "dns_name": null,
+            "generate_dnsmasq": false
+          }
+        ]
+      },
+      "result": {
+        "ok": {
+          "selected": false,
+          "code": "compute_primary_endpoint_missing"
+        }
+      }
+    },
+    {
+      "id": "endpoint-wrong-type",
+      "rule": "select_compute_primary_endpoint",
+      "input": {
+        "endpoints": [
+          {
+            "endpoint_type": "secondary",
+            "mac_address": "bc:24:11:23:dc:b7",
+            "mdns_name": "node.local",
+            "ip_policy": "static",
+            "ip_address": "192.0.2.10/24",
+            "dns_name": null,
+            "generate_dnsmasq": false
+          }
+        ]
+      },
+      "result": {
+        "ok": {
+          "selected": false,
+          "code": "compute_primary_endpoint_missing"
+        }
+      }
+    },
+    {
+      "id": "effective-value",
+      "rule": "effective_value",
+      "input": {
+        "instance_value": null,
+        "platform_value": "local"
+      },
+      "result": {
+        "ok": {
+          "value": "local",
+          "provenance": "platform_default"
+        }
+      }
+    },
+    {
+      "id": "single-source",
+      "rule": "effective_single_source_value",
+      "input": {
+        "value": null
+      },
+      "result": {
+        "ok": {
+          "value": null,
+          "provenance": "unresolved"
+        }
+      }
+    },
+    {
+      "id": "actionable",
+      "rule": "is_actionable_lifecycle",
+      "input": {
+        "value": "approved"
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "vmid-100",
+      "rule": "validate_vmid",
+      "input": {
+        "value": 100
+      },
+      "result": {
+        "ok": 100
+      }
+    },
+    {
+      "id": "vmid-99",
+      "rule": "validate_vmid",
+      "input": {
+        "value": 99
+      },
+      "result": {
+        "error": {
+          "code": "vmid_out_of_range",
+          "path": "vmid",
+          "str": "vmid_out_of_range: vmid: vmid must be within 100..999999999"
+        }
+      }
+    },
+    {
+      "id": "vmid-999999999",
+      "rule": "validate_vmid",
+      "input": {
+        "value": 999999999
+      },
+      "result": {
+        "ok": 999999999
+      }
+    },
+    {
+      "id": "vmid-1000000000",
+      "rule": "validate_vmid",
+      "input": {
+        "value": 1000000000
+      },
+      "result": {
+        "error": {
+          "code": "vmid_out_of_range",
+          "path": "vmid",
+          "str": "vmid_out_of_range: vmid: vmid must be within 100..999999999"
+        }
+      }
+    },
+    {
+      "id": "vmid-None",
+      "rule": "validate_vmid",
+      "input": {
+        "value": null
+      },
+      "result": {
+        "error": {
+          "code": "invalid_vmid",
+          "path": "vmid",
+          "str": "invalid_vmid: vmid: vmid must be an integer"
+        }
+      }
+    },
+    {
+      "id": "vmid-100",
+      "rule": "validate_vmid",
+      "input": {
+        "value": "100"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_vmid",
+          "path": "vmid",
+          "str": "invalid_vmid: vmid: vmid must be an integer"
+        }
+      }
+    },
+    {
+      "id": "vmid-True",
+      "rule": "validate_vmid",
+      "input": {
+        "value": true
+      },
+      "result": {
+        "error": {
+          "code": "invalid_vmid",
+          "path": "vmid",
+          "str": "invalid_vmid: vmid: vmid must be an integer"
+        }
+      }
+    },
+    {
+      "id": "vmid-False",
+      "rule": "validate_vmid",
+      "input": {
+        "value": false
+      },
+      "result": {
+        "error": {
+          "code": "invalid_vmid",
+          "path": "vmid",
+          "str": "invalid_vmid: vmid: vmid must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_vcpus-1",
+      "rule": "validate_vcpus",
+      "input": {
+        "value": 1
+      },
+      "result": {
+        "ok": 1
+      }
+    },
+    {
+      "id": "validate_vcpus-0",
+      "rule": "validate_vcpus",
+      "input": {
+        "value": 0
+      },
+      "result": {
+        "error": {
+          "code": "vcpus_out_of_range",
+          "path": "vcpus",
+          "str": "vcpus_out_of_range: vcpus: must be within 1..8192"
+        }
+      }
+    },
+    {
+      "id": "validate_vcpus-8192",
+      "rule": "validate_vcpus",
+      "input": {
+        "value": 8192
+      },
+      "result": {
+        "ok": 8192
+      }
+    },
+    {
+      "id": "validate_vcpus-8193",
+      "rule": "validate_vcpus",
+      "input": {
+        "value": 8193
+      },
+      "result": {
+        "error": {
+          "code": "vcpus_out_of_range",
+          "path": "vcpus",
+          "str": "vcpus_out_of_range: vcpus: must be within 1..8192"
+        }
+      }
+    },
+    {
+      "id": "validate_vcpus-None",
+      "rule": "validate_vcpus",
+      "input": {
+        "value": null
+      },
+      "result": {
+        "error": {
+          "code": "vcpus_out_of_range",
+          "path": "vcpus",
+          "str": "vcpus_out_of_range: vcpus: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_vcpus-x",
+      "rule": "validate_vcpus",
+      "input": {
+        "value": "x"
+      },
+      "result": {
+        "error": {
+          "code": "vcpus_out_of_range",
+          "path": "vcpus",
+          "str": "vcpus_out_of_range: vcpus: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_vcpus-True",
+      "rule": "validate_vcpus",
+      "input": {
+        "value": true
+      },
+      "result": {
+        "error": {
+          "code": "vcpus_out_of_range",
+          "path": "vcpus",
+          "str": "vcpus_out_of_range: vcpus: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_vcpus-False",
+      "rule": "validate_vcpus",
+      "input": {
+        "value": false
+      },
+      "result": {
+        "error": {
+          "code": "vcpus_out_of_range",
+          "path": "vcpus",
+          "str": "vcpus_out_of_range: vcpus: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_memory_mb-16",
+      "rule": "validate_memory_mb",
+      "input": {
+        "value": 16
+      },
+      "result": {
+        "ok": 16
+      }
+    },
+    {
+      "id": "validate_memory_mb-15",
+      "rule": "validate_memory_mb",
+      "input": {
+        "value": 15
+      },
+      "result": {
+        "error": {
+          "code": "memory_mb_out_of_range",
+          "path": "memory_mb",
+          "str": "memory_mb_out_of_range: memory_mb: must be within 16..2147483647"
+        }
+      }
+    },
+    {
+      "id": "validate_memory_mb-2147483647",
+      "rule": "validate_memory_mb",
+      "input": {
+        "value": 2147483647
+      },
+      "result": {
+        "ok": 2147483647
+      }
+    },
+    {
+      "id": "validate_memory_mb-2147483648",
+      "rule": "validate_memory_mb",
+      "input": {
+        "value": 2147483648
+      },
+      "result": {
+        "error": {
+          "code": "memory_mb_out_of_range",
+          "path": "memory_mb",
+          "str": "memory_mb_out_of_range: memory_mb: must be within 16..2147483647"
+        }
+      }
+    },
+    {
+      "id": "validate_memory_mb-None",
+      "rule": "validate_memory_mb",
+      "input": {
+        "value": null
+      },
+      "result": {
+        "error": {
+          "code": "memory_mb_out_of_range",
+          "path": "memory_mb",
+          "str": "memory_mb_out_of_range: memory_mb: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_memory_mb-x",
+      "rule": "validate_memory_mb",
+      "input": {
+        "value": "x"
+      },
+      "result": {
+        "error": {
+          "code": "memory_mb_out_of_range",
+          "path": "memory_mb",
+          "str": "memory_mb_out_of_range: memory_mb: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_memory_mb-True",
+      "rule": "validate_memory_mb",
+      "input": {
+        "value": true
+      },
+      "result": {
+        "error": {
+          "code": "memory_mb_out_of_range",
+          "path": "memory_mb",
+          "str": "memory_mb_out_of_range: memory_mb: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_memory_mb-False",
+      "rule": "validate_memory_mb",
+      "input": {
+        "value": false
+      },
+      "result": {
+        "error": {
+          "code": "memory_mb_out_of_range",
+          "path": "memory_mb",
+          "str": "memory_mb_out_of_range: memory_mb: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_root_disk_gb-1",
+      "rule": "validate_root_disk_gb",
+      "input": {
+        "value": 1
+      },
+      "result": {
+        "ok": 1
+      }
+    },
+    {
+      "id": "validate_root_disk_gb-0",
+      "rule": "validate_root_disk_gb",
+      "input": {
+        "value": 0
+      },
+      "result": {
+        "error": {
+          "code": "root_disk_gb_out_of_range",
+          "path": "root_disk_gb",
+          "str": "root_disk_gb_out_of_range: root_disk_gb: must be within 1..2147483647"
+        }
+      }
+    },
+    {
+      "id": "validate_root_disk_gb-2147483647",
+      "rule": "validate_root_disk_gb",
+      "input": {
+        "value": 2147483647
+      },
+      "result": {
+        "ok": 2147483647
+      }
+    },
+    {
+      "id": "validate_root_disk_gb-2147483648",
+      "rule": "validate_root_disk_gb",
+      "input": {
+        "value": 2147483648
+      },
+      "result": {
+        "error": {
+          "code": "root_disk_gb_out_of_range",
+          "path": "root_disk_gb",
+          "str": "root_disk_gb_out_of_range: root_disk_gb: must be within 1..2147483647"
+        }
+      }
+    },
+    {
+      "id": "validate_root_disk_gb-None",
+      "rule": "validate_root_disk_gb",
+      "input": {
+        "value": null
+      },
+      "result": {
+        "error": {
+          "code": "root_disk_gb_out_of_range",
+          "path": "root_disk_gb",
+          "str": "root_disk_gb_out_of_range: root_disk_gb: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_root_disk_gb-x",
+      "rule": "validate_root_disk_gb",
+      "input": {
+        "value": "x"
+      },
+      "result": {
+        "error": {
+          "code": "root_disk_gb_out_of_range",
+          "path": "root_disk_gb",
+          "str": "root_disk_gb_out_of_range: root_disk_gb: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_root_disk_gb-True",
+      "rule": "validate_root_disk_gb",
+      "input": {
+        "value": true
+      },
+      "result": {
+        "error": {
+          "code": "root_disk_gb_out_of_range",
+          "path": "root_disk_gb",
+          "str": "root_disk_gb_out_of_range: root_disk_gb: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "validate_root_disk_gb-False",
+      "rule": "validate_root_disk_gb",
+      "input": {
+        "value": false
+      },
+      "result": {
+        "error": {
+          "code": "root_disk_gb_out_of_range",
+          "path": "root_disk_gb",
+          "str": "root_disk_gb_out_of_range: root_disk_gb: must be an integer"
+        }
+      }
+    },
+    {
+      "id": "effective-planned-planned",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "planned",
+        "platform": "planned"
+      },
+      "result": {
+        "ok": "planned"
+      }
+    },
+    {
+      "id": "effective-planned-approved",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "planned",
+        "platform": "approved"
+      },
+      "result": {
+        "ok": "planned"
+      }
+    },
+    {
+      "id": "effective-planned-active",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "planned",
+        "platform": "active"
+      },
+      "result": {
+        "ok": "planned"
+      }
+    },
+    {
+      "id": "effective-planned-deprecated",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "planned",
+        "platform": "deprecated"
+      },
+      "result": {
+        "ok": "deprecated"
+      }
+    },
+    {
+      "id": "effective-planned-retired",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "planned",
+        "platform": "retired"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    },
+    {
+      "id": "effective-approved-planned",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "approved",
+        "platform": "planned"
+      },
+      "result": {
+        "ok": "planned"
+      }
+    },
+    {
+      "id": "effective-approved-approved",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "approved",
+        "platform": "approved"
+      },
+      "result": {
+        "ok": "approved"
+      }
+    },
+    {
+      "id": "effective-approved-active",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "approved",
+        "platform": "active"
+      },
+      "result": {
+        "ok": "approved"
+      }
+    },
+    {
+      "id": "effective-approved-deprecated",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "approved",
+        "platform": "deprecated"
+      },
+      "result": {
+        "ok": "deprecated"
+      }
+    },
+    {
+      "id": "effective-approved-retired",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "approved",
+        "platform": "retired"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    },
+    {
+      "id": "effective-active-planned",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "active",
+        "platform": "planned"
+      },
+      "result": {
+        "ok": "planned"
+      }
+    },
+    {
+      "id": "effective-active-approved",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "active",
+        "platform": "approved"
+      },
+      "result": {
+        "ok": "approved"
+      }
+    },
+    {
+      "id": "effective-active-active",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "active",
+        "platform": "active"
+      },
+      "result": {
+        "ok": "active"
+      }
+    },
+    {
+      "id": "effective-active-deprecated",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "active",
+        "platform": "deprecated"
+      },
+      "result": {
+        "ok": "deprecated"
+      }
+    },
+    {
+      "id": "effective-active-retired",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "active",
+        "platform": "retired"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    },
+    {
+      "id": "effective-deprecated-planned",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "deprecated",
+        "platform": "planned"
+      },
+      "result": {
+        "ok": "deprecated"
+      }
+    },
+    {
+      "id": "effective-deprecated-approved",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "deprecated",
+        "platform": "approved"
+      },
+      "result": {
+        "ok": "deprecated"
+      }
+    },
+    {
+      "id": "effective-deprecated-active",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "deprecated",
+        "platform": "active"
+      },
+      "result": {
+        "ok": "deprecated"
+      }
+    },
+    {
+      "id": "effective-deprecated-deprecated",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "deprecated",
+        "platform": "deprecated"
+      },
+      "result": {
+        "ok": "deprecated"
+      }
+    },
+    {
+      "id": "effective-deprecated-retired",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "deprecated",
+        "platform": "retired"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    },
+    {
+      "id": "effective-retired-planned",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "retired",
+        "platform": "planned"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    },
+    {
+      "id": "effective-retired-approved",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "retired",
+        "platform": "approved"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    },
+    {
+      "id": "effective-retired-active",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "retired",
+        "platform": "active"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    },
+    {
+      "id": "effective-retired-deprecated",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "retired",
+        "platform": "deprecated"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    },
+    {
+      "id": "effective-retired-retired",
+      "rule": "effective_lifecycle",
+      "input": {
+        "node": "retired",
+        "platform": "retired"
+      },
+      "result": {
+        "ok": "retired"
+      }
+    }
+  ]
+}
