@@ -510,16 +510,13 @@ def _build_dependency(row: dict[str, Any]) -> DesiredDependency:
 
 
 # ---------------------------------------------------------------------------
-# Compute-intent contract (VM Phase 3 Step 5)
+# Compute-intent contract
 #
-# Ported from `nintent/nautobot_intent_catalog/compute_contract.py` (the
-# Django-free pure contract module nintent's model/form/REST/YAML layers all
-# share). nctl does not import that module directly -- it is a separate
-# deployable with no runtime dependency on nintent's Python package -- so the
-# same closed vocabulary, bounds, config-key sets, MAC canonicalization, and
-# effective-lifecycle/effective-value rules are reimplemented here verbatim.
-# Keep this section behaviorally identical to the nintent original; any
-# future contract change must be applied to both.
+# nintent owns these semantics. nctl deliberately has no runtime dependency on
+# that separately deployed package; this read-time safety code is bound to
+# tests/fixtures/compute_conformance.json. Changing nctl without the owner
+# fails tests/test_compute_conformance.py; changing the owner without a fresh
+# fixture fails the superproject compute-conformance gate.
 # ---------------------------------------------------------------------------
 
 PROVIDER_TYPE_CHOICES = ("proxmox",)
@@ -797,7 +794,7 @@ def effective_lifecycle(node_lifecycle: str, platform_lifecycle: str) -> str:
     return "approved"
 
 
-def is_actionable_compute_lifecycle(effective: str) -> bool:
+def is_actionable_lifecycle(effective: str) -> bool:
     """`active`/`approved` require a complete static-create contract; the rest do not."""
     return effective in ("active", "approved")
 
@@ -1136,7 +1133,7 @@ def _build_compute_collections(
         node = nodes_by_id[instance.desired_node_id]
         platform = valid_platforms[instance.platform_id]
         effective = effective_lifecycle(node.lifecycle, platform.lifecycle)
-        if is_actionable_compute_lifecycle(effective):
+        if is_actionable_lifecycle(effective):
             _selected, code = select_compute_primary_endpoint(endpoints_by_node_id.get(node.id, []))
             if code is not None:
                 if code == COMPUTE_PRIMARY_ENDPOINT_MISSING:
