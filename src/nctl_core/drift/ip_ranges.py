@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from ipaddress import ip_address as _parse_ip_address, ip_interface
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
-from nctl_core.sources.desired import DesiredIPRange
+if TYPE_CHECKING:
+    from nctl_core.sources.desired import DesiredIPRange
 
 @dataclass(frozen=True)
 class NormalizedIPRange:
@@ -228,6 +229,5 @@ def _text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
-
 
 

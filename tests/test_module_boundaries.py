@@ -12,9 +12,12 @@ import pytest
         "nctl_core.compute.model",
         "nctl_core.compute.contract",
         "nctl_core.compute.collection",
+        "nctl_core.drift.gap_status",
+        "nctl_core.drift.interfaces",
+        "nctl_core.drift.ip_ranges",
     ],
 )
-def test_compute_domain_modules_do_not_load_transport_or_cli(module: str) -> None:
+def test_pure_domain_modules_do_not_load_transport_or_cli(module: str) -> None:
     result = subprocess.run(
         [
             sys.executable,
