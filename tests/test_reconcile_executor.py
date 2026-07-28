@@ -13,6 +13,9 @@ from nctl_core.drift.engine import DriftResult, TargetStatus
 from nctl_core.drift.model import DiffRecord, Severity, Status, Target
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.reconcile import executor as executor_module
+from nctl_core.reconcile.actions import ipam as ipam_module
+from nctl_core.reconcile.actions import ledger_link as ledger_link_module
+from nctl_core.reconcile.actions import observe as observe_module
 from nctl_core.reconcile.executor import run_reconcile
 from nctl_core.reconcile.ledger import IpamReconcileResult, LedgerActionError, LinkActualNodeResult
 from nctl_core.reconcile.lock import acquire_reconcile_lock
@@ -256,7 +259,7 @@ def test_plan_mode_never_mutates_and_reports_planned(tmp_path, monkeypatch):
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
 
     called = {"n": 0}
-    monkeypatch.setattr(executor_module, "execute_link_actual_node", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    monkeypatch.setattr(ledger_link_module, "execute_link_actual_node", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
 
     envelope = run_reconcile(cfg, apply_changes=False)
 
@@ -301,7 +304,7 @@ def test_refresh_observation_executes_once_then_converges(tmp_path, monkeypatch)
 
     def fake_observation(*args, **kwargs):
         calls["n"] += 1
-        return executor_module.ObservationResult(
+        return observe_module.ObservationResult(
             ok=True,
             nodeutils_version="a" * 40,
             hosts=[],
@@ -309,7 +312,7 @@ def test_refresh_observation_executes_once_then_converges(tmp_path, monkeypatch)
             retrieval=_fake_ansible_result(),
         )
 
-    monkeypatch.setattr(executor_module, "run_observation", fake_observation)
+    monkeypatch.setattr(observe_module, "run_observation", fake_observation)
 
     envelope = run_reconcile(
         cfg,
@@ -346,7 +349,7 @@ def test_terminal_result_json_is_persisted_publicly_and_matches_the_envelope(tmp
     node = _node()
     diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="actual_node_not_linked", severity=Severity.ERROR, message="x")
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
-    monkeypatch.setattr(executor_module, "execute_link_actual_node", lambda *a, **k: None)
+    monkeypatch.setattr(ledger_link_module, "execute_link_actual_node", lambda *a, **k: None)
 
     envelope = run_reconcile(cfg, apply_changes=False)
 
@@ -390,10 +393,10 @@ def test_apply_blocks_on_unenrolled_ssh_host_before_any_action_executes(tmp_path
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])], nodes=[node])])
     observation_calls = {"n": 0}
     monkeypatch.setattr(
-        executor_module,
+        observe_module,
         "run_observation",
         lambda *a, **k: observation_calls.__setitem__("n", observation_calls["n"] + 1)
-        or executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
+        or observe_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
     )
 
     envelope = run_reconcile(cfg, apply_changes=True)
@@ -447,7 +450,7 @@ def test_ledger_only_plan_not_blocked_by_unenrolled_host(tmp_path, monkeypatch):
     _sequence(monkeypatch, [drifting, converged])
     called = {"n": 0}
     monkeypatch.setattr(
-        executor_module,
+        ledger_link_module,
         "execute_link_actual_node",
         lambda client, action: called.__setitem__("n", called["n"] + 1)
         or LinkActualNodeResult(node_id=node.id, node_slug=node.slug, field="realized_device", candidate_id="dev-1"),
@@ -467,10 +470,10 @@ def test_apply_blocks_on_mismatched_offered_key_before_observation_runs(tmp_path
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.UNKNOWN, [diff])])])
     observation_calls = {"n": 0}
     monkeypatch.setattr(
-        executor_module,
+        observe_module,
         "run_observation",
         lambda *a, **k: observation_calls.__setitem__("n", observation_calls["n"] + 1)
-        or executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
+        or observe_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
     )
 
     def keyscan(host, port, timeout):
@@ -570,9 +573,9 @@ def test_no_progress_stops_before_max_rounds(tmp_path, monkeypatch):
     drift = _drift([_target_status(diff.target, Status.UNKNOWN, [diff])])
     _sequence(monkeypatch, [drift, drift, drift])  # identical fingerprint every round
     monkeypatch.setattr(
-        executor_module,
+        observe_module,
         "run_observation",
-        lambda *a, **k: executor_module.ObservationResult(ok=False, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
+        lambda *a, **k: observe_module.ObservationResult(ok=False, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
     )
 
     envelope = run_reconcile(cfg, apply_changes=True, max_rounds=5)
@@ -601,9 +604,9 @@ def test_max_rounds_reached_when_progress_never_completes(tmp_path, monkeypatch)
     # hits the no-progress check and instead exhausts max_rounds.
     _sequence(monkeypatch, [make_drift("missing_actual_data"), make_drift("stale_actual_data"), make_drift("invalid_actual_timestamp")])
     monkeypatch.setattr(
-        executor_module,
+        observe_module,
         "run_observation",
-        lambda *a, **k: executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
+        lambda *a, **k: observe_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()),
     )
 
     envelope = run_reconcile(cfg, apply_changes=True, max_rounds=3)
@@ -637,9 +640,9 @@ def test_observe_node_action_only_receives_node_slugs_for_service_diffs(tmp_path
 
     def fake_run_observation(*a, **kwargs):
         captured["target_slugs"] = kwargs.get("target_slugs") or a[2]
-        return executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result())
+        return observe_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result())
 
-    monkeypatch.setattr(executor_module, "run_observation", fake_run_observation)
+    monkeypatch.setattr(observe_module, "run_observation", fake_run_observation)
 
     envelope = run_reconcile(cfg, apply_changes=True, max_rounds=1)
 
@@ -719,7 +722,7 @@ def test_link_actual_node_action_executes_and_converges_next_round(tmp_path, mon
 
     link_calls = []
     monkeypatch.setattr(
-        executor_module,
+        ledger_link_module,
         "execute_link_actual_node",
         lambda client, action: link_calls.append(action.id) or LinkActualNodeResult(
             node_id=node.id, node_slug=node.slug, field="realized_device", candidate_id="dev-1"
@@ -1289,7 +1292,7 @@ def test_local_blocker_allows_independent_action_then_reports_manual_interventio
 
     link_calls = []
     monkeypatch.setattr(
-        executor_module,
+        ledger_link_module,
         "execute_link_actual_node",
         lambda client, action: link_calls.append(action.id) or LinkActualNodeResult(
             node_id=healthy.id, node_slug=healthy.slug, field="realized_device", candidate_id="dev-1"
@@ -1351,7 +1354,7 @@ def test_global_blocker_stops_before_any_action_even_with_actionable_drift(tmp_p
     )
     calls = {"n": 0}
     monkeypatch.setattr(
-        executor_module, "execute_link_actual_node", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1)
+        ledger_link_module, "execute_link_actual_node", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1)
     )
 
     envelope = run_reconcile(cfg, apply_changes=True)
@@ -1401,7 +1404,7 @@ def test_max_rounds_reached_with_a_known_local_blocker_reports_manual_interventi
     round0 = make_drift(Status.DRIFTING, [link_diff])
     _sequence(monkeypatch, [round0])  # max_rounds=1: only one round is ever fetched
     monkeypatch.setattr(
-        executor_module,
+        ledger_link_module,
         "execute_link_actual_node",
         lambda client, action: LinkActualNodeResult(
             node_id=healthy.id, node_slug=healthy.slug, field="realized_device", candidate_id="dev-1"
@@ -1550,16 +1553,16 @@ def test_successful_ledger_action_retained_when_observation_store_fails(tmp_path
     plan = ctx.make_plan([link_action, observe_action])
 
     monkeypatch.setattr(
-        executor_module,
+        ledger_link_module,
         "execute_link_actual_node",
         lambda client, action: LinkActualNodeResult(
             node_id=ctx.node.id, node_slug=ctx.node.slug, field="realized_device", candidate_id="dev-1"
         ),
     )
     monkeypatch.setattr(
-        executor_module,
+        observe_module,
         "run_observation",
-        lambda *a, **kw: (_ for _ in ()).throw(executor_module.SshStoreReadError("store corrupted mid-round")),
+        lambda *a, **kw: (_ for _ in ()).throw(observe_module.SshStoreReadError("store corrupted mid-round")),
     )
 
     outcome = executor_module._execute_round(
@@ -1605,7 +1608,7 @@ def test_link_actual_node_confirmation_failure_after_successful_patch_is_recorde
             mutated=True,
         )
 
-    monkeypatch.setattr(executor_module, "execute_link_actual_node", _raise_not_confirmed)
+    monkeypatch.setattr(ledger_link_module, "execute_link_actual_node", _raise_not_confirmed)
 
     outcome = executor_module._execute_round(
         ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
@@ -1662,7 +1665,7 @@ def test_reconcile_ipam_partial_conflict_is_not_reported_as_success(tmp_path, mo
     plan = ctx.make_plan([action])
 
     monkeypatch.setattr(
-        executor_module,
+        ipam_module,
         "execute_reconcile_ipam",
         lambda job_runner, action, **kw: IpamReconcileResult(
             desired_node_slug=ctx.node.slug,
@@ -1699,7 +1702,7 @@ def test_reconcile_ipam_fully_applied_is_success_and_mutated(tmp_path, monkeypat
     plan = ctx.make_plan([action])
 
     monkeypatch.setattr(
-        executor_module,
+        ipam_module,
         "execute_reconcile_ipam",
         lambda job_runner, action, **kw: IpamReconcileResult(
             desired_node_slug=ctx.node.slug,
@@ -1733,7 +1736,7 @@ def test_reconcile_ipam_without_applied_endpoint_does_not_create_mutation_eviden
     plan = ctx.make_plan([action])
 
     monkeypatch.setattr(
-        executor_module,
+        ipam_module,
         "execute_reconcile_ipam",
         lambda job_runner, action, **kw: IpamReconcileResult(
             desired_node_slug=ctx.node.slug,
@@ -1816,9 +1819,9 @@ def test_post_actuation_observation_store_failure_retains_deployment_evidence(tm
         ),
     )
     monkeypatch.setattr(
-        executor_module,
+        observe_module,
         "run_observation",
-        lambda *a, **kw: (_ for _ in ()).throw(executor_module.SshStoreReadError("store corrupted post-actuation")),
+        lambda *a, **kw: (_ for _ in ()).throw(observe_module.SshStoreReadError("store corrupted post-actuation")),
     )
 
     matching_probe = SshProbeRunner(
@@ -2158,7 +2161,7 @@ deployment_profile_reconciliation:
     monkeypatch.setattr("nctl_core.dnsmasq_render.build_source_snapshot", fetch_snapshot)
     _patch_production_render(monkeypatch, lambda: fetch_snapshot(cfg, None))
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
-    monkeypatch.setattr(executor_module, "run_observation", lambda *a, **kw: executor_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()))
+    monkeypatch.setattr(observe_module, "run_observation", lambda *a, **kw: observe_module.ObservationResult(ok=True, hosts=[], collection=_fake_ansible_result(), retrieval=_fake_ansible_result()))
 
     inventory_payload = {
         "dnsmasq_server": {"hosts": ["agdnsmasq"]},
@@ -2330,7 +2333,7 @@ def test_real_multi_round_ipam_convergence_for_non_dhcp_endpoint(tmp_path, monke
             unresolved_expected_endpoints=[],
         )
 
-    monkeypatch.setattr(executor_module, "execute_reconcile_ipam", fake_execute_reconcile_ipam)
+    monkeypatch.setattr(ipam_module, "execute_reconcile_ipam", fake_execute_reconcile_ipam)
 
     # Round 0: explicit static IP + matching self-observation + missing
     # IPAddress -> eligible -> missing_actual_ip_address -> reconcile_ipam

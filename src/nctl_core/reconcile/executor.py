@@ -36,7 +36,6 @@ from nctl_core.drift_render import DriftData, fetch_and_compute_drift, render_dr
 from nctl_core.events import OperationLog
 from nctl_core.jobs import NautobotJobError, NautobotJobRunner
 from nctl_core.nautobot import NautobotClient, NautobotError
-from nctl_core.observation import ObservationResult, run_observation
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production.adapter import build_production_node_inputs
 from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
@@ -50,12 +49,13 @@ from nctl_core.ssh_enroll import SshProbeRunner, SshStoreReadError, default_ssh_
 from nctl_core.sources.snapshot import SourceSnapshot, build_source_snapshot
 
 from .classify import UnclassifiedDiffCodeError
-from .ledger import LedgerActionError, execute_link_actual_node, execute_reconcile_ipam
 from .lock import ReconcileLockError, acquire_reconcile_lock
 from .model import PlanScope, ReconcileAction, ReconcilePlan
 from .planner import HostScopeError, build_plan
 from .profiles import ProfileReconciliationError, load_profile_reconciliation
 from .results import ActionResult, RECONCILE_SCHEMA, ReconcileData, RoundSummary
+from .actions.contract import ActionContext, ExecutedAction
+from .actions.dispatch import action_phase, execute_action
 from .ssh_preflight import (
     STATUS_MISMATCH,
     STATUS_READY,
@@ -68,9 +68,6 @@ from .ssh_preflight import (
     verify_offered_keys,
     verify_resolved_ssh_targets,
 )
-
-_BOOTSTRAP_LEDGER_RECONCILERS = frozenset({"observe_node", "link_actual_node", "reconcile_ipam"})
-
 
 def _action_had_side_effects(result: ActionResult) -> bool:
     """Whether this result makes the round-start drift unsafe as final evidence."""
@@ -97,22 +94,6 @@ class RoundOutcome(BaseModel):
     terminal_errors: list[EnvelopeError] = Field(default_factory=list)
     had_side_effects: bool = False
 
-
-class ExecutedAction(BaseModel):
-    """One action's private execution outcome (fix_sshkey4 Step 2, corrected contract 2).
-
-    `result` must always be appended to the round's `RoundSummary.actions`
-    before `terminal_errors` is inspected -- a managed-store failure inside
-    observation (bootstrap or post-actuation) must not make its
-    `ActionResult` disappear, only stop the round immediately after it is
-    recorded. Every `_execute_action`/`_run_observation_action` return path
-    uses this type instead of raising `SshStoreReadError` past the action
-    boundary, so control flow for a store failure is never encoded in an
-    error-message string.
-    """
-
-    result: ActionResult
-    terminal_errors: list[EnvelopeError] = Field(default_factory=list)
 
 
 def _ssh_scan_errors(entries: list["SshPreflightEntry"]) -> list[EnvelopeError]:
@@ -488,8 +469,8 @@ def _execute_round(
     """
     summary = RoundSummary(round=round_index, drift_fingerprint=plan.drift_fingerprint)
     operation_generated_at = plan.drift_generated_at or snapshot.fetched_at.isoformat()
-    bootstrap_actions = [a for a in plan.actions if a.reconciler_id in _BOOTSTRAP_LEDGER_RECONCILERS]
-    service_actions = [a for a in plan.actions if a.reconciler_id not in _BOOTSTRAP_LEDGER_RECONCILERS]
+    bootstrap_actions = [action for action in plan.actions if action_phase(action.reconciler_id) == "bootstrap"]
+    service_actions = [action for action in plan.actions if action_phase(action.reconciler_id) == "service"]
     had_side_effects = False
 
     def _interrupted_outcome() -> RoundOutcome:
@@ -504,9 +485,13 @@ def _execute_round(
         for action in bootstrap_actions:
             if interrupted.is_set():
                 return _interrupted_outcome()
-            executed = _execute_action(
-                cfg, op, artifacts, round_index, action, snapshot, client, now, command_runner, ssh_probe,
-                generated_at=operation_generated_at,
+            executed = execute_action(
+                ActionContext(
+                    cfg=cfg, operation_log=op, artifacts=artifacts, round_index=round_index,
+                    snapshot=snapshot, client=client, now=now, command_runner=command_runner,
+                    ssh_probe=ssh_probe, generated_at=operation_generated_at,
+                ),
+                action,
             )
             summary.actions.append(executed.result)
             had_side_effects = had_side_effects or _action_had_side_effects(executed.result)
@@ -570,10 +555,11 @@ def _execute_round(
         for action in service_actions:
             if interrupted.is_set():
                 return _interrupted_outcome()
-            executed = _execute_action(
-                cfg, op, artifacts, round_index, action, snapshot, None, now, command_runner, ssh_probe,
+            result = _run_playbook_action(
+                cfg, op, artifacts, round_index, action, snapshot, command_runner, ssh_probe,
                 generated_at=operation_generated_at,
             )
+            executed = ExecutedAction(result=result)
             summary.actions.append(executed.result)
             had_side_effects = had_side_effects or _action_had_side_effects(executed.result)
             if executed.terminal_errors:
@@ -590,8 +576,18 @@ def _execute_round(
         }
     )
     if observe_targets:
-        executed = _run_observation_action(
-            cfg, op, artifacts, observe_targets, snapshot, now, command_runner, action_id="post_actuation_observation"
+        observation_action = ReconcileAction(
+            id="post_actuation_observation", reconciler_id="observe_node", action_kind="observation",
+            targets=[Target(kind="node", slug=slug, name=slug) for slug in observe_targets],
+            claimed_diff_codes=[], reason="Post-actuation observation.", mutates=True, requires_observation=False,
+        )
+        executed = execute_action(
+            ActionContext(
+                cfg=cfg, operation_log=op, artifacts=artifacts, round_index=round_index,
+                snapshot=snapshot, client=None, now=now, command_runner=command_runner,
+                ssh_probe=ssh_probe, generated_at=operation_generated_at,
+            ),
+            observation_action,
         )
         summary.actions.append(executed.result)
         had_side_effects = had_side_effects or _action_had_side_effects(executed.result)
@@ -685,106 +681,6 @@ def _regenerate_production_inventory(cfg: Config) -> tuple[ActionResult, Product
     )
     return result, (render_context if success else None)
 
-
-def _execute_action(
-    cfg: Config,
-    op: OperationLog,
-    artifacts: OperationArtifacts,
-    round_index: int,
-    action: ReconcileAction,
-    snapshot: SourceSnapshot,
-    client: NautobotClient | None,
-    now: Callable[[], datetime],
-    command_runner: CommandRunner | None,
-    ssh_probe: SshProbeRunner,
-    *,
-    generated_at: str,
-) -> ExecutedAction:
-    target_slugs = [t.slug for t in action.targets if t.slug]
-    op.emit("action_started", f"action {action.id} started", action_id=action.id, reconciler_id=action.reconciler_id)
-
-    try:
-        if action.reconciler_id == "observe_node":
-            return _run_observation_action(cfg, op, artifacts, target_slugs, snapshot, now, command_runner, action_id=action.id)
-        if action.reconciler_id == "link_actual_node":
-            assert client is not None
-            link_result = execute_link_actual_node(client, action)
-            result = _actuation_result(op, action, target_slugs, True, link_result.model_dump(), requires_observation=False)
-            return ExecutedAction(result=result)
-        if action.reconciler_id == "reconcile_ipam":
-            assert client is not None
-            job_runner = NautobotJobRunner(
-                client,
-                poll_interval_seconds=cfg.reconcile.job_poll_interval_seconds,
-                timeout_seconds=cfg.reconcile.job_timeout_seconds,
-                artifacts=artifacts,
-                operation_log=op,
-            )
-            ipam_result = execute_reconcile_ipam(
-                job_runner, action, artifact_relative_path=f"round-{round_index:02d}/jobs/ipam-{action.id}.json"
-            )
-            # ipam_policy p6 Step 4: a successful JobResult alone is not
-            # successful reconciliation -- every endpoint id the planner
-            # pinned as eligible must have actually reached an
-            # applied/noop state. An unresolved conflict/skip on a pinned
-            # endpoint fails the action (manual_intervention_required at the
-            # operation level) even though the Job process itself succeeded;
-            # any endpoint that *was* applied still counts as `mutated`
-            # progress rather than being erased by the sibling failure.
-            success = not ipam_result.unresolved_expected_endpoints
-            detail = {
-                "conflicts": ipam_result.conflicts,
-                "skipped": ipam_result.skipped,
-                "eligible_endpoint_ids": ipam_result.eligible_endpoint_ids,
-                "applied_endpoint_ids": ipam_result.applied_endpoint_ids,
-                "unresolved_expected_endpoints": ipam_result.unresolved_expected_endpoints,
-            }
-            result = _actuation_result(
-                op,
-                action,
-                target_slugs,
-                success,
-                detail,
-                requires_observation=False,
-                mutated=bool(ipam_result.applied_endpoint_ids),
-            )
-            if not success:
-                result.error = (
-                    "reconcile_ipam: "
-                    f"{len(ipam_result.unresolved_expected_endpoints)} expected endpoint(s) did not reach "
-                    "an applied/noop state"
-                )
-            return ExecutedAction(result=result)
-        if action.reconciler_id in ("service_profile", "dnsmasq_config"):
-            result = _run_playbook_action(
-                cfg, op, artifacts, round_index, action, snapshot, command_runner, ssh_probe,
-                generated_at=generated_at,
-            )
-            return ExecutedAction(result=result)
-        raise LedgerActionError("unknown_reconciler", f"no executor for reconciler {action.reconciler_id!r}")
-    except (LedgerActionError, NautobotJobError, NautobotError) as exc:
-        code = getattr(exc, "code", "action_failed")
-        mutated = bool(getattr(exc, "mutated", False))
-        op.emit(
-            "action_completed",
-            f"action {action.id} failed",
-            level="error",
-            action_id=action.id,
-            reconciler_id=action.reconciler_id,
-            success=False,
-            mutated=mutated,
-            error=str(exc),
-        )
-        result = ActionResult(
-            action_id=action.id,
-            reconciler_id=action.reconciler_id,
-            action_kind=action.action_kind,
-            target_slugs=target_slugs,
-            success=False,
-            error=f"{code}: {exc}",
-            mutated=mutated,
-        )
-        return ExecutedAction(result=result)
 
 
 def _actuation_result(
@@ -938,69 +834,6 @@ def _group_hosts_by_playbook(
         groups.setdefault(rel_path, []).append(slug)
     return groups
 
-
-def _run_observation_action(
-    cfg: Config,
-    op: OperationLog,
-    artifacts: OperationArtifacts,
-    target_slugs: list[str],
-    snapshot: SourceSnapshot,
-    now: Callable[[], datetime],
-    command_runner: CommandRunner | None,
-    *,
-    action_id: str,
-) -> ExecutedAction:
-    """Run one observation and always return an `ExecutedAction` (fix_sshkey4 Step 2).
-
-    `run_observation` performs its own defense-in-depth `check_ssh_enrollment`
-    call, which can raise `SshStoreReadError` if the managed store becomes
-    unreadable or invalid after this round's start gate already passed --
-    distinct from an ordinary `ValueError` (e.g. `ssh_host_key_unenrolled`),
-    which only fails this one action and lets the round continue.
-    `SshStoreReadError` instead also sets `terminal_errors`, so the caller
-    stops the round right after recording this failed observation result,
-    per `RoundOutcome`'s evidence-retention contract.
-    """
-    try:
-        result: ObservationResult = run_observation(
-            cfg, snapshot.desired, target_slugs, artifacts, op, command_runner=command_runner, now=now()
-        )
-    except SshStoreReadError as exc:
-        action_result = ActionResult(
-            action_id=action_id,
-            reconciler_id="observe_node",
-            action_kind="observation",
-            target_slugs=target_slugs,
-            success=False,
-            error=f"ssh_store_read_failed: {exc}",
-        )
-        return ExecutedAction(
-            result=action_result,
-            terminal_errors=[EnvelopeError(code="ssh_store_read_failed", message=str(exc))],
-        )
-    except ValueError as exc:
-        action_result = ActionResult(
-            action_id=action_id,
-            reconciler_id="observe_node",
-            action_kind="observation",
-            target_slugs=target_slugs,
-            success=False,
-            error=str(exc),
-        )
-        return ExecutedAction(result=action_result)
-    action_result = ActionResult(
-        action_id=action_id,
-        reconciler_id="observe_node",
-        action_kind="observation",
-        target_slugs=target_slugs,
-        success=result.ok,
-        detail={
-            "nodeutils_version": result.nodeutils_version,
-            "hosts": [h.model_dump() for h in result.hosts],
-        },
-        error=result.error,
-    )
-    return ExecutedAction(result=action_result)
 
 
 def _build_plan_or_error(
