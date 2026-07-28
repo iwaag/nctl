@@ -9,6 +9,7 @@ from nctl_core.drift.evaluation_snapshot import evaluate_all_nodes
 from nctl_core.reconcile.classify import UnclassifiedDiffCodeError, classify
 from nctl_core.reconcile.fingerprint import compute_drift_fingerprint
 from nctl_core.reconcile.planner import HostScopeError, build_plan, select_scoped_diffs
+from nctl_core.reconcile import planner as planner_module
 from nctl_core.reconcile.model import Classification, PlanScope
 from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
 from nctl_core.sources.actual import ActualDevice, ActualSnapshot
@@ -160,6 +161,27 @@ def test_actual_without_desired_node_is_inert_and_never_plans_a_destructive_acti
     assert first.actions == repeated.actions == []
     assert first.manual_review == repeated.manual_review == []
     assert first.unsupported == repeated.unsupported == []
+
+
+def test_compute_create_defers_same_node_observation_until_after_actuation(monkeypatch):
+    """Tier A: an absent guest never gets an SSH observation before its create action."""
+    fixture = _node("n1", "agfixture")
+    snapshot = _snapshot(nodes=[fixture])
+    create = planner_module.ReconcileAction(
+        id="create_compute_instance:agfixture", reconciler_id="create_compute_instance", action_kind="compute_create",
+        targets=[Target(kind="compute_instance", slug="agfixture", id="instance")], claimed_diff_codes=["compute_instance_missing"],
+        reason="test", mutates=True, requires_observation=True,
+    )
+    monkeypatch.setattr(planner_module, "plan_create_compute_instance", lambda *_args, **_kwargs: create)
+    diffs = [
+        DiffRecord(target=Target(kind="compute_instance", slug="agfixture", id="instance"), code="compute_instance_missing", severity=Severity.ERROR, message="missing"),
+        _node_diff(fixture, "missing_actual_node"),
+        _node_diff(fixture, "no_realized_device"),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    assert [action.reconciler_id for action in plan.actions] == ["create_compute_instance"]
 
 
 # --- link_actual_node / reconcile_ipam -------------------------------------

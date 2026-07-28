@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from nctl_core.drift import comparators
 from nctl_core.drift.context import DriftContext
 from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddress, ActualSnapshot, ActualVirtualMachine
@@ -17,6 +19,7 @@ from nctl_core.sources.desired import (
 )
 from nctl_core.sources.observed import ObservedFacts
 from nctl_core.sources.snapshot import SourceSnapshot
+from nctl_core.compute.model import DesiredComputeInstance
 
 CONTEXT = DriftContext(generated_at="2026-07-15T12:00:00+00:00")
 
@@ -98,6 +101,59 @@ def test_node_existence_allows_declared_policy_with_no_realized_object():
     snapshot = make_snapshot(nodes=[node], operational_overrides=[override])
 
     assert list(comparators.node_existence(snapshot, CONTEXT)) == []
+
+
+@pytest.mark.parametrize("missing", ["link", "running", "device", "observation"])
+def test_node_existence_waits_for_manual_initial_access_only_when_all_four_conditions_hold(missing):
+    """A created LXC is an explicit safe terminal only until first guest observation."""
+    from nctl_core.sources.actual import ActualVirtualMachine
+    from nctl_core.sources.observed import ObservedFacts
+
+    node = DesiredNode(id="n1", slug="agfixture", name="agfixture", lifecycle="approved", node_type="service_host")
+    vm = ActualVirtualMachine(
+        id="vm1", name="agfixture", cluster_id="cluster", proxmox={"guest_type": "lxc", "vmid": 109, "node": "aghub", "status": "running"},
+    )
+    instance = DesiredComputeInstance(
+        id="instance", desired_node_id="n1", platform_id="platform", instance_kind="container",
+        desired_power_state="running", vcpus=1, memory_mb=512, root_disk_gb=8,
+        config_schema_version="v1",
+        config={"vmid": 109, "template": "local:vztmpl/ubuntu.tar.zst", "unprivileged": True},
+        realized_vm_id=None if missing == "link" else "vm1",
+    )
+    if missing == "running":
+        vm = vm.model_copy(update={"proxmox": vm.proxmox.model_copy(update={"status": "stopped"})})
+    if missing == "device":
+        node = node.model_copy(update={"realized_device_id": "dev1"})
+    observed = [ObservedFacts(hostname="agfixture.local", collected_at=datetime.now(timezone.utc))] if missing == "observation" else []
+    snapshot = SourceSnapshot(
+        desired=DesiredSnapshot(nodes=[node], compute_instances=[instance]),
+        actual=ActualSnapshot(virtual_machines=[vm]), observed=observed, fetched_at=datetime.now(timezone.utc),
+    )
+
+    codes = [item.code for item in comparators.node_existence(snapshot, CONTEXT)]
+    if missing == "link":
+        assert codes == ["no_realized_object"]
+    else:
+        assert "waiting_for_manual_initial_access" not in codes
+        assert "no_realized_object" in codes or missing == "device"
+
+
+def test_node_existence_reports_manual_initial_access_for_running_linked_unobserved_guest():
+    from nctl_core.sources.actual import ActualVirtualMachine
+
+    node = DesiredNode(id="n1", slug="agfixture", name="agfixture", lifecycle="approved", node_type="service_host")
+    instance = DesiredComputeInstance(
+        id="instance", desired_node_id="n1", platform_id="platform", instance_kind="container",
+        desired_power_state="running", vcpus=1, memory_mb=512, root_disk_gb=8,
+        config_schema_version="v1",
+        config={"vmid": 109, "template": "local:vztmpl/ubuntu.tar.zst", "unprivileged": True}, realized_vm_id="vm1",
+    )
+    vm = ActualVirtualMachine(id="vm1", name="agfixture", cluster_id="cluster", proxmox={"guest_type": "lxc", "vmid": 109, "node": "aghub", "status": "running"})
+    snapshot = SourceSnapshot(desired=DesiredSnapshot(nodes=[node], compute_instances=[instance]), actual=ActualSnapshot(virtual_machines=[vm]), fetched_at=datetime.now(timezone.utc))
+
+    diffs = list(comparators.node_existence(snapshot, CONTEXT))
+    assert [diff.code for diff in diffs] == ["waiting_for_manual_initial_access"]
+    assert diffs[0].severity.value == "info"
 
 
 # --- ingest_lag -------------------------------------------------------
@@ -548,5 +604,3 @@ def test_production_policy_active_placement_not_applied_survives_empty_profiles(
 
     assert {d.code for d in diffs} == {"intent_effect_summary", "active_placement_not_applied"}
     assert next(d for d in diffs if d.code == "active_placement_not_applied").severity.value == "warning"
-
-

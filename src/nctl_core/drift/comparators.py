@@ -94,12 +94,23 @@ def compute_instance(snapshot: SourceSnapshot, context: DriftContext) -> Iterato
 
 @register("node")
 def node_existence(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    from nctl_core.compute.manual_initial_access import awaiting_manual_initial_access
     override_by_node = {item.node_id: item for item in snapshot.desired.operational_overrides}
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
 
     for node in snapshot.desired.nodes:
         target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
         operational_override = override_by_node.get(node.id)
+
+        if awaiting_manual_initial_access(snapshot, node):
+            yield DiffRecord(
+                target=target,
+                code="waiting_for_manual_initial_access",
+                severity=Severity.INFO,
+                message=f"{node.slug}: running compute guest awaits manual initial access and first nodeutils observation",
+                sources=["desired", "actual"],
+            )
+            continue
 
         if node.realized_device_id and node.realized_device_id not in devices_by_id:
             yield DiffRecord(

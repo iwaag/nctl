@@ -179,10 +179,6 @@ def build_plan(
     actions: list[ReconcileAction] = []
     node_targets_by_slug: dict[str, str] = {}  # slug -> link_actual_node action id, for dependency wiring
 
-    if observe_targets:
-        ordered_targets = [observe_targets[key] for key in sorted(observe_targets)]
-        actions.append(plan_observe_node(ordered_targets, sorted(observe_codes)))
-
     for key, (target, codes, group_diffs) in sorted(automatic_groups.get("link_actual_node", {}).items()):
         outcome = plan_link_actual_node(target, snapshot)
         if isinstance(outcome, Fallback):
@@ -205,6 +201,23 @@ def build_plan(
             _apply_fallback(outcome, group_diffs, manual_review, unsupported)
         else:
             actions.append(outcome)
+
+    # An absent compute guest has no SSH endpoint to observe yet.  Its create
+    # action requests the one authoritative post-actuation observation; an
+    # initial observe action for the same node would fail before creation and
+    # make a valid dry create plan unexecutable.
+    create_target_slugs = {
+        action.targets[0].slug
+        for action in actions
+        if action.reconciler_id == "create_compute_instance" and action.targets and action.targets[0].slug
+    }
+    if observe_targets:
+        ordered_targets = [
+            observe_targets[key] for key in sorted(observe_targets)
+            if observe_targets[key].slug not in create_target_slugs
+        ]
+        if ordered_targets:
+            actions.append(plan_observe_node(ordered_targets, sorted(observe_codes)))
 
     for key, (target, codes, group_diffs) in sorted(automatic_groups.get("reconcile_ipam", {}).items()):
         action = plan_reconcile_ipam(target, group_diffs)

@@ -45,6 +45,7 @@ class NodeInput:
     operational_override: OperationalOverride | None = None
     placements: tuple[PlacementInput, ...] = ()
     realized: RealizedState | None = None
+    awaiting_manual_initial_access: bool = False
 
 
 @dataclass(frozen=True)

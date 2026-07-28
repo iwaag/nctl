@@ -253,6 +253,14 @@ def compose_production_inventory(
             inactive_placements += len(node.placements)
             continue
 
+        if node.awaiting_manual_initial_access:
+            outcomes[node.id] = NodeOutcome(
+                state="skipped", reasons=["waiting_for_manual_initial_access"], effective=None,
+                finding=None, active_placement_ids=[],
+            )
+            inactive_placements += len(node.placements)
+            continue
+
         effective, finding = try_resolve_operational_values(node, generated_at)
         if finding is not None:
             local_error = LocalCompositionError(

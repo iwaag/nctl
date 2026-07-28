@@ -19,6 +19,7 @@ from nctl_core.sources.desired import (
     DesiredServicePlacement,
 )
 from nctl_core.sources.snapshot import SourceSnapshot
+from nctl_core.compute.manual_initial_access import awaiting_manual_initial_access
 
 from .model import NodeInput, PlacementInput, RealizedState
 from .derivation import EndpointCandidate, OperationalOverride
@@ -57,6 +58,7 @@ def build_production_node_inputs(snapshot: SourceSnapshot) -> list[NodeInput]:
                 operational_override=_operational_override(override_by_node.get(node.id)),
                 placements=placements,
                 realized=_realized_state(node, devices_by_id),
+                awaiting_manual_initial_access=awaiting_manual_initial_access(snapshot, node),
             )
         )
     return node_inputs
