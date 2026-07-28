@@ -13,6 +13,9 @@ def execute(context: ActionContext, action: ReconcileAction) -> ExecutedAction:
     if creation is None or creation.failures or creation.parameters != action.parameters:
         return ExecutedAction(result=failed_action_result(context, action, target_slugs, {}, "create parameters no longer match the pinned preflight"))
     result_path = context.artifacts.path(f"round-{context.round_index:02d}/compute/{action.id}.result.json")
+    # The playbook returns this controller-owned artifact with delegate_to:
+    # localhost.  Create its parent before starting any irreversible command.
+    result_path.parent.mkdir(parents=True, exist_ok=True)
     variables = {**action.parameters, "result_path": str(result_path)}
     directory = context.cfg.ansible.resolved_playbook_dir(context.cfg.source_path.parent)
     inventory = context.cfg.ansible.resolved_inventory(context.cfg.source_path.parent)

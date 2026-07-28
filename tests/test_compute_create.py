@@ -35,9 +35,7 @@ class _Artifacts:
         self.root = root
 
     def path(self, relative):
-        path = self.root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
+        return self.root / relative
 
 
 def _action(parameters=PARAMETERS):
@@ -103,6 +101,7 @@ def test_create_handler_runs_exactly_one_pinned_playbook_and_requires_local_succ
         str(tmp_path / "ansible_agdev/playbooks/proxmox/create_lxc.yml"), "--limit", "aghub",
     ]
     assert json.loads(seen["command"][7]) == {**PARAMETERS, "result_path": str(context.artifacts.path("round-01/compute/create_compute_instance:agfixture.result.json"))}
+    assert context.artifacts.path("round-01/compute/create_compute_instance:agfixture.result.json").parent.is_dir()
     assert all("stop" not in value and "destroy" not in value for value in seen["command"])
 
 
