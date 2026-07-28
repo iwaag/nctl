@@ -10,7 +10,7 @@ drift and runs standard workflows. Implementation plan: `devdocs/vision/core_rec
 
 The shared compute contract is semantically owned by nintent. nctl retains read-time validation so
 stale or compromised GraphQL rows become visible source issues, but its behavior is fixture-bound:
-`tests/test_compute_conformance.py` replays nintent's generated
+`nctl_core.compute.contract` and `nctl_core.compute.collection` replay nintent's generated
 `tests/fixtures/compute_conformance.json`. Run the superproject's
 `devtests/test_strategy/test_compute_conformance.py` freshness gate whenever either side changes;
 nctl never imports nintent at runtime.
