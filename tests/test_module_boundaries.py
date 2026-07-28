@@ -11,6 +11,7 @@ import pytest
     [
         "nctl_core.compute.model",
         "nctl_core.compute.contract",
+        "nctl_core.compute.collection",
     ],
 )
 def test_compute_domain_modules_do_not_load_transport_or_cli(module: str) -> None:

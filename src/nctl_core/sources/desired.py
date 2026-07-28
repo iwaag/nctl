@@ -23,28 +23,12 @@ against the live dev Nautobot instance, 2026-07-15) because the ported
 JSONField/ForeignKey fields on the nintent models, not derived, so adding them
 here is a schema-completeness fix rather than new domain logic.
 
-VM Phase 3 Step 5 addition (destructive, coordinated with the matched nintent
-revision, no dual-read): `DesiredNode.realized_vm(+_source)` is REMOVED
-outright (legacy field, superseded by
-`DesiredComputeInstance.realized_vm(+_source)`), `DesiredEndpoint.mac_address`
-is added, and two new roots are fetched -- `desired_compute_platforms` and
-`desired_compute_instances` -- mirroring `nintent/nautobot_intent_catalog/
-models.py`'s `DesiredComputePlatform`/`DesiredComputeInstance` and the shared
-pure contracts in `nintent/nautobot_intent_catalog/compute_contract.py`
-(`normalize_mac_address`, `effective_lifecycle`, `effective_value`, the
-platform/instance config validators). nctl does not import that nintent
-module (separate deployable, no shared runtime dependency); the logic is
-ported here deliberately kept behaviorally identical.
-
-Compute rows are read/typed/validated only -- no compute drift, planner, or
-reconcile action is added in this step (Phase 4/5 territory per plan.md
-Section 5.1). A malformed compute platform/instance/endpoint-MAC row
-never raises out of `fetch_desired_snapshot()`; it is converted into a
-`DesiredSourceIssue` and excluded from the typed `compute_platforms`/
-`compute_instances` collections, while the rest of the snapshot (including
-unrelated healthy nodes/endpoints) parses normally in the same call. Only a
-row whose own identity is unknowable (missing `id`) propagates as a normal
-`NautobotError`/`NautobotGraphQLError`, same as any other root in this query.
+Compute roots are decoded here as transport data. Their pure row models,
+fixture-bound validation, collection assembly, and source-issue policy live
+in `nctl_core.compute`. Decode-time malformed-MAC tolerance stays here so an
+endpoint row can always be decoded; the compute collection records any
+corresponding source issue. Compute remains read-only and inert: no compute
+drift, planner, reconciler, or actuator is owned by this transport module.
 """
 
 from __future__ import annotations
@@ -53,6 +37,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from nctl_core.compute.collection import build_compute_collections, validate_endpoint_macs
 from nctl_core.compute.contract import (
     COMPUTE_LIFECYCLE_CHOICES,
     COMPUTE_PRIMARY_ENDPOINT_AMBIGUOUS,
@@ -75,26 +60,7 @@ from nctl_core.compute.contract import (
     VMID_MAX,
     VMID_MIN,
     ComputeContractError,
-    _validate_link_source_xnor,
-    effective_compute_defaults,
-    effective_lifecycle,
-    effective_single_source_value,
-    effective_value,
-    endpoint_has_usable_ip,
-    endpoint_satisfies_compute_address_contract,
-    is_actionable_lifecycle,
     normalize_mac_address,
-    select_compute_primary_endpoint,
-    validate_compute_lifecycle,
-    validate_config_schema_version,
-    validate_instance_config,
-    validate_instance_kind,
-    validate_memory_mb,
-    validate_platform_config,
-    validate_power_state,
-    validate_provider_type,
-    validate_root_disk_gb,
-    validate_vcpus,
 )
 from nctl_core.compute.model import DesiredComputeInstance, DesiredComputePlatform, DesiredSourceIssue
 
@@ -349,13 +315,13 @@ def fetch_desired_snapshot(client: NautobotClient) -> DesiredSnapshot:
     data = client.graphql(DESIRED_QUERY)
     endpoints = [_build_endpoint(row) for row in data["desired_endpoints"]]
     nodes = [_build_node(row) for row in data["desired_nodes"]]
-    compute_platforms, compute_instances, source_issues = _build_compute_collections(
+    compute_platforms, compute_instances, source_issues = build_compute_collections(
         data.get("desired_compute_platforms") or [],
         data.get("desired_compute_instances") or [],
         nodes=nodes,
         endpoints=endpoints,
     )
-    source_issues.extend(_validate_endpoint_macs(data["desired_endpoints"], endpoints))
+    source_issues.extend(validate_endpoint_macs(data["desired_endpoints"], endpoints))
     return DesiredSnapshot(
         nodes=nodes,
         endpoints=endpoints,
@@ -508,330 +474,6 @@ def _canonical_mac_or_none(value: Any) -> str | None:
         return normalize_mac_address(value)
     except ComputeContractError:
         return None
-
-
-def _build_compute_platform(row: dict[str, Any]) -> DesiredComputePlatform:
-    control_node = row.get("control_node")
-    if not control_node:
-        raise ComputeContractError("missing_control_node", "control_node is required", path="control_node")
-    realized_cluster = row.get("realized_cluster")
-    realized_cluster_source = _validate_link_source_xnor(
-        realized_cluster, row.get("realized_cluster_source"), path="realized_cluster_source"
-    )
-    return DesiredComputePlatform(
-        id=row["id"],
-        name=row["name"],
-        slug=row["slug"],
-        provider_type=validate_provider_type(_lower(row.get("provider_type"))),
-        lifecycle=validate_compute_lifecycle(_lower(row.get("lifecycle"))),
-        control_node_id=control_node["id"],
-        config_schema_version=validate_config_schema_version(row.get("config_schema_version")),
-        config=validate_platform_config(row.get("config")),
-        realized_cluster_id=realized_cluster["id"] if realized_cluster else None,
-        realized_cluster_source=realized_cluster_source,
-    )
-
-
-def _build_compute_instance(row: dict[str, Any]) -> DesiredComputeInstance:
-    desired_node = row.get("desired_node")
-    if not desired_node:
-        raise ComputeContractError("missing_desired_node", "desired_node is required", path="desired_node")
-    platform = row.get("platform")
-    if not platform:
-        raise ComputeContractError("missing_platform", "platform is required", path="platform")
-    instance_kind = validate_instance_kind(_lower(row.get("instance_kind")))
-    realized_vm = row.get("realized_vm")
-    realized_vm_source = _validate_link_source_xnor(
-        realized_vm, row.get("realized_vm_source"), path="realized_vm_source"
-    )
-    return DesiredComputeInstance(
-        id=row["id"],
-        desired_node_id=desired_node["id"],
-        platform_id=platform["id"],
-        instance_kind=instance_kind,
-        desired_power_state=validate_power_state(_lower(row.get("desired_power_state")) or "running"),
-        vcpus=validate_vcpus(row.get("vcpus")),
-        memory_mb=validate_memory_mb(row.get("memory_mb")),
-        root_disk_gb=validate_root_disk_gb(row.get("root_disk_gb")),
-        config_schema_version=validate_config_schema_version(row.get("config_schema_version")),
-        config=validate_instance_config(row.get("config"), instance_kind=instance_kind),
-        realized_vm_id=realized_vm["id"] if realized_vm else None,
-        realized_vm_source=realized_vm_source,
-    )
-
-
-def _build_compute_collections(
-    platform_rows: list[dict[str, Any]],
-    instance_rows: list[dict[str, Any]],
-    *,
-    nodes: list[DesiredNode],
-    endpoints: list[DesiredEndpoint],
-) -> tuple[list[DesiredComputePlatform], list[DesiredComputeInstance], list[DesiredSourceIssue]]:
-    """Row-scoped compute validation (plan.md Section 5.9).
-
-    No invalid row is silently discarded and no invalid row is allowed to
-    crash the rest of the snapshot: every row is parsed independently, a bad
-    row becomes a `DesiredSourceIssue`, and only rows that pass every check
-    (including, for an active/approved effective instance, the endpoint
-    topology-completeness check) end up in the returned typed collections.
-    An invalid platform's issue lists every instance it dependency-blocks in
-    `blocked_consumers`.
-    """
-    nodes_by_id = {node.id: node for node in nodes}
-    endpoints_by_node_id: dict[str, list[DesiredEndpoint]] = {}
-    for endpoint in endpoints:
-        endpoints_by_node_id.setdefault(endpoint.node_id, []).append(endpoint)
-
-    issues: list[DesiredSourceIssue] = []
-
-    # --- Parse platform rows independently; a bad row never blocks another. ---
-    raw_platforms: list[DesiredComputePlatform] = []
-    for row in platform_rows:
-        row_id = row["id"]  # identity-unknowable row (no id) legitimately propagates
-        try:
-            raw_platforms.append(_build_compute_platform(row))
-        except (KeyError, TypeError, ValueError) as exc:
-            issues.append(
-                DesiredSourceIssue(
-                    code=getattr(exc, "code", "invalid_compute_platform"),
-                    target_kind="compute_platform",
-                    target_id=row_id,
-                    target_slug_or_name=_text_or_none(row.get("slug") or row.get("name")),
-                    scope="target",
-                    message=str(exc),
-                    evidence={"row_id": row_id},
-                )
-            )
-
-    # --- Unique platform slug: a collision is ambiguous, so exclude every colliding row. ---
-    platforms_by_slug: dict[str, list[DesiredComputePlatform]] = {}
-    for platform in raw_platforms:
-        platforms_by_slug.setdefault(platform.slug, []).append(platform)
-
-    valid_platforms: dict[str, DesiredComputePlatform] = {}
-    invalid_platform_ids: set[str] = set()
-    for slug, group in platforms_by_slug.items():
-        if len(group) > 1:
-            colliding_ids = [platform.id for platform in group]
-            for platform in group:
-                invalid_platform_ids.add(platform.id)
-                issues.append(
-                    DesiredSourceIssue(
-                        code="duplicate_platform_slug",
-                        target_kind="compute_platform",
-                        target_id=platform.id,
-                        target_slug_or_name=platform.slug,
-                        scope="global",
-                        message=f"slug {slug!r} is used by more than one DesiredComputePlatform",
-                        evidence={"colliding_platform_ids": colliding_ids},
-                    )
-                )
-            continue
-        valid_platforms[group[0].id] = group[0]
-
-    # --- Referenced control_node must exist in this snapshot. ---
-    for platform_id in list(valid_platforms):
-        platform = valid_platforms[platform_id]
-        if platform.control_node_id not in nodes_by_id:
-            invalid_platform_ids.add(platform.id)
-            del valid_platforms[platform_id]
-            issues.append(
-                DesiredSourceIssue(
-                    code="compute_platform_control_node_missing",
-                    target_kind="compute_platform",
-                    target_id=platform.id,
-                    target_slug_or_name=platform.slug,
-                    scope="target",
-                    message=f"control_node {platform.control_node_id!r} does not exist in this snapshot",
-                    evidence={"control_node_id": platform.control_node_id},
-                )
-            )
-
-    blocked_consumers_by_platform_id: dict[str, list[str]] = {
-        platform_id: [] for platform_id in invalid_platform_ids
-    }
-
-    # --- Parse instance rows independently. ---
-    raw_instances: list[DesiredComputeInstance] = []
-    for row in instance_rows:
-        row_id = row["id"]
-        try:
-            raw_instances.append(_build_compute_instance(row))
-        except (KeyError, TypeError, ValueError) as exc:
-            issues.append(
-                DesiredSourceIssue(
-                    code=getattr(exc, "code", "invalid_compute_instance"),
-                    target_kind="compute_instance",
-                    target_id=row_id,
-                    target_slug_or_name=None,
-                    scope="target",
-                    message=str(exc),
-                    evidence={"row_id": row_id},
-                )
-            )
-
-    # --- One instance per node: keep the first, flag the rest. ---
-    instances_by_node: dict[str, list[DesiredComputeInstance]] = {}
-    for instance in raw_instances:
-        instances_by_node.setdefault(instance.desired_node_id, []).append(instance)
-
-    deduped_instances: list[DesiredComputeInstance] = []
-    for node_id, group in instances_by_node.items():
-        deduped_instances.append(group[0])
-        if len(group) > 1:
-            for duplicate in group[1:]:
-                issues.append(
-                    DesiredSourceIssue(
-                        code="duplicate_compute_instance_for_node",
-                        target_kind="compute_instance",
-                        target_id=duplicate.id,
-                        target_slug_or_name=None,
-                        scope="target",
-                        message=f"desired_node {node_id!r} already has a DesiredComputeInstance",
-                        evidence={"desired_node_id": node_id, "kept_instance_id": group[0].id},
-                    )
-                )
-
-    # --- References must exist; a reference to a known-invalid platform is dependency-blocked. ---
-    final_instances: list[DesiredComputeInstance] = []
-    for instance in deduped_instances:
-        if instance.desired_node_id not in nodes_by_id:
-            issues.append(
-                DesiredSourceIssue(
-                    code="compute_instance_node_missing",
-                    target_kind="compute_instance",
-                    target_id=instance.id,
-                    target_slug_or_name=None,
-                    scope="target",
-                    message=f"desired_node {instance.desired_node_id!r} does not exist in this snapshot",
-                    evidence={"desired_node_id": instance.desired_node_id},
-                )
-            )
-            continue
-        if instance.platform_id in invalid_platform_ids:
-            blocked_consumers_by_platform_id.setdefault(instance.platform_id, []).append(instance.id)
-            issues.append(
-                DesiredSourceIssue(
-                    code="compute_instance_platform_invalid",
-                    target_kind="compute_instance",
-                    target_id=instance.id,
-                    target_slug_or_name=None,
-                    scope="target",
-                    message=f"platform {instance.platform_id!r} failed its own validation",
-                    evidence={"platform_id": instance.platform_id},
-                )
-            )
-            continue
-        if instance.platform_id not in valid_platforms:
-            issues.append(
-                DesiredSourceIssue(
-                    code="compute_instance_platform_missing",
-                    target_kind="compute_instance",
-                    target_id=instance.id,
-                    target_slug_or_name=None,
-                    scope="target",
-                    message=f"platform {instance.platform_id!r} does not exist in this snapshot",
-                    evidence={"platform_id": instance.platform_id},
-                )
-            )
-            continue
-        final_instances.append(instance)
-
-    # --- Effective active/approved topology completeness. ---
-    ready_instances: list[DesiredComputeInstance] = []
-    for instance in final_instances:
-        node = nodes_by_id[instance.desired_node_id]
-        platform = valid_platforms[instance.platform_id]
-        effective = effective_lifecycle(node.lifecycle, platform.lifecycle)
-        if is_actionable_lifecycle(effective):
-            _selected, code = select_compute_primary_endpoint(endpoints_by_node_id.get(node.id, []))
-            if code is not None:
-                if code == COMPUTE_PRIMARY_ENDPOINT_MISSING:
-                    message = f"node {node.slug!r} has no primary endpoint satisfying the compute NIC contract"
-                else:
-                    message = (
-                        f"node {node.slug!r} has more than one primary endpoint satisfying the compute NIC contract"
-                    )
-                issues.append(
-                    DesiredSourceIssue(
-                        code=code,
-                        target_kind="compute_instance",
-                        target_id=instance.id,
-                        target_slug_or_name=None,
-                        scope="target",
-                        message=message,
-                        evidence={"desired_node_id": node.id, "effective_lifecycle": effective},
-                    )
-                )
-                continue
-        ready_instances.append(instance)
-
-    # --- Attach blocked_consumers onto the platform issue(s) they dependency-block. ---
-    if blocked_consumers_by_platform_id:
-        for issue in issues:
-            if issue.target_kind != "compute_platform" or issue.target_id not in blocked_consumers_by_platform_id:
-                continue
-            consumers = blocked_consumers_by_platform_id[issue.target_id]
-            if consumers:
-                issue.blocked_consumers = sorted(set(issue.blocked_consumers) | set(consumers))
-
-    return list(valid_platforms.values()), ready_instances, issues
-
-
-def _validate_endpoint_macs(
-    rows: list[dict[str, Any]], endpoints: list[DesiredEndpoint]
-) -> list[DesiredSourceIssue]:
-    """Malformed/duplicate desired MACs, scoped to the owning endpoint (plan.md Section 5.5/5.9).
-
-    `rows`/`endpoints` are the same GraphQL rows and `_build_endpoint`
-    outputs, in the same order -- `_build_endpoint` never raises on a bad
-    MAC (it stores `None`), so the raw row is re-checked here to distinguish
-    "malformed" from "legitimately absent" and to produce the diagnostic.
-    """
-    issues: list[DesiredSourceIssue] = []
-    endpoint_id_by_mac: dict[str, str] = {}
-    for row, endpoint in zip(rows, endpoints):
-        raw_mac = row.get("mac_address")
-        try:
-            normalize_mac_address(raw_mac)
-        except ComputeContractError as exc:
-            issues.append(
-                DesiredSourceIssue(
-                    code="invalid_mac_address",
-                    target_kind="endpoint",
-                    target_id=endpoint.id,
-                    target_slug_or_name=endpoint.name,
-                    scope="target",
-                    message=str(exc),
-                    evidence={"raw_mac_address": raw_mac},
-                )
-            )
-            continue
-        if endpoint.mac_address is None:
-            continue
-        existing_endpoint_id = endpoint_id_by_mac.get(endpoint.mac_address)
-        if existing_endpoint_id is not None:
-            issues.append(
-                DesiredSourceIssue(
-                    code="duplicate_mac_address",
-                    target_kind="endpoint",
-                    target_id=endpoint.id,
-                    target_slug_or_name=endpoint.name,
-                    scope="global",
-                    message=f"MAC address {endpoint.mac_address!r} is already used by another endpoint",
-                    evidence={"mac_address": endpoint.mac_address, "conflicting_endpoint_id": existing_endpoint_id},
-                )
-            )
-        else:
-            endpoint_id_by_mac[endpoint.mac_address] = endpoint.id
-    return issues
-
-
-def _text_or_none(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
 
 
 def _lower(value: Any) -> Any:
