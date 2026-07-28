@@ -19,7 +19,7 @@ from nctl_core.hosts_intent_render import HostsIntentRenderData
 from nctl_core.ops_render import OpsListData, OpsShowData
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.production_render import ProductionRenderData
-from nctl_core.reconcile.executor import ReconcileData
+from nctl_core.reconcile.results import ReconcileData
 from nctl_core.status import StatusData
 
 # Shared envelope and event records are consumed by `nctl ops` and CLI callers.
