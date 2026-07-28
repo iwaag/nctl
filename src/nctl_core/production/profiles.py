@@ -22,7 +22,9 @@ from typing import Any
 
 import yaml
 
-from .contract import ContractError, canonical_json_digest, validate_deployment_profiles
+from nctl_core.canonical import canonical_json_digest
+
+from .contract import ContractError, validate_deployment_profiles
 
 DEPLOYMENT_PROFILES_PATH = Path("vars/deployment_profiles.yml")
 

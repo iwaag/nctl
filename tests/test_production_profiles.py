@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from nctl_core.production.contract import canonical_json_digest
+from nctl_core.canonical import canonical_json_digest
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
 
 VALID_YAML = """

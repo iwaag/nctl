@@ -29,9 +29,7 @@ ledger-side and are not part of production composition).
 
 from __future__ import annotations
 
-import hashlib
 import ipaddress
-import json
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -150,28 +148,6 @@ class ContractError(ValueError):
         self.path = path
         prefix = f"{path}: " if path else ""
         super().__init__(f"{code}: {prefix}{message}")
-
-
-def canonical_json(value: Any) -> str:
-    """Serialize a JSON value using the production Job-input byte contract."""
-
-    _require_string_mapping_keys(value)
-    try:
-        return json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ContractError("invalid_profile_json", str(exc)) from exc
-
-
-def canonical_json_digest(value: Any) -> str:
-    """Return the SHA-256 digest of canonical UTF-8 JSON bytes."""
-
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def validate_deployment_profiles(value: Any) -> dict[str, Any]:
@@ -732,17 +708,6 @@ def _matches_json_type(value: Any, value_type: str, item_type: str | None) -> bo
     if value_type == "list":
         return isinstance(value, list) and all(_matches_json_type(item, item_type or "", None) for item in value)
     return False
-
-
-def _require_string_mapping_keys(value: Any, path: str = "$") -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ContractError("invalid_profile_json", "all mapping keys must be strings", path=path)
-            _require_string_mapping_keys(item, f"{path}.{key}")
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _require_string_mapping_keys(item, f"{path}[{index}]")
 
 
 def _parse_datetime(value: str) -> datetime:

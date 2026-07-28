@@ -12,12 +12,11 @@ import hashlib
 
 import pytest
 
+from nctl_core.canonical import canonical_json, canonical_json_digest
 from nctl_core.production.contract import (
     ACTUAL_MAX_AGE_HOURS,
     ContractError,
     actual_state_problem,
-    canonical_json,
-    canonical_json_digest,
     map_placement_config,
     merge_host_variables,
     resolve_connection_variables,

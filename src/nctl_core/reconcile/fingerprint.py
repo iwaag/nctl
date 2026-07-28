@@ -12,7 +12,7 @@ actionable is left.
 from __future__ import annotations
 
 from nctl_core.drift.model import DiffRecord, Severity
-from nctl_core.production.contract import canonical_json_digest
+from nctl_core.canonical import canonical_json_digest
 
 
 def compute_drift_fingerprint(diffs: list[DiffRecord]) -> str:
