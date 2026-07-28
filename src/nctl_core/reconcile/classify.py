@@ -145,7 +145,8 @@ _MANUAL_REVIEW_CODES = frozenset(
         "compute_platform_missing",
         "compute_platform_observation_stale",
         "compute_platform_ambiguous",
-        "compute_instance_missing",
+        "compute_template_unavailable", "compute_storage_unavailable", "compute_bridge_unavailable",
+        "compute_vmid_conflict", "compute_endpoint_ip_conflict", "compute_control_node_not_actionable",
         "compute_instance_candidate_ambiguous",
         "compute_realized_instance_missing",
         "compute_identity_conflict",
@@ -192,6 +193,7 @@ _TABLE.update(
     {code: CodeClassification(Classification.OBSERVATION, "observe_node") for code in _OBSERVATION_CODES}
 )
 _TABLE.update({"compute_instance_not_linked": CodeClassification(Classification.AUTOMATIC, "link_compute_realization")})
+_TABLE.update({"compute_instance_missing": CodeClassification(Classification.AUTOMATIC, "create_compute_instance")})
 _TABLE.update(
     {code: CodeClassification(Classification.AUTOMATIC, "link_actual_node") for code in _LINK_ACTUAL_NODE_CODES}
 )

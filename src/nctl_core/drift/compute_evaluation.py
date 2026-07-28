@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Iterable
 from nctl_core.compute.contract import effective_compute_defaults, normalize_mac_address
 from nctl_core.compute.model import DesiredComputeInstance, DesiredComputePlatform
 from .compute_realization import derive_compute_realizations
+from .compute_creation import derive_compute_creations
 from .context import DriftContext
 from .model import DiffRecord, Severity, Target
 
@@ -29,6 +30,7 @@ def evaluate_compute(snapshot: SourceSnapshot, context: DriftContext) -> Iterabl
 
     yield from _source_issue_diffs(snapshot, nodes, platforms)
     realizations = derive_compute_realizations(snapshot, generated_at=context.generated_at)
+    creations = derive_compute_creations(snapshot, generated_at=context.generated_at)
     for platform in snapshot.desired.compute_platforms:
         platform_target = Target(kind="compute_platform", slug=platform.slug, name=platform.name, id=platform.id)
         instances = instances_by_platform.get(platform.id, [])
@@ -45,7 +47,7 @@ def evaluate_compute(snapshot: SourceSnapshot, context: DriftContext) -> Iterabl
             continue
         assert matched is not None
         for instance in instances:
-            yield from _evaluate_instance(realizations[instance.id], nodes, snapshot)
+            yield from _evaluate_instance(realizations[instance.id], nodes, snapshot, creations.get(instance.id))
         desired_node_ids = {instance.desired_node_id for instance in instances}
         desired_vmids = {instance.config.get("vmid") for instance in instances}
         for vm in snapshot.actual.virtual_machines:
@@ -76,7 +78,7 @@ def _source_issue_diffs(snapshot: SourceSnapshot, nodes: dict, platforms: dict) 
         yield _diff(target, issue.code, severity, issue.message, issue.evidence, {"scope": issue.scope})
 
 
-def _evaluate_instance(realization, nodes, snapshot):
+def _evaluate_instance(realization, nodes, snapshot, creation=None):
     instance = realization.instance
     platform = realization.platform
     cluster = realization.cluster
@@ -87,6 +89,9 @@ def _evaluate_instance(realization, nodes, snapshot):
         for code, message, desired, actual in realization.instance_failures:
             yield _diff(target, code, Severity.ERROR, message, desired, actual)
         yield _summary(target, platform, cluster, vm, snapshot, match_basis=realization.match_basis)
+        if creation:
+            for code, message, desired, actual in creation.failures:
+                yield _diff(target, code, Severity.ERROR, message, desired, actual)
         return
     assert vm is not None
     facts = vm.proxmox

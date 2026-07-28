@@ -601,7 +601,10 @@ platform/guest matching and field-comparison decision, while the thin `compute_i
 registration in `comparators.py` attaches it to drift. Phase 1 deliberately classifies every
 compute finding as manual review or unsupported: the evaluator may derive a candidate, but it
 derives a unique existing guest candidate. A Phase 2 `ledger_patch` action may
-record that candidate through the narrow compute-link API; it never creates or
+record that candidate through the narrow compute-link API. A fully preflighted absent LXC is
+instead planned as one `create_compute_instance` action, pinned to its control host and exact
+`pct create` grammar; its handler re-derives those values and invokes only the bounded Proxmox
+create playbook. Dry plans never invoke that handler.
 mutates a Proxmox guest.
 
 ## Adding a reconciler

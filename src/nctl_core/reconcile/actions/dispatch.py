@@ -8,7 +8,7 @@ from nctl_core.reconcile.ledger import LedgerActionError
 
 from ..model import ReconcileAction
 from ..results import ActionResult
-from . import compute_link, dnsmasq, ipam, ledger_link, observe, playbook
+from . import compute_create, compute_link, dnsmasq, ipam, ledger_link, observe, playbook
 from .contract import ActionContext, ActionHandler, ExecutedAction
 
 
@@ -16,6 +16,7 @@ _HANDLERS = {
     "observe_node": ActionHandler("observe_node", observe.execute, "bootstrap", False),
     "link_actual_node": ActionHandler("link_actual_node", ledger_link.execute, "bootstrap", True),
     "link_compute_realization": ActionHandler("link_compute_realization", compute_link.execute, "bootstrap", True),
+    "create_compute_instance": ActionHandler("create_compute_instance", compute_create.execute, "bootstrap", False),
     "reconcile_ipam": ActionHandler("reconcile_ipam", ipam.execute, "bootstrap", True),
     "service_profile": ActionHandler("service_profile", playbook.execute, "service", False),
     "dnsmasq_config": ActionHandler("dnsmasq_config", dnsmasq.execute, "service", False),

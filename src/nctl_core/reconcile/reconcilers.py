@@ -34,6 +34,7 @@ from typing import Union
 
 from nctl_core.drift.evaluation_snapshot import evaluate_all_nodes
 from nctl_core.drift.compute_realization import derive_compute_realizations
+from nctl_core.drift.compute_creation import derive_compute_creations
 from nctl_core.drift.model import DiffRecord, Target
 from nctl_core.sources.snapshot import SourceSnapshot
 
@@ -49,6 +50,9 @@ LINK_ACTUAL_NODE = register_reconciler(
 )
 LINK_COMPUTE_REALIZATION = register_reconciler(
     Reconciler(id="link_compute_realization", action_kind="ledger_patch", mutates=True, requires_observation=False)
+)
+CREATE_COMPUTE_INSTANCE = register_reconciler(
+    Reconciler(id="create_compute_instance", action_kind="compute_create", mutates=True, requires_observation=True)
 )
 RECONCILE_IPAM = register_reconciler(
     Reconciler(id="reconcile_ipam", action_kind="job", mutates=True, requires_observation=False)
@@ -150,6 +154,22 @@ def plan_link_compute_realization(target: Target, snapshot: SourceSnapshot, *, g
         parameters=parameters,
         mutates=LINK_COMPUTE_REALIZATION.mutates,
         requires_observation=LINK_COMPUTE_REALIZATION.requires_observation,
+    )
+
+
+def plan_create_compute_instance(target: Target, snapshot: SourceSnapshot, *, generated_at: str) -> Union[ReconcileAction, Fallback]:
+    creation = derive_compute_creations(snapshot, generated_at=generated_at).get(target.id or "")
+    if creation is None:
+        return Fallback(Classification.MANUAL_REVIEW, "compute instance is not an absent, actionable creation candidate")
+    if creation.failures:
+        return Fallback(Classification.MANUAL_REVIEW, "compute creation preflight failed", {"failures": [code for code, *_ in creation.failures]})
+    return ReconcileAction(
+        id=f"create_compute_instance:{creation.node.slug}", reconciler_id=CREATE_COMPUTE_INSTANCE.id,
+        action_kind=CREATE_COMPUTE_INSTANCE.action_kind, targets=[target], claimed_diff_codes=["compute_instance_missing"],
+        reason="One absent LXC instance passed the pinned create preflight.",
+        evidence={"platform_slug": creation.platform.slug, "cluster_id": creation.cluster.id, "control_node_slug": creation.control_node.slug, "generated_at": generated_at},
+        mutates=CREATE_COMPUTE_INSTANCE.mutates, requires_observation=CREATE_COMPUTE_INSTANCE.requires_observation,
+        parameters=creation.parameters,
     )
 
 
