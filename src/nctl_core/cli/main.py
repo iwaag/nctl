@@ -15,7 +15,7 @@ import typer
 from pydantic import ValidationError
 
 from nctl_core.actual_render import build_actual, render_actual_text
-from nctl_core.braindump import (
+from nctl_core.braindump_render import (
     build_braindump_create,
     build_braindump_delete,
     build_braindump_list,

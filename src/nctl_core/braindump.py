@@ -20,9 +20,16 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from nctl_core.config import Config, ConfigError
-from nctl_core.nautobot import NautobotClient, NautobotError
-from nctl_core.output import Envelope, EnvelopeError
+from nctl_core.braindump_client import (
+    create_braindump as post_braindump,
+    create_review,
+    delete_braindump as delete_braindump_request,
+    delete_review as delete_review_request,
+    update_braindump as patch_braindump,
+    update_review,
+)
+from nctl_core.braindump_errors import *  # error vocabulary belongs to braindump_errors
+from nctl_core.nautobot import NautobotClient
 from nctl_core.sources.braindump import (
     Attention,
     Authorship,
@@ -31,173 +38,7 @@ from nctl_core.sources.braindump import (
     fetch_braindump_show,
 )
 
-BRAINDUMP_API_BASE = "/api/plugins/intent-catalog/braindumps"
-ALIGNMENT_REVIEW_API_BASE = "/api/plugins/intent-catalog/alignment-reviews"
-
 AUTHORSHIP_VALUES: tuple[str, ...] = ("user_direct", "agent_transcribed")
-
-LIST_SCHEMA = "nctl.braindump.list.v1"
-SHOW_SCHEMA = "nctl.braindump.show.v1"
-CREATE_SCHEMA = "nctl.braindump.create.v1"
-UPDATE_SCHEMA = "nctl.braindump.update.v1"
-DELETE_SCHEMA = "nctl.braindump.delete.v1"
-REVIEW_SCHEMA = "nctl.braindump.review.v1"
-REVIEW_DELETE_SCHEMA = "nctl.braindump.review_delete.v1"
-
-
-class BraindumpError(NautobotError):
-    def __init__(self, code: str, message: str, detail: dict[str, Any] | None = None) -> None:
-        self.code = code
-        self.detail = detail or {}
-        super().__init__(message)
-
-
-class InvalidBraindumpIdError(BraindumpError):
-    def __init__(self, value: str) -> None:
-        super().__init__(
-            "invalid_braindump_id", f"not a valid Braindump UUID: {value!r}", {"value": value}
-        )
-
-
-class InvalidAuthorshipError(BraindumpError):
-    def __init__(self, value: str) -> None:
-        super().__init__(
-            "invalid_authorship",
-            f"invalid authorship {value!r}; must be one of {', '.join(AUTHORSHIP_VALUES)}",
-            {"value": value, "allowed": list(AUTHORSHIP_VALUES)},
-        )
-
-
-class InvalidTextError(BraindumpError):
-    def __init__(self, field_name: str) -> None:
-        super().__init__(
-            "invalid_text",
-            f"{field_name} must not be empty or whitespace-only",
-            {"field": field_name},
-        )
-
-
-class InputConflictError(BraindumpError):
-    def __init__(self, field_name: str, *, both: bool) -> None:
-        reason = "both provided" if both else "neither provided"
-        super().__init__(
-            "input_conflict",
-            f"exactly one of literal {field_name} or --file is required ({reason})",
-            {"field": field_name},
-        )
-
-
-class NoUpdateFieldsError(BraindumpError):
-    def __init__(self, braindump_id: str) -> None:
-        super().__init__(
-            "no_update_fields",
-            "update requires at least one changed field (title, authorship, or body)",
-            {"braindump_id": braindump_id},
-        )
-
-
-class InputFileError(BraindumpError):
-    def __init__(self, path: Path, reason: str) -> None:
-        super().__init__(
-            "input_file_error", f"cannot read {path}: {reason}", {"path": str(path)}
-        )
-
-
-class InputFileInvalidUtf8Error(BraindumpError):
-    def __init__(self, path: Path) -> None:
-        super().__init__(
-            "input_file_invalid_utf8", f"{path} is not valid UTF-8", {"path": str(path)}
-        )
-
-
-class BraindumpNotFoundError(BraindumpError):
-    def __init__(self, braindump_id: str) -> None:
-        super().__init__(
-            "braindump_not_found",
-            f"no Braindump with id {braindump_id!r}",
-            {"braindump_id": braindump_id},
-        )
-
-
-class BraindumpValidationFailedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__(
-            "braindump_validation_failed",
-            f"Braindump write rejected as invalid: HTTP {status_code}",
-            {"status_code": status_code, "detail": detail_text[:200]},
-        )
-
-
-class BraindumpWriteRejectedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__(
-            "braindump_write_rejected",
-            f"Braindump write rejected: HTTP {status_code}",
-            {"status_code": status_code, "detail": detail_text[:200]},
-        )
-
-
-class BraindumpConfirmationMismatchError(BraindumpError):
-    def __init__(self, braindump_id: str) -> None:
-        super().__init__(
-            "braindump_confirmation_mismatch",
-            f"GraphQL refetch of Braindump {braindump_id!r} did not match the requested write",
-            {"braindump_id": braindump_id},
-        )
-
-
-class ReviewValidationFailedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__(
-            "review_validation_failed",
-            f"Alignment review write rejected as invalid: HTTP {status_code}",
-            {"status_code": status_code, "detail": detail_text[:200]},
-        )
-
-
-class ReviewWriteRejectedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__(
-            "review_write_rejected",
-            f"Alignment review write rejected: HTTP {status_code}",
-            {"status_code": status_code, "detail": detail_text[:200]},
-        )
-
-
-class ReviewConfirmationMismatchError(BraindumpError):
-    def __init__(self, braindump_id: str) -> None:
-        super().__init__(
-            "review_confirmation_mismatch",
-            f"GraphQL refetch of Braindump {braindump_id!r} did not show the requested review",
-            {"braindump_id": braindump_id},
-        )
-
-
-class BraindumpDeleteRejectedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__(
-            "braindump_delete_rejected",
-            f"Braindump delete rejected: HTTP {status_code}",
-            {"status_code": status_code, "detail": detail_text[:200]},
-        )
-
-
-class ReviewDeleteRejectedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__(
-            "review_delete_rejected",
-            f"Alignment review delete rejected: HTTP {status_code}",
-            {"status_code": status_code, "detail": detail_text[:200]},
-        )
-
-
-class DeleteConfirmationMismatchError(BraindumpError):
-    def __init__(self, target: str, target_id: str) -> None:
-        super().__init__(
-            "delete_confirmation_mismatch",
-            f"GraphQL refetch still shows {target} {target_id!r} after delete",
-            {"target": target, "target_id": target_id},
-        )
 
 
 # -- typed output record shapes (plan.md Decision 5) ------------------------------------------
@@ -302,7 +143,7 @@ def resolve_text_input(*, field_name: str, literal: str | None, file: Path | Non
 
 def validate_authorship(value: str) -> Authorship:
     if value not in AUTHORSHIP_VALUES:
-        raise InvalidAuthorshipError(value)
+        raise InvalidAuthorshipError(value, AUTHORSHIP_VALUES)
     return value  # type: ignore[return-value]
 
 
@@ -344,13 +185,7 @@ def create_braindump(
     body = _require_nonblank("body", body)
     authorship = validate_authorship(authorship)
 
-    response = client.rest_post(
-        f"{BRAINDUMP_API_BASE}/", {"title": title, "body": body, "authorship": authorship}
-    )
-    if not response.is_success:
-        raise _write_error(response.status_code, response.text)
-
-    new_id = response.json()["id"]
+    new_id = post_braindump(client, {"title": title, "body": body, "authorship": authorship})
     confirmed = fetch_braindump_show(client, new_id)
     if (
         confirmed is None
@@ -390,9 +225,7 @@ def update_braindump(
     if all(getattr(current, field) == value for field, value in payload.items()):
         return _to_record(current), False
 
-    response = client.rest_patch(f"{BRAINDUMP_API_BASE}/{canonical_id}/", payload)
-    if not response.is_success:
-        raise _write_error(response.status_code, response.text)
+    patch_braindump(client, canonical_id, payload)
 
     confirmed = fetch_braindump_show(client, canonical_id)
     if confirmed is None or any(
@@ -401,18 +234,6 @@ def update_braindump(
         raise BraindumpConfirmationMismatchError(canonical_id)
 
     return _to_record(confirmed), True
-
-
-def _write_error(status_code: int, detail_text: str) -> BraindumpError:
-    if status_code == 400:
-        return BraindumpValidationFailedError(status_code, detail_text)
-    return BraindumpWriteRejectedError(status_code, detail_text)
-
-
-def _review_write_error(status_code: int, detail_text: str) -> BraindumpError:
-    if status_code == 400:
-        return ReviewValidationFailedError(status_code, detail_text)
-    return ReviewWriteRejectedError(status_code, detail_text)
 
 
 def create_or_replace_review(
@@ -435,29 +256,17 @@ def create_or_replace_review(
     existing_review = current.alignment_review
     if existing_review is not None:
         action = "replaced"
-        response = client.rest_patch(
-            f"{ALIGNMENT_REVIEW_API_BASE}/{existing_review.id}/", {"summary": summary}
-        )
-        if not response.is_success:
-            raise _review_write_error(response.status_code, response.text)
+        update_review(client, existing_review.id, summary)
     else:
         action = "created"
-        response = client.rest_post(
-            f"{ALIGNMENT_REVIEW_API_BASE}/", {"braindump": canonical_id, "summary": summary}
-        )
+        response = create_review(client, canonical_id, summary)
         if response.status_code == 400:
             raced = fetch_braindump_show(client, canonical_id)
             raced_review = raced.alignment_review if raced is not None else None
             if raced_review is None:
                 raise ReviewValidationFailedError(response.status_code, response.text)
             action = "replaced"
-            response = client.rest_patch(
-                f"{ALIGNMENT_REVIEW_API_BASE}/{raced_review.id}/", {"summary": summary}
-            )
-            if not response.is_success:
-                raise _review_write_error(response.status_code, response.text)
-        elif not response.is_success:
-            raise _review_write_error(response.status_code, response.text)
+            update_review(client, raced_review.id, summary)
 
     confirmed = fetch_braindump_show(client, canonical_id)
     if (
@@ -480,9 +289,7 @@ def delete_braindump(client: NautobotClient, braindump_id: str) -> tuple[str, bo
     title = current.title
     review_existed = current.alignment_review is not None
 
-    response = client.rest_delete(f"{BRAINDUMP_API_BASE}/{canonical_id}/")
-    if not response.is_success:
-        raise BraindumpDeleteRejectedError(response.status_code, response.text)
+    delete_braindump_request(client, canonical_id)
 
     confirmed = fetch_braindump_show(client, canonical_id)
     if confirmed is not None:
@@ -505,9 +312,7 @@ def delete_review(client: NautobotClient, braindump_id: str) -> tuple[bool, str 
     if review is None:
         return False, None
 
-    response = client.rest_delete(f"{ALIGNMENT_REVIEW_API_BASE}/{review.id}/")
-    if not response.is_success:
-        raise ReviewDeleteRejectedError(response.status_code, response.text)
+    delete_review_request(client, review.id)
 
     confirmed = fetch_braindump_show(client, canonical_id)
     if confirmed is None or confirmed.alignment_review is not None:
