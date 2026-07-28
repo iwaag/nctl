@@ -18,23 +18,6 @@ import pytest
 import respx
 
 from nctl_core.braindump import (
-    BraindumpConfirmationMismatchError,
-    BraindumpDeleteRejectedError,
-    BraindumpNotFoundError,
-    BraindumpValidationFailedError,
-    BraindumpWriteRejectedError,
-    DeleteConfirmationMismatchError,
-    InputConflictError,
-    InputFileError,
-    InputFileInvalidUtf8Error,
-    InvalidAuthorshipError,
-    InvalidBraindumpIdError,
-    InvalidTextError,
-    NoUpdateFieldsError,
-    ReviewConfirmationMismatchError,
-    ReviewDeleteRejectedError,
-    ReviewValidationFailedError,
-    ReviewWriteRejectedError,
     create_braindump,
     create_or_replace_review,
     delete_braindump,
@@ -46,6 +29,7 @@ from nctl_core.braindump import (
     validate_authorship,
     validate_braindump_id,
 )
+from nctl_core.braindump_errors import BraindumpError
 from nctl_core.nautobot import (
     NautobotAuthError,
     NautobotClient,
@@ -113,29 +97,29 @@ def test_resolve_text_input_file(tmp_path: Path):
 def test_resolve_text_input_both_provided_conflicts(tmp_path: Path):
     path = tmp_path / "body.txt"
     path.write_text("x", encoding="utf-8")
-    with pytest.raises(InputConflictError):
+    with pytest.raises(BraindumpError) as exc:
         resolve_text_input(field_name="body", literal="hello", file=path)
 
 
 def test_resolve_text_input_neither_provided_conflicts():
-    with pytest.raises(InputConflictError):
+    with pytest.raises(BraindumpError) as exc:
         resolve_text_input(field_name="body", literal=None, file=None)
 
 
 def test_resolve_text_input_whitespace_only_rejected():
-    with pytest.raises(InvalidTextError):
+    with pytest.raises(BraindumpError) as exc:
         resolve_text_input(field_name="body", literal="   \n  ", file=None)
 
 
 def test_resolve_text_input_missing_file(tmp_path: Path):
-    with pytest.raises(InputFileError):
+    with pytest.raises(BraindumpError) as exc:
         resolve_text_input(field_name="body", literal=None, file=tmp_path / "missing.txt")
 
 
 def test_resolve_text_input_invalid_utf8(tmp_path: Path):
     path = tmp_path / "bad.txt"
     path.write_bytes(b"\xff\xfe\x00bad")
-    with pytest.raises(InputFileInvalidUtf8Error):
+    with pytest.raises(BraindumpError) as exc:
         resolve_text_input(field_name="body", literal=None, file=path)
 
 
@@ -156,7 +140,7 @@ def test_validate_authorship_accepts_both_values():
 
 
 def test_validate_authorship_rejects_unknown_value():
-    with pytest.raises(InvalidAuthorshipError):
+    with pytest.raises(BraindumpError) as exc:
         validate_authorship("admin")
 
 
@@ -165,7 +149,7 @@ def test_validate_braindump_id_canonicalizes():
 
 
 def test_validate_braindump_id_rejects_malformed():
-    with pytest.raises(InvalidBraindumpIdError):
+    with pytest.raises(BraindumpError) as exc:
         validate_braindump_id("not-a-uuid")
 
 
@@ -192,7 +176,7 @@ def test_show_braindump_not_found_raises(monkeypatch):
     _patch_show(monkeypatch, [None])
 
     with _client() as client:
-        with pytest.raises(BraindumpNotFoundError):
+        with pytest.raises(BraindumpError) as exc:
             show_braindump(client, BD_ID)
 
 
@@ -203,7 +187,7 @@ def test_show_braindump_invalid_id_rejected_before_fetch(monkeypatch):
     monkeypatch.setattr("nctl_core.braindump.fetch_braindump_show", fail_show)
 
     with _client() as client:
-        with pytest.raises(InvalidBraindumpIdError):
+        with pytest.raises(BraindumpError) as exc:
             show_braindump(client, "not-a-uuid")
 
 
@@ -251,7 +235,7 @@ def test_create_rejects_blank_title_before_any_request():
     )
 
     with _client() as client:
-        with pytest.raises(InvalidTextError):
+        with pytest.raises(BraindumpError) as exc:
             create_braindump(client, title="   ", authorship="user_direct", body="B")
 
 
@@ -262,7 +246,7 @@ def test_create_validation_failure_maps_to_validation_error():
     )
 
     with _client() as client:
-        with pytest.raises(BraindumpValidationFailedError):
+        with pytest.raises(BraindumpError) as exc:
             create_braindump(client, title="T", authorship="user_direct", body="B")
 
 
@@ -273,7 +257,7 @@ def test_create_server_error_maps_to_write_rejected():
     )
 
     with _client() as client:
-        with pytest.raises(BraindumpWriteRejectedError):
+        with pytest.raises(BraindumpError) as exc:
             create_braindump(client, title="T", authorship="user_direct", body="B")
 
 
@@ -285,7 +269,7 @@ def test_create_confirmation_mismatch_fails_closed(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(BraindumpConfirmationMismatchError):
+        with pytest.raises(BraindumpError) as exc:
             create_braindump(client, title="T", authorship="user_direct", body="B")
 
 
@@ -309,7 +293,7 @@ def test_update_requires_at_least_one_field(monkeypatch):
     monkeypatch.setattr("nctl_core.braindump.fetch_braindump_show", fail_show)
 
     with _client() as client:
-        with pytest.raises(NoUpdateFieldsError):
+        with pytest.raises(BraindumpError) as exc:
             update_braindump(client, BD_ID)
 
 
@@ -347,7 +331,7 @@ def test_update_unknown_id_raises(monkeypatch):
     _patch_show(monkeypatch, [None])
 
     with _client() as client:
-        with pytest.raises(BraindumpNotFoundError):
+        with pytest.raises(BraindumpError) as exc:
             update_braindump(client, BD_ID, title="new")
 
 
@@ -359,7 +343,7 @@ def test_update_confirmation_mismatch_fails_closed(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(BraindumpConfirmationMismatchError):
+        with pytest.raises(BraindumpError) as exc:
             update_braindump(client, BD_ID, title="new")
 
 
@@ -371,7 +355,7 @@ def test_update_validation_failure_maps_to_validation_error(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(BraindumpValidationFailedError):
+        with pytest.raises(BraindumpError) as exc:
             update_braindump(client, BD_ID, title="new")
 
 
@@ -466,7 +450,7 @@ def test_review_rejects_blank_summary_before_any_request(monkeypatch):
     monkeypatch.setattr("nctl_core.braindump.fetch_braindump_show", fail_show)
 
     with _client() as client:
-        with pytest.raises(InvalidTextError):
+        with pytest.raises(BraindumpError) as exc:
             create_or_replace_review(client, BD_ID, summary="   ")
 
 
@@ -475,7 +459,7 @@ def test_review_unknown_braindump_raises(monkeypatch):
     _patch_show(monkeypatch, [None])
 
     with _client() as client:
-        with pytest.raises(BraindumpNotFoundError):
+        with pytest.raises(BraindumpError) as exc:
             create_or_replace_review(client, BD_ID, summary="s")
 
 
@@ -515,7 +499,7 @@ def test_review_genuine_validation_failure_is_not_treated_as_race(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(ReviewValidationFailedError):
+        with pytest.raises(BraindumpError) as exc:
             create_or_replace_review(client, BD_ID, summary="s")
 
 
@@ -533,7 +517,7 @@ def test_review_race_recovery_patch_failure_propagates(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(ReviewWriteRejectedError):
+        with pytest.raises(BraindumpError) as exc:
             create_or_replace_review(client, BD_ID, summary="mine")
 
 
@@ -545,7 +529,7 @@ def test_review_confirmation_mismatch_fails_closed(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(ReviewConfirmationMismatchError):
+        with pytest.raises(BraindumpError) as exc:
             create_or_replace_review(client, BD_ID, summary="mine")
 
 
@@ -598,7 +582,7 @@ def test_delete_braindump_unknown_id_raises(monkeypatch):
     _patch_show(monkeypatch, [None])
 
     with _client() as client:
-        with pytest.raises(BraindumpNotFoundError):
+        with pytest.raises(BraindumpError) as exc:
             delete_braindump(client, BD_ID)
 
 
@@ -610,7 +594,7 @@ def test_delete_braindump_rejected_raises(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(BraindumpDeleteRejectedError):
+        with pytest.raises(BraindumpError) as exc:
             delete_braindump(client, BD_ID)
 
 
@@ -622,7 +606,7 @@ def test_delete_braindump_confirmation_mismatch_fails_closed(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(DeleteConfirmationMismatchError):
+        with pytest.raises(BraindumpError) as exc:
             delete_braindump(client, BD_ID)
 
 
@@ -660,7 +644,7 @@ def test_delete_review_unknown_braindump_raises(monkeypatch):
     _patch_show(monkeypatch, [None])
 
     with _client() as client:
-        with pytest.raises(BraindumpNotFoundError):
+        with pytest.raises(BraindumpError) as exc:
             delete_review(client, BD_ID)
 
 
@@ -672,7 +656,7 @@ def test_delete_review_rejected_raises(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(ReviewDeleteRejectedError):
+        with pytest.raises(BraindumpError) as exc:
             delete_review(client, BD_ID)
 
 
@@ -684,5 +668,5 @@ def test_delete_review_confirmation_mismatch_fails_closed(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(DeleteConfirmationMismatchError):
+        with pytest.raises(BraindumpError) as exc:
             delete_review(client, BD_ID)

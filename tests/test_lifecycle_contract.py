@@ -55,7 +55,7 @@ def test_lifecycle_states_are_exactly_the_five_vocabulary_values():
 
 
 def test_invalid_lifecycle_is_rejected_before_any_fetch_or_patch(monkeypatch):
-    from nctl_core.lifecycle import InvalidLifecycleError, set_node_lifecycle
+    from nctl_core.lifecycle import LifecycleError, set_node_lifecycle
 
     def fail_fetch(client):
         raise AssertionError("must not fetch for an invalid requested state")
@@ -63,20 +63,22 @@ def test_invalid_lifecycle_is_rejected_before_any_fetch_or_patch(monkeypatch):
     monkeypatch.setattr("nctl_core.lifecycle.fetch_desired_snapshot", fail_fetch)
 
     with _client() as client:
-        with pytest.raises(InvalidLifecycleError):
+        with pytest.raises(LifecycleError) as exc:
             set_node_lifecycle(client, NODE_SLUG, "bogus")
+    assert exc.value.code == "invalid_lifecycle"
 
 
 @respx.mock
 def test_unknown_node_slug_is_rejected_with_no_patch(monkeypatch):
-    from nctl_core.lifecycle import UnknownNodeError, set_node_lifecycle
+    from nctl_core.lifecycle import LifecycleError, set_node_lifecycle
 
     _patch_fetch(monkeypatch, [DesiredSnapshot(nodes=[])])
     patch_route = respx.patch(url__regex=r".*/nodes/.*").mock(return_value=httpx.Response(200, json={}))
 
     with _client() as client:
-        with pytest.raises(UnknownNodeError):
+        with pytest.raises(LifecycleError) as exc:
             set_node_lifecycle(client, "no-such-node", "active")
+    assert exc.value.code == "unknown_node"
 
     assert patch_route.call_count == 0
 
@@ -124,7 +126,7 @@ def test_change_patches_exactly_the_lifecycle_field_at_the_expected_path(monkeyp
 
 @respx.mock
 def test_rejected_patch_raises_and_does_not_claim_success(monkeypatch):
-    from nctl_core.lifecycle import LifecycleUpdateRejectedError, set_node_lifecycle
+    from nctl_core.lifecycle import LifecycleError, set_node_lifecycle
 
     _patch_fetch(monkeypatch, [_snapshot("planned")])
     respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
@@ -132,13 +134,14 @@ def test_rejected_patch_raises_and_does_not_claim_success(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(LifecycleUpdateRejectedError):
+        with pytest.raises(LifecycleError) as exc:
             set_node_lifecycle(client, NODE_SLUG, "active")
+    assert exc.value.code == "lifecycle_update_rejected"
 
 
 @respx.mock
 def test_confirmation_mismatch_after_patch_fails_closed(monkeypatch):
-    from nctl_core.lifecycle import LifecycleConfirmationMismatchError, set_node_lifecycle
+    from nctl_core.lifecycle import LifecycleError, set_node_lifecycle
 
     # Refetch still shows "planned" despite a 200 PATCH response -- must not report changed=True.
     _patch_fetch(monkeypatch, [_snapshot("planned"), _snapshot("planned")])
@@ -147,5 +150,6 @@ def test_confirmation_mismatch_after_patch_fails_closed(monkeypatch):
     )
 
     with _client() as client:
-        with pytest.raises(LifecycleConfirmationMismatchError):
+        with pytest.raises(LifecycleError) as exc:
             set_node_lifecycle(client, NODE_SLUG, "active")
+    assert exc.value.code == "lifecycle_confirmation_mismatch"

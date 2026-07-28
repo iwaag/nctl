@@ -28,7 +28,13 @@ from nctl_core.braindump_client import (
     update_braindump as patch_braindump,
     update_review,
 )
-from nctl_core.braindump_errors import *  # error vocabulary belongs to braindump_errors
+from nctl_core.braindump_errors import (
+    braindump_confirmation_mismatch_error, braindump_not_found_error,
+    delete_confirmation_mismatch_error, input_conflict_error, input_file_error,
+    input_file_invalid_utf8_error, invalid_authorship_error, invalid_braindump_id_error,
+    invalid_text_error, no_update_fields_error, review_confirmation_mismatch_error,
+    review_validation_failed_error,
+)
 from nctl_core.nautobot import NautobotClient
 from nctl_core.sources.braindump import (
     Attention,
@@ -122,28 +128,28 @@ def resolve_text_input(*, field_name: str, literal: str | None, file: Path | Non
     otherwise transformed; only `str.strip()` is used to *decide* emptiness (plan.md Decision 2).
     """
     if literal is not None and file is not None:
-        raise InputConflictError(field_name, both=True)
+        raise input_conflict_error(field_name, both=True)
     if literal is None and file is None:
-        raise InputConflictError(field_name, both=False)
+        raise input_conflict_error(field_name, both=False)
 
     if file is not None:
         try:
             text = file.read_text(encoding="utf-8", errors="strict")
         except UnicodeDecodeError:
-            raise InputFileInvalidUtf8Error(file) from None
+            raise input_file_invalid_utf8_error(file) from None
         except OSError as exc:
-            raise InputFileError(file, str(exc)) from exc
+            raise input_file_error(file, str(exc)) from exc
     else:
         text = literal  # type: ignore[assignment]
 
     if not text.strip():
-        raise InvalidTextError(field_name)
+        raise invalid_text_error(field_name)
     return text
 
 
 def validate_authorship(value: str) -> Authorship:
     if value not in AUTHORSHIP_VALUES:
-        raise InvalidAuthorshipError(value, AUTHORSHIP_VALUES)
+        raise invalid_authorship_error(value, AUTHORSHIP_VALUES)
     return value  # type: ignore[return-value]
 
 
@@ -151,12 +157,12 @@ def validate_braindump_id(value: str) -> str:
     try:
         return str(UUID(value))
     except (ValueError, AttributeError, TypeError) as exc:
-        raise InvalidBraindumpIdError(value) from exc
+        raise invalid_braindump_id_error(value) from exc
 
 
 def _require_nonblank(field_name: str, value: str) -> str:
     if not value.strip():
-        raise InvalidTextError(field_name)
+        raise invalid_text_error(field_name)
     return value
 
 
@@ -171,7 +177,7 @@ def show_braindump(client: NautobotClient, braindump_id: str) -> BrainDumpRecord
     canonical_id = validate_braindump_id(braindump_id)
     record = fetch_braindump_show(client, canonical_id)
     if record is None:
-        raise BraindumpNotFoundError(canonical_id)
+        raise braindump_not_found_error(canonical_id)
     return _to_record(record)
 
 
@@ -193,7 +199,7 @@ def create_braindump(
         or confirmed.body != body
         or confirmed.authorship != authorship
     ):
-        raise BraindumpConfirmationMismatchError(new_id)
+        raise braindump_confirmation_mismatch_error(new_id)
 
     return _to_record(confirmed), True
 
@@ -208,7 +214,7 @@ def update_braindump(
 ) -> tuple[BrainDumpRecord, bool]:
     canonical_id = validate_braindump_id(braindump_id)
     if title is None and authorship is None and body is None:
-        raise NoUpdateFieldsError(canonical_id)
+        raise no_update_fields_error(canonical_id)
 
     payload: dict[str, Any] = {}
     if title is not None:
@@ -220,7 +226,7 @@ def update_braindump(
 
     current = fetch_braindump_show(client, canonical_id)
     if current is None:
-        raise BraindumpNotFoundError(canonical_id)
+        raise braindump_not_found_error(canonical_id)
 
     if all(getattr(current, field) == value for field, value in payload.items()):
         return _to_record(current), False
@@ -231,7 +237,7 @@ def update_braindump(
     if confirmed is None or any(
         getattr(confirmed, field) != value for field, value in payload.items()
     ):
-        raise BraindumpConfirmationMismatchError(canonical_id)
+        raise braindump_confirmation_mismatch_error(canonical_id)
 
     return _to_record(confirmed), True
 
@@ -251,7 +257,7 @@ def create_or_replace_review(
 
     current = fetch_braindump_show(client, canonical_id)
     if current is None:
-        raise BraindumpNotFoundError(canonical_id)
+        raise braindump_not_found_error(canonical_id)
 
     existing_review = current.alignment_review
     if existing_review is not None:
@@ -264,7 +270,7 @@ def create_or_replace_review(
             raced = fetch_braindump_show(client, canonical_id)
             raced_review = raced.alignment_review if raced is not None else None
             if raced_review is None:
-                raise ReviewValidationFailedError(response.status_code, response.text)
+                raise review_validation_failed_error(response.status_code, response.text)
             action = "replaced"
             update_review(client, raced_review.id, summary)
 
@@ -274,7 +280,7 @@ def create_or_replace_review(
         or confirmed.alignment_review is None
         or confirmed.alignment_review.summary != summary
     ):
-        raise ReviewConfirmationMismatchError(canonical_id)
+        raise review_confirmation_mismatch_error(canonical_id)
 
     return _to_record(confirmed), action
 
@@ -284,7 +290,7 @@ def delete_braindump(client: NautobotClient, braindump_id: str) -> tuple[str, bo
     canonical_id = validate_braindump_id(braindump_id)
     current = fetch_braindump_show(client, canonical_id)
     if current is None:
-        raise BraindumpNotFoundError(canonical_id)
+        raise braindump_not_found_error(canonical_id)
 
     title = current.title
     review_existed = current.alignment_review is not None
@@ -293,7 +299,7 @@ def delete_braindump(client: NautobotClient, braindump_id: str) -> tuple[str, bo
 
     confirmed = fetch_braindump_show(client, canonical_id)
     if confirmed is not None:
-        raise DeleteConfirmationMismatchError("braindump", canonical_id)
+        raise delete_confirmation_mismatch_error("braindump", canonical_id)
 
     return title, True, review_existed
 
@@ -306,7 +312,7 @@ def delete_review(client: NautobotClient, braindump_id: str) -> tuple[bool, str 
     canonical_id = validate_braindump_id(braindump_id)
     current = fetch_braindump_show(client, canonical_id)
     if current is None:
-        raise BraindumpNotFoundError(canonical_id)
+        raise braindump_not_found_error(canonical_id)
 
     review = current.alignment_review
     if review is None:
@@ -316,7 +322,7 @@ def delete_review(client: NautobotClient, braindump_id: str) -> tuple[bool, str 
 
     confirmed = fetch_braindump_show(client, canonical_id)
     if confirmed is None or confirmed.alignment_review is not None:
-        raise DeleteConfirmationMismatchError("review", review.id)
+        raise delete_confirmation_mismatch_error("review", review.id)
 
     return True, review.id
 

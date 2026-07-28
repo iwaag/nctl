@@ -15,99 +15,87 @@ class BraindumpError(NautobotError):
         super().__init__(message)
 
 
-class InvalidBraindumpIdError(BraindumpError):
-    def __init__(self, value: str) -> None:
-        super().__init__("invalid_braindump_id", f"not a valid Braindump UUID: {value!r}", {"value": value})
+def error(code: str, message: str, detail: dict[str, Any] | None = None) -> BraindumpError:
+    """Build the sole Braindump error type while retaining its public code payload."""
+    return BraindumpError(code, message, detail)
 
 
-class InvalidAuthorshipError(BraindumpError):
-    def __init__(self, value: str, allowed: tuple[str, ...]) -> None:
-        super().__init__("invalid_authorship", f"invalid authorship {value!r}; must be one of {', '.join(allowed)}", {"value": value, "allowed": list(allowed)})
+def invalid_braindump_id_error(value: str) -> BraindumpError:
+    return error("invalid_braindump_id", f"not a valid Braindump UUID: {value!r}", {"value": value})
 
 
-class InvalidTextError(BraindumpError):
-    def __init__(self, field_name: str) -> None:
-        super().__init__("invalid_text", f"{field_name} must not be empty or whitespace-only", {"field": field_name})
+def invalid_authorship_error(value: str, allowed: tuple[str, ...]) -> BraindumpError:
+    return error("invalid_authorship", f"invalid authorship {value!r}; must be one of {', '.join(allowed)}", {"value": value, "allowed": list(allowed)})
 
 
-class InputConflictError(BraindumpError):
-    def __init__(self, field_name: str, *, both: bool) -> None:
-        reason = "both provided" if both else "neither provided"
-        super().__init__("input_conflict", f"exactly one of literal {field_name} or --file is required ({reason})", {"field": field_name})
+def invalid_text_error(field_name: str) -> BraindumpError:
+    return error("invalid_text", f"{field_name} must not be empty or whitespace-only", {"field": field_name})
 
 
-class NoUpdateFieldsError(BraindumpError):
-    def __init__(self, braindump_id: str) -> None:
-        super().__init__("no_update_fields", "update requires at least one changed field (title, authorship, or body)", {"braindump_id": braindump_id})
+def input_conflict_error(field_name: str, *, both: bool) -> BraindumpError:
+    reason = "both provided" if both else "neither provided"
+    return error("input_conflict", f"exactly one of literal {field_name} or --file is required ({reason})", {"field": field_name})
 
 
-class InputFileError(BraindumpError):
-    def __init__(self, path: Path, reason: str) -> None:
-        super().__init__("input_file_error", f"cannot read {path}: {reason}", {"path": str(path)})
+def no_update_fields_error(braindump_id: str) -> BraindumpError:
+    return error("no_update_fields", "update requires at least one changed field (title, authorship, or body)", {"braindump_id": braindump_id})
 
 
-class InputFileInvalidUtf8Error(BraindumpError):
-    def __init__(self, path: Path) -> None:
-        super().__init__("input_file_invalid_utf8", f"{path} is not valid UTF-8", {"path": str(path)})
+def input_file_error(path: Path, reason: str) -> BraindumpError:
+    return error("input_file_error", f"cannot read {path}: {reason}", {"path": str(path)})
 
 
-class BraindumpNotFoundError(BraindumpError):
-    def __init__(self, braindump_id: str) -> None:
-        super().__init__("braindump_not_found", f"no Braindump with id {braindump_id!r}", {"braindump_id": braindump_id})
+def input_file_invalid_utf8_error(path: Path) -> BraindumpError:
+    return error("input_file_invalid_utf8", f"{path} is not valid UTF-8", {"path": str(path)})
 
 
-class BraindumpValidationFailedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__("braindump_validation_failed", f"Braindump write rejected as invalid: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+def braindump_not_found_error(braindump_id: str) -> BraindumpError:
+    return error("braindump_not_found", f"no Braindump with id {braindump_id!r}", {"braindump_id": braindump_id})
 
 
-class BraindumpWriteRejectedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__("braindump_write_rejected", f"Braindump write rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+def braindump_validation_failed_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("braindump_validation_failed", f"Braindump write rejected as invalid: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
 
 
-class BraindumpConfirmationMismatchError(BraindumpError):
-    def __init__(self, braindump_id: str) -> None:
-        super().__init__("braindump_confirmation_mismatch", f"GraphQL refetch of Braindump {braindump_id!r} did not match the requested write", {"braindump_id": braindump_id})
+def braindump_write_rejected_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("braindump_write_rejected", f"Braindump write rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
 
 
-class ReviewValidationFailedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__("review_validation_failed", f"Alignment review write rejected as invalid: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+def braindump_confirmation_mismatch_error(braindump_id: str) -> BraindumpError:
+    return error("braindump_confirmation_mismatch", f"GraphQL refetch of Braindump {braindump_id!r} did not match the requested write", {"braindump_id": braindump_id})
 
 
-class ReviewWriteRejectedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__("review_write_rejected", f"Alignment review write rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+def review_validation_failed_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("review_validation_failed", f"Alignment review write rejected as invalid: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
 
 
-class ReviewConfirmationMismatchError(BraindumpError):
-    def __init__(self, braindump_id: str) -> None:
-        super().__init__("review_confirmation_mismatch", f"GraphQL refetch of Braindump {braindump_id!r} did not show the requested review", {"braindump_id": braindump_id})
+def review_write_rejected_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("review_write_rejected", f"Alignment review write rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
 
 
-class BraindumpDeleteRejectedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__("braindump_delete_rejected", f"Braindump delete rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+def review_confirmation_mismatch_error(braindump_id: str) -> BraindumpError:
+    return error("review_confirmation_mismatch", f"GraphQL refetch of Braindump {braindump_id!r} did not show the requested review", {"braindump_id": braindump_id})
 
 
-class ReviewDeleteRejectedError(BraindumpError):
-    def __init__(self, status_code: int, detail_text: str) -> None:
-        super().__init__("review_delete_rejected", f"Alignment review delete rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+def braindump_delete_rejected_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("braindump_delete_rejected", f"Braindump delete rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
 
 
-class DeleteConfirmationMismatchError(BraindumpError):
-    def __init__(self, target: str, target_id: str) -> None:
-        super().__init__("delete_confirmation_mismatch", f"GraphQL refetch still shows {target} {target_id!r} after delete", {"target": target, "target_id": target_id})
+def review_delete_rejected_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("review_delete_rejected", f"Alignment review delete rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+
+
+def delete_confirmation_mismatch_error(target: str, target_id: str) -> BraindumpError:
+    return error("delete_confirmation_mismatch", f"GraphQL refetch still shows {target} {target_id!r} after delete", {"target": target, "target_id": target_id})
 
 
 def write_error(status_code: int, detail_text: str) -> BraindumpError:
     if status_code == 400:
-        return BraindumpValidationFailedError(status_code, detail_text)
-    return BraindumpWriteRejectedError(status_code, detail_text)
+        return braindump_validation_failed_error(status_code, detail_text)
+    return braindump_write_rejected_error(status_code, detail_text)
 
 
 def review_write_error(status_code: int, detail_text: str) -> BraindumpError:
     if status_code == 400:
-        return ReviewValidationFailedError(status_code, detail_text)
-    return ReviewWriteRejectedError(status_code, detail_text)
+        return review_validation_failed_error(status_code, detail_text)
+    return review_write_rejected_error(status_code, detail_text)

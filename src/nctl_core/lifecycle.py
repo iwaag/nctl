@@ -35,32 +35,32 @@ class LifecycleError(NautobotError):
         super().__init__(message)
 
 
-class InvalidLifecycleError(LifecycleError):
-    def __init__(self, requested_state: str) -> None:
-        super().__init__(
+def lifecycle_error(code: str, message: str, detail: dict[str, Any]) -> LifecycleError:
+    return LifecycleError(code, message, detail)
+
+
+def invalid_lifecycle_error(requested_state: str) -> LifecycleError:
+    return lifecycle_error(
             "invalid_lifecycle",
             f"invalid lifecycle {requested_state!r}; must be one of {', '.join(LIFECYCLE_STATES)}",
             {"requested_state": requested_state, "allowed": list(LIFECYCLE_STATES)},
         )
 
 
-class UnknownNodeError(LifecycleError):
-    def __init__(self, node_slug: str) -> None:
-        super().__init__("unknown_node", f"no desired node with slug {node_slug!r}", {"node_slug": node_slug})
+def unknown_node_error(node_slug: str) -> LifecycleError:
+    return lifecycle_error("unknown_node", f"no desired node with slug {node_slug!r}", {"node_slug": node_slug})
 
 
-class LifecycleUpdateRejectedError(LifecycleError):
-    def __init__(self, node_slug: str, requested_state: str, status_code: int, detail_text: str) -> None:
-        super().__init__(
+def lifecycle_update_rejected_error(node_slug: str, requested_state: str, status_code: int, detail_text: str) -> LifecycleError:
+    return lifecycle_error(
             "lifecycle_update_rejected",
             f"PATCH lifecycle={requested_state!r} on DesiredNode {node_slug!r} failed: HTTP {status_code}",
             {"node_slug": node_slug, "requested_state": requested_state, "status_code": status_code, "detail": detail_text[:200]},
         )
 
 
-class LifecycleConfirmationMismatchError(LifecycleError):
-    def __init__(self, node_slug: str, requested_state: str, confirmed_state: str | None) -> None:
-        super().__init__(
+def lifecycle_confirmation_mismatch_error(node_slug: str, requested_state: str, confirmed_state: str | None) -> LifecycleError:
+    return lifecycle_error(
             "lifecycle_confirmation_mismatch",
             f"expected DesiredNode {node_slug!r}.lifecycle={requested_state!r}, refetch shows {confirmed_state!r}",
             {"node_slug": node_slug, "requested_state": requested_state, "confirmed_state": confirmed_state},
@@ -80,18 +80,18 @@ def _resolve_node(client: NautobotClient, node_slug: str):
     snapshot = fetch_desired_snapshot(client)
     matches = [node for node in snapshot.nodes if node.slug == node_slug]
     if not matches:
-        raise UnknownNodeError(node_slug)
+        raise unknown_node_error(node_slug)
     return matches[0]
 
 
 def set_node_lifecycle(client: NautobotClient, node_slug: str, requested_state: str) -> LifecycleData:
     """Pure operation: resolve, no-op if already matching, else PATCH and confirm.
 
-    Raises a `LifecycleError` subclass on any failure; never returns a partial/unconfirmed result.
+    Raises a `LifecycleError` on any failure; never returns a partial/unconfirmed result.
     """
 
     if requested_state not in LIFECYCLE_STATES:
-        raise InvalidLifecycleError(requested_state)
+        raise invalid_lifecycle_error(requested_state)
 
     node = _resolve_node(client, node_slug)
     previous_state = node.lifecycle
@@ -108,11 +108,11 @@ def set_node_lifecycle(client: NautobotClient, node_slug: str, requested_state: 
 
     response = client.rest_patch(f"{INTENT_API_BASE}/nodes/{node.id}/", {"lifecycle": requested_state})
     if not response.is_success:
-        raise LifecycleUpdateRejectedError(node_slug, requested_state, response.status_code, response.text)
+        raise lifecycle_update_rejected_error(node_slug, requested_state, response.status_code, response.text)
 
     confirmed = _resolve_node(client, node_slug)
     if confirmed.lifecycle != requested_state:
-        raise LifecycleConfirmationMismatchError(node_slug, requested_state, confirmed.lifecycle)
+        raise lifecycle_confirmation_mismatch_error(node_slug, requested_state, confirmed.lifecycle)
 
     return LifecycleData(
         node_id=node.id,

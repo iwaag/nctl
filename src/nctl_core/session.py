@@ -38,18 +38,20 @@ class SessionError(Exception):
         super().__init__(message)
 
 
-class InvalidTaskNameError(SessionError):
-    def __init__(self, task_name: str) -> None:
-        super().__init__(
+def session_error(code: str, message: str, detail: dict[str, Any]) -> SessionError:
+    return SessionError(code, message, detail)
+
+
+def invalid_task_name_error(task_name: str) -> SessionError:
+    return session_error(
             "invalid_task_name",
             f"invalid task_name {task_name!r}; must match {TASK_NAME_RE.pattern}",
             {"task_name": task_name},
         )
 
 
-class SessionCreateFailedError(SessionError):
-    def __init__(self, workspace_dir: Path, attempts: int) -> None:
-        super().__init__(
+def session_create_failed_error(workspace_dir: Path, attempts: int) -> SessionError:
+    return session_error(
             "session_create_failed",
             f"could not create a unique session folder under {workspace_dir} after {attempts} attempts",
             {"workspace_dir": str(workspace_dir), "attempts": attempts},
@@ -74,11 +76,11 @@ def create_session(
 ) -> SessionNewData:
     """Pure operation: validate task_name, then create a fresh, collision-free session dir.
 
-    Raises a `SessionError` subclass on failure; never returns a partial result.
+    Raises a `SessionError` on failure; never returns a partial result.
     """
 
     if not TASK_NAME_RE.match(task_name):
-        raise InvalidTaskNameError(task_name)
+        raise invalid_task_name_error(task_name)
 
     topic_slug = _slugify_topic(topic) if topic else None
     date_part = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
@@ -95,7 +97,7 @@ def create_session(
             continue
         return SessionNewData(task_name=task_name, topic=topic, slug=slug, path=str(session_dir))
 
-    raise SessionCreateFailedError(workspace_dir, MAX_SLUG_ATTEMPTS)
+    raise session_create_failed_error(workspace_dir, MAX_SLUG_ATTEMPTS)
 
 
 def build_session_new(cfg: Config, task_name: str, topic: str | None = None) -> Envelope[SessionNewData]:
