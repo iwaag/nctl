@@ -184,6 +184,26 @@ def test_compute_create_defers_same_node_observation_until_after_actuation(monke
     assert [action.reconciler_id for action in plan.actions] == ["create_compute_instance"]
 
 
+def test_compute_link_defers_same_node_observation_until_manual_initial_access(monkeypatch):
+    """A newly linked running guest has no SSH path until manual console setup."""
+    fixture = _node("n1", "agfixture")
+    snapshot = _snapshot(nodes=[fixture])
+    link = planner_module.ReconcileAction(
+        id="link_compute_realization:agfixture", reconciler_id="link_compute_realization", action_kind="ledger_patch",
+        targets=[Target(kind="compute_instance", slug="agfixture", id="instance")], claimed_diff_codes=["compute_instance_not_linked"],
+        reason="test", mutates=True, requires_observation=False,
+    )
+    monkeypatch.setattr(planner_module, "plan_link_compute_realization", lambda *_args, **_kwargs: link)
+    diffs = [
+        DiffRecord(target=Target(kind="compute_instance", slug="agfixture", id="instance"), code="compute_instance_not_linked", severity=Severity.WARNING, message="unlinked"),
+        _node_diff(fixture, "no_realized_device"),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    assert [action.reconciler_id for action in plan.actions] == ["link_compute_realization"]
+
+
 # --- link_actual_node / reconcile_ipam -------------------------------------
 
 

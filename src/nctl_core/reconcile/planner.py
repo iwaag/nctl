@@ -206,15 +206,16 @@ def build_plan(
     # action requests the one authoritative post-actuation observation; an
     # initial observe action for the same node would fail before creation and
     # make a valid dry create plan unexecutable.
-    create_target_slugs = {
+    compute_transition_target_slugs = {
         action.targets[0].slug
         for action in actions
-        if action.reconciler_id == "create_compute_instance" and action.targets and action.targets[0].slug
+        if action.reconciler_id in {"create_compute_instance", "link_compute_realization"}
+        and action.targets and action.targets[0].slug
     }
     if observe_targets:
         ordered_targets = [
             observe_targets[key] for key in sorted(observe_targets)
-            if observe_targets[key].slug not in create_target_slugs
+            if observe_targets[key].slug not in compute_transition_target_slugs
         ]
         if ordered_targets:
             actions.append(plan_observe_node(ordered_targets, sorted(observe_codes)))
