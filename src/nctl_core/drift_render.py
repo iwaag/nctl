@@ -155,7 +155,7 @@ def fetch_and_compute_drift(
 
 def _filter_targets(targets: list[TargetStatus], *, host: str | None, service: str | None) -> list[TargetStatus]:
     if host is not None:
-        targets = [t for t in targets if t.target.kind == "node" and t.target.slug == host]
+        targets = [t for t in targets if t.target.kind in {"node", "compute_instance"} and t.target.slug == host]
     if service is not None:
         targets = [t for t in targets if t.target.kind == "service" and t.target.name == service]
     return targets

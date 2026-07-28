@@ -70,6 +70,19 @@ def _group_by_target(
         grouped[key] = []
         target_by_key[key] = target
 
+    for platform in snapshot.desired.compute_platforms:
+        target = Target(kind="compute_platform", slug=platform.slug, name=platform.name, id=platform.id)
+        key = _target_key(target)
+        grouped[key] = []
+        target_by_key[key] = target
+    nodes_by_id = {node.id: node for node in snapshot.desired.nodes}
+    for instance in snapshot.desired.compute_instances:
+        node = nodes_by_id.get(instance.desired_node_id)
+        target = Target(kind="compute_instance", slug=node.slug if node else None, name=node.name if node else None, id=instance.id)
+        key = _target_key(target)
+        grouped[key] = []
+        target_by_key[key] = target
+
     for record in records:
         key = _target_key(record.target)
         grouped.setdefault(key, [])

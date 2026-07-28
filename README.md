@@ -596,11 +596,11 @@ must not depend on registration order: the registry runs resource types determin
 the combined output by target identity and diff code. Add focused comparator tests plus an engine
 or `nctl.drift.v1` fixture whenever a new code affects target status or consumer behavior.
 
-Compute remains deliberately inert. When an approved first-realization roadmap owns it, its evaluator
-registers at `drift/registry.py` with `@register("compute_instance")`, reads the already typed
-`snapshot.desired.compute_platforms` and `.compute_instances`, and yields `DiffRecord`s. Do not add
-a stub comparator, registration, or no-data code before that roadmap supplies the second
-implementation and its tests.
+Compute realization is an active comparator example: `drift/compute_evaluation.py` owns the pure
+platform/guest matching and field-comparison decision, while the thin `compute_instance`
+registration in `comparators.py` attaches it to drift. Phase 1 deliberately classifies every
+compute finding as manual review or unsupported: the evaluator may derive a candidate, but it
+does not write a realization link or authorize an action.
 
 ## Adding a reconciler
 

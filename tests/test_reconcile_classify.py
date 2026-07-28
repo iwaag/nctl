@@ -23,6 +23,7 @@ _SCANNED_FILES = [
     _SRC / "drift" / "evaluation.py",
     _SRC / "drift" / "service_placement.py",
     _SRC / "drift" / "evaluation_snapshot.py",
+    _SRC / "drift" / "compute_evaluation.py",
     _SRC / "sources" / "actual.py",
 ]
 _CODE_LITERAL_RE = re.compile(r'"code":\s*"([a-z0-9_]+)"|code="([a-z0-9_]+)"')
@@ -47,6 +48,16 @@ _DYNAMIC_CODES = {
     "ipam_reconcile_observation_ambiguous",
 }
 
+# Informational summaries are deliberately not reconciliation inputs. Keeping
+# this exemption explicit makes a future actionable compute code fail closed.
+_INFORMATIONAL_UNCLASSIFIED_CODES = {"intent_effect_summary", "compute_realization_summary"}
+_COMPUTE_CODES = {
+    "compute_platform_missing", "compute_platform_observation_stale", "compute_platform_ambiguous",
+    "compute_instance_missing", "compute_instance_candidate_ambiguous", "compute_instance_not_linked",
+    "compute_realized_instance_missing", "compute_identity_conflict", "compute_power_state_mismatch",
+    "compute_resource_mismatch", "compute_endpoint_mac_conflict", "unexplained_compute_guest",
+}
+
 
 def _scan_literal_diff_codes() -> set[str]:
     codes: set[str] = set()
@@ -54,13 +65,13 @@ def _scan_literal_diff_codes() -> set[str]:
         text = path.read_text()
         for match in _CODE_LITERAL_RE.finditer(text):
             codes.add(match.group(1) or match.group(2))
-    return codes | _DYNAMIC_CODES
+    return codes | _DYNAMIC_CODES | _COMPUTE_CODES
 
 
 def test_every_producible_diff_code_is_classified():
     scanned = _scan_literal_diff_codes()
     assert scanned, "the scan found no codes at all -- the regex or file list is stale"
-    unclassified = sorted(code for code in scanned if code not in CODE_CLASSIFICATION)
+    unclassified = sorted(code for code in scanned if code not in CODE_CLASSIFICATION and code not in _INFORMATIONAL_UNCLASSIFIED_CODES)
     assert unclassified == [], f"new diff code(s) with no reconcile classification: {unclassified}"
 
 

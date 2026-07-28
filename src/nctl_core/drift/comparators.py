@@ -65,6 +65,7 @@ from nctl_core.sources.actual import ActualDevice
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .context import DriftContext
+from .compute_evaluation import evaluate_compute
 from .evaluation import EvaluationResult
 from .evaluation_snapshot import evaluate_all_endpoints, evaluate_all_nodes, evaluate_all_services
 from .model import DiffRecord, Severity, Target
@@ -83,6 +84,12 @@ _SEVERITY_BY_GAP_SEVERITY = {
 # `drift` are read), so a real UUID/digest would be pure noise here.
 _PLACEHOLDER_GENERATION_ID = "00000000-0000-0000-0000-000000000000"
 _PLACEHOLDER_DIGEST = "0" * 64
+
+
+@register("compute_instance")
+def compute_instance(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    """Derive compute realization drift; Phase 1 intentionally only reports it."""
+    yield from evaluate_compute(snapshot, context)
 
 
 @register("node")

@@ -44,6 +44,9 @@ UNKNOWN_CODES = frozenset(
         "invalid_actual_timestamp",
         "nautobot_fetch_failed",
         "dump_parse_error",
+        "compute_platform_missing",
+        "compute_platform_observation_stale",
+        "compute_realized_instance_missing",
     }
     | NO_DATA_GAP_CODES
 )

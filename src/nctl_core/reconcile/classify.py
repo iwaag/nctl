@@ -140,8 +140,46 @@ _MANUAL_REVIEW_CODES = frozenset(
         "unresolved_dependency",
         "service_has_no_active_placement",
         "service_observed_on_wrong_node",
+        # vm_first_realization P1: reporting only. Phase 2 promotes the
+        # explicit link path; no compute code may plan an action in P1.
+        "compute_platform_missing",
+        "compute_platform_observation_stale",
+        "compute_platform_ambiguous",
+        "compute_instance_missing",
+        "compute_instance_candidate_ambiguous",
+        "compute_instance_not_linked",
+        "compute_realized_instance_missing",
+        "compute_identity_conflict",
+        "compute_endpoint_mac_conflict",
+        "compute_primary_endpoint_missing",
+        "compute_primary_endpoint_ambiguous",
+        "compute_power_state_mismatch",
+        # Row-scoped desired-source validation failures are visible compute
+        # diffs and intentionally require correction of declared intent.
+        "compute_instance_node_missing",
+        "compute_instance_platform_invalid",
+        "compute_instance_platform_missing",
+        "compute_platform_control_node_missing",
+        "duplicate_compute_instance_for_node",
+        "duplicate_mac_address",
+        "duplicate_platform_slug",
+        "invalid_mac_address",
+        "invalid_compute_platform",
+        "invalid_compute_instance",
+        "invalid_config_type",
+        "invalid_config_value",
+        "invalid_source",
+        "invalid_vmid",
+        "missing_config_value",
+        "missing_control_node",
+        "missing_desired_node",
+        "missing_platform",
+        "unknown_config_key",
+        "vmid_out_of_range",
     }
 )
+
+_UNSUPPORTED_CODES = frozenset({"compute_resource_mismatch", "unexplained_compute_guest"})
 
 
 @dataclass(frozen=True)
@@ -164,6 +202,7 @@ _TABLE.update(
     {code: CodeClassification(Classification.AUTOMATIC, "service_profile") for code in _SERVICE_PROFILE_CODES}
 )
 _TABLE.update({code: CodeClassification(Classification.MANUAL_REVIEW) for code in _MANUAL_REVIEW_CODES})
+_TABLE.update({code: CodeClassification(Classification.UNSUPPORTED) for code in _UNSUPPORTED_CODES})
 # better_usability Phase 1: every target-local production-composition failure
 # (`production/composer.py`'s Group C codes) plus `active_placement_not_applied`
 # is manual review with no reconciler -- a human must fix the node/placement

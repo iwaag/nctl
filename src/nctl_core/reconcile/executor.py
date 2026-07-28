@@ -743,6 +743,7 @@ def _scope_summary(targets: list[TargetStatus], scope: PlanScope, snapshot: Sour
             for t in targets
             if t.target.kind == "global"
             or (t.target.kind == "node" and t.target.slug == host_node.slug)
+            or (t.target.kind == "compute_instance" and t.target.slug == host_node.slug)
             or (
                 t.target.kind == "service"
                 and services_by_slug.get(t.target.slug or "") is not None

@@ -63,6 +63,8 @@ def select_scoped_diffs(diffs: list[DiffRecord], scope: PlanScope, snapshot: Sou
             selected.append(diff)
         elif diff.target.kind == "node" and diff.target.slug == host_node.slug:
             selected.append(diff)
+        elif diff.target.kind == "compute_instance" and diff.target.slug == host_node.slug:
+            selected.append(diff)
         elif diff.target.kind == "service":
             service = services_by_slug.get(diff.target.slug or "")
             if service is not None and service.id in service_ids_on_host:
