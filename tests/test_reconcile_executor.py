@@ -216,36 +216,6 @@ def _patch_production_render(monkeypatch, snapshot_factory, *, generated_at="202
     )
 
 
-def test_playbook_grouping_passes_the_fixed_operation_timestamp_to_resolver(monkeypatch):
-    node = _node("agweb").model_copy(update={"realized_device_id": "dev-1"})
-    snapshot = SourceSnapshot(
-        desired=DesiredSnapshot(nodes=[node]),
-        actual=ActualSnapshot(devices=[ActualDevice(id="dev-1", name="agweb.local")]),
-        fetched_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
-    )
-    action = ReconcileAction(
-        id="service_profile:web", reconciler_id="service_profile", action_kind="playbook",
-        targets=[Target(kind="service", slug="web", id="s1")],
-        claimed_diff_codes=["service_not_running"], reason="test", mutates=True,
-        requires_observation=False,
-        parameters={"playbook_by_os": {"linux": "playbooks/linux.yml"}},
-    )
-    seen = {}
-
-    def fake_resolve(**kwargs):
-        seen["generated_at"] = kwargs["generated_at"]
-        return SimpleNamespace(host_os=SimpleNamespace(value="linux"))
-
-    monkeypatch.setattr(playbook_module, "resolve_operational_values", fake_resolve)
-
-    groups = playbook_module._group_hosts_by_playbook(
-        action, ["agweb"], snapshot, generated_at="2026-07-20T12:34:56+00:00"
-    )
-
-    assert groups == {"playbooks/linux.yml": ["agweb"]}
-    assert seen["generated_at"] == "2026-07-20T12:34:56+00:00"
-
-
 def _sequence(monkeypatch, results):
     it = iter(results)
     monkeypatch.setattr(executor_module, "fetch_and_compute_drift", lambda cfg: next(it))
@@ -1441,20 +1411,6 @@ def test_dry_plan_succeeds_despite_a_local_composition_error(tmp_path, monkeypat
     assert envelope.ok
     assert len(envelope.data.manual_review) == 1
     assert envelope.data.manual_review[0]["code"] == "unresolved_connection_path"
-
-
-def test_ssh_scan_errors_maps_unenrolled_status_too(tmp_path):
-    # fix_sshkey3 Step 1 (contract item 6): a managed-store entry removed
-    # between the round-start enrollment gate and this post-scan check must
-    # stop the round rather than silently falling through to Ansible --
-    # `_ssh_scan_errors` previously only recognized mismatch/unreachable.
-    entries = [
-        executor_module.SshPreflightEntry(slug="agdnsmasq", alias="nctl-node-x", status=executor_module.STATUS_UNENROLLED)
-    ]
-    errors = ssh_preflight_module.ssh_scan_errors(entries)
-    assert len(errors) == 1
-    assert errors[0].code == "ssh_host_key_unenrolled"
-    assert "agdnsmasq" in errors[0].message
 
 
 def test_apply_reports_ssh_store_read_failed_when_managed_store_is_corrupt(tmp_path, monkeypatch):

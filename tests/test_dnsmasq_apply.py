@@ -1015,16 +1015,3 @@ def test_direct_apply_with_no_host_limit_still_targets_the_full_inventory_group(
     assert "--limit" not in calls[1]
     assert "--limit" not in calls[2]
 
-
-def test_inventory_group_hosts_includes_child_groups():
-    payload = {
-        "dnsmasq_server": {"children": ["primary_dns"]},
-        "primary_dns": {"hosts": ["dns-1", "dns-2"]},
-    }
-    assert inventory_group_hosts(payload, "dnsmasq_server") == {"dns-1", "dns-2"}
-
-
-def test_parse_recap_ignores_non_recap_lines():
-    assert parse_recap("TASK [x] ***\nhost-a : ok=2 changed=1 unreachable=0 failed=0\n") == {
-        "host-a": {"ok": 2, "changed": 1, "unreachable": 0, "failed": 0}
-    }

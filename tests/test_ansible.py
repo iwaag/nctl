@@ -67,3 +67,19 @@ def test_inventory_group_hosts_handles_cycles_without_recursing_forever():
         "child": {"hosts": ["host-a"], "children": ["parent"]},
     }
     assert inventory_group_hosts(payload, "parent") == {"host-a"}
+
+
+def test_inventory_group_hosts_includes_child_groups():
+    payload = {
+        "dnsmasq_server": {"children": ["primary_dns"]},
+        "primary_dns": {"hosts": ["dns-1", "dns-2"]},
+    }
+    assert inventory_group_hosts(payload, "dnsmasq_server") == {"dns-1", "dns-2"}
+
+
+def test_parse_recap_ignores_non_recap_lines():
+    from nctl_core.ansible import parse_recap
+
+    assert parse_recap("TASK [x] ***\nhost-a : ok=2 changed=1 unreachable=0 failed=0\n") == {
+        "host-a": {"ok": 2, "changed": 1, "unreachable": 0, "failed": 0}
+    }
