@@ -5,8 +5,47 @@ drift and runs standard workflows. Implementation plan: `devdocs/vision/core_rec
 
 ## Layout
 
-- `src/nctl_core/` — the library. All business logic lives here and returns pydantic models.
-- `src/nctl_core/cli/` — thin Typer wrappers. Commands parse args, call the library, render.
+`src/nctl_core/` is the library; its business operations return typed models and
+its CLI is only a presentation boundary. The following map is the ownership
+index for package-level changes. “May import” states the allowed dependency
+direction, not an obligation to import every listed package.
+
+| path | owns | may import | must not import |
+|---|---|---|---|
+| `src/nctl_core/cli/` | Typer argument parsing and envelope presentation | orchestration/render modules | domain decisions, transport implementation details |
+| `src/nctl_core/compute/` | typed compute rows, nintent-fixture-bound validation, source issue collection | stdlib and read-model contracts | transport clients, drift registration, planning, actuation |
+| `src/nctl_core/drift/` | read-only comparison contracts, per-resource evaluation, status derivation | domain/read models; explicitly supplied snapshots | Nautobot clients, CLI, planning, actuation |
+| `src/nctl_core/production/` | deterministic inventory contract, derivation, composition, route policy | domain contracts and supplied inputs | CLI, direct Nautobot I/O, action execution |
+| `src/nctl_core/reconcile/` | plan construction, action DAG, bounded execution and durable evidence | drift outputs, production rendering, explicit transport/action adapters | CLI presentation or widened handler target sets |
+| `src/nctl_core/reconcile/actions/` | one handler per reconciler ID and action-boundary translation | declared `ActionContext`, one explicit adapter | planner target selection, CLI, unrelated handlers |
+| `src/nctl_core/sources/` | GraphQL queries and decoding into typed desired/actual snapshots | Nautobot transport and pure decode/validation helpers | drift policy, planning, actuation |
+
+Modules over roughly 300 lines have an explicit owner as well:
+
+| path | owns | may import | must not import |
+|---|---|---|---|
+| `reconcile/executor.py` | round lifecycle, dispatch, evidence retention | plans, action dispatch, rendering/adapters | resource-specific action policy |
+| `production/contract.py` | production input/output schema and validation | stdlib, typed contract models | live transport or CLI |
+| `dnsmasq.py` | pure dnsmasq desired export and deterministic bytes | read models and pure helpers | Nautobot, Ansible, CLI |
+| `cli/main.py` | command wiring and exit/presentation boundary | public library builders/renderers | business rules |
+| `production/composer.py` | composition of validated placement inputs into inventory/report | production contracts/derivation | direct source fetches or action execution |
+| `ssh_enroll.py` | verified enrollment and managed known-hosts store semantics | SSH probes, artifacts, config | planner policy or CLI parsing |
+| `sources/actual.py` | actual GraphQL query and typed decode | `NautobotClient`, pure models | drift/reconcile decisions |
+| `sources/desired.py` | desired GraphQL query and typed decode | `NautobotClient`, compute decode helpers | drift/reconcile decisions |
+| `drift/endpoint_evaluation.py` | endpoint IPAM/range/interface/MAC evaluation | read models and pure drift helpers | transport, CLI, planning, actuation |
+| `dnsmasq_apply.py` | direct dnsmasq apply boundary and its evidence | render result, SSH/Ansible adapters | drift classification or planner policy |
+| `production/derivation.py` | pure operational-value derivation | production contract models | transport, CLI, execution |
+| `compute/contract.py` | nintent-owned compute contract replay/validation | stdlib and compute models | transport, registry activation, actuation |
+| `drift/comparators.py` | registered comparison functions and diff attribution | snapshots/evaluators/production composition | transport and reconcile execution |
+| `observation.py` | nodeutils observation/ingest orchestration | explicit jobs/transport adapters | CLI or drift policy |
+| `braindump.py` | braindump domain operations and authorization checks | explicit transport adapter/models | reconciliation decisions |
+| `hosts_intent.py` | deterministic bootstrap inventory model/rendering | read models and pure helpers | transport, Ansible execution, CLI |
+| `jobs.py` | Nautobot Job invocation/polling adapter | `NautobotClient`, transport models | domain policy or CLI |
+| `reconcile/planner.py` | drift-to-action planning and exact target set | diffs, reconcilers, snapshots | handler execution or CLI |
+| `drift/node_evaluation.py` | node realization and candidate ranking evaluation | read models and pure drift helpers | transport, CLI, planning, actuation |
+| `reconcile/ledger.py` | explicit ledger mutation adapter | Job/transport adapter and typed requests | planner policy or CLI |
+| `reconcile/ssh_preflight.py` | exact-generation SSH preflight | resolved routes and SSH adapter | target selection or action policy |
+| `drift/evaluation_snapshot.py` | snapshot-to-evaluator coordination | evaluators and supplied snapshot | transport, CLI, planning, actuation |
 
 The shared compute contract is semantically owned by nintent. nctl retains read-time validation so
 stale or compromised GraphQL rows become visible source issues, but its behavior is fixture-bound:
