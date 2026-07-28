@@ -50,7 +50,8 @@ from nctl_core.production_render import (
     render_production_summary_text,
     write_production_artifacts,
 )
-from nctl_core.reconcile.executor import render_reconcile_text, run_reconcile
+from nctl_core.reconcile.executor import run_reconcile
+from nctl_core.reconcile_render import render_reconcile_text
 from nctl_core.session import build_session_new, render_session_new_text
 from nctl_core.status import build_status, render_status_text
 from nctl_core.ssh_enroll import build_ssh_enroll, render_ssh_enroll_text
