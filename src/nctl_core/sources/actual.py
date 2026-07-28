@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from nctl_core.nautobot import NautobotClient
 
@@ -257,6 +257,33 @@ class ProxmoxManagedIpEvidence(BaseModel):
     evidence_observed_at: str | None = None
 
 
+class ProxmoxStorageContentItem(BaseModel):
+    """One bounded item from a Cluster's ``proxmox_storage_content`` ledger."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    volid: str
+    content: str | None = None
+    format: str | None = None
+    size_bytes: int | None = None
+
+
+class ProxmoxStorageScope(BaseModel):
+    """One node/storage/content-type scope from the Cluster storage ledger."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node: str
+    storage: str
+    content_type: str
+    state: str
+    last_attempted_at: str | None = None
+    evidence_observed_at: str | None = None
+    omitted_error_count: int = 0
+    errors: list[dict[str, Any]] = []
+    items: list[ProxmoxStorageContentItem] = []
+
+
 class ProxmoxClusterFacts(BaseModel):
     """The closed `proxmox_*` allowlist read from a Cluster's `_custom_field_data`."""
 
@@ -270,6 +297,37 @@ class ProxmoxClusterFacts(BaseModel):
     observed_at: str | None = None
     observation_state: str | None = None
     observation_detail: ProxmoxObservationDetail | None = None
+    storage_content: dict[str, ProxmoxStorageScope] = {}
+    storage_content_invalid_scope_count: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_invalid_storage_scopes(cls, value: Any) -> Any:
+        """Keep valid scopes even if one independently collected scope is malformed.
+
+        Storage scopes are independent evidence.  A malformed row must not erase the
+        healthy Cluster platform facts and turn it into a misleading
+        ``compute_platform_missing`` result.
+        """
+        if not isinstance(value, dict) or "storage_content" not in value:
+            return value
+        raw_content = value.get("storage_content")
+        if not isinstance(raw_content, dict):
+            result = dict(value)
+            result["storage_content"] = {}
+            result["storage_content_invalid_scope_count"] = 1
+            return result
+        valid: dict[str, ProxmoxStorageScope] = {}
+        invalid_count = 0
+        for key, raw_scope in raw_content.items():
+            try:
+                valid[str(key)] = ProxmoxStorageScope.model_validate(raw_scope)
+            except ValidationError:
+                invalid_count += 1
+        result = dict(value)
+        result["storage_content"] = valid
+        result["storage_content_invalid_scope_count"] = invalid_count
+        return result
 
 
 class ProxmoxVirtualMachineFacts(BaseModel):
@@ -331,6 +389,7 @@ _CLUSTER_PROXMOX_FIELDS = {
     "observed_at": "proxmox_observed_at",
     "observation_state": "proxmox_observation_state",
     "observation_detail": "proxmox_observation_detail",
+    "storage_content": "proxmox_storage_content",
 }
 
 _VM_PROXMOX_FIELDS = {

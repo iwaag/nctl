@@ -29,6 +29,19 @@ _AGHUB_CLUSTER_ROW = {
         "proxmox_observed_at": "2026-07-24T00:00:00+00:00",
         "proxmox_observation_state": "complete",
         "proxmox_observation_detail": {"state": "complete", "omitted_error_count": 0, "errors": []},
+        "proxmox_storage_content": {
+            "aghub:local:vztmpl": {
+                "node": "aghub",
+                "storage": "local",
+                "content_type": "vztmpl",
+                "state": "complete",
+                "last_attempted_at": "2026-07-24T00:00:00+00:00",
+                "evidence_observed_at": "2026-07-24T00:00:00+00:00",
+                "omitted_error_count": 0,
+                "errors": [],
+                "items": [{"volid": "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst", "content": "vztmpl", "format": "tzst", "size_bytes": 123}],
+            }
+        },
         # Unrelated custom-field key present on the same object -- must never enter the
         # typed output (Section 5.6: "Unrelated custom fields ... are ignored").
         "inventory_raw_json": {"anything": "must not leak"},
@@ -252,6 +265,9 @@ def test_fetch_actual_snapshot_reads_aghub_proxmox_cluster_and_agdnsmasq_vmid_10
     assert cluster.proxmox.scope_key == "standalone-device:aghub-device-uuid"
     assert cluster.proxmox.observed_node_names == ["aghub"]
     assert cluster.proxmox.observation_state == "complete"
+    scope = cluster.proxmox.storage_content["aghub:local:vztmpl"]
+    assert scope.state == "complete"
+    assert scope.items[0].volid == "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
 
     vm = snapshot.virtual_machines[0]
     assert vm.name == "agdnsmasq"
@@ -312,6 +328,34 @@ def test_fetch_actual_snapshot_reports_malformed_proxmox_json_as_structured_erro
     error = snapshot.proxmox_read_errors[0]
     assert error.object_type == "cluster"
     assert error.object_id == "cluster-bad"
+
+
+@respx.mock
+def test_fetch_actual_snapshot_drops_only_malformed_storage_scope():
+    payload = _graphql_payload(
+        clusters=[
+            {
+                **_AGHUB_CLUSTER_ROW,
+                "_custom_field_data": {
+                    **_AGHUB_CLUSTER_ROW["_custom_field_data"],
+                    "proxmox_storage_content": {
+                        **_AGHUB_CLUSTER_ROW["_custom_field_data"]["proxmox_storage_content"],
+                        "bad": {"node": "aghub", "unexpected": True},
+                    },
+                },
+            }
+        ]
+    )
+    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json={"data": payload}))
+
+    snapshot = fetch_actual_snapshot(NautobotClient(BASE_URL, "tok"))
+
+    facts = snapshot.clusters[0].proxmox
+    assert facts is not None
+    assert facts.observation_state == "complete"
+    assert set(facts.storage_content) == {"aghub:local:vztmpl"}
+    assert facts.storage_content_invalid_scope_count == 1
+    assert snapshot.proxmox_read_errors == []
 
 
 @respx.mock
