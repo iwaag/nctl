@@ -70,6 +70,7 @@ from .evaluation import EvaluationResult
 from .evaluation_snapshot import evaluate_all_endpoints, evaluate_all_nodes, evaluate_all_services
 from .model import DiffRecord, Severity, Target
 from .registry import register
+from nctl_core.compute.manual_initial_access import awaiting_manual_initial_access
 
 _SEVERITY_BY_GAP_SEVERITY = {
     "conflict": Severity.ERROR,
@@ -279,7 +280,7 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
             yield DiffRecord(
                 target=target,
                 code=reason,
-                severity=Severity.ERROR,
+                severity=Severity.INFO if reason == "waiting_for_manual_initial_access" else Severity.ERROR,
                 message=f"{identity['slug']}: production composition skipped this node ({reason})",
                 sources=["desired", "actual"],
             )
@@ -343,6 +344,8 @@ def _active_placement_not_applied_diff(entry: dict) -> DiffRecord:
 def node_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
     node_evaluations = evaluate_all_nodes(snapshot)
     for node in snapshot.desired.nodes:
+        if awaiting_manual_initial_access(snapshot, node):
+            continue
         target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
         yield from _gap_diffs(target, node_evaluations[node.id])
 
@@ -354,6 +357,8 @@ def endpoint_intent_matching(snapshot: SourceSnapshot, context: DriftContext) ->
     nodes_by_id = {node.id: node for node in snapshot.desired.nodes}
     for endpoint in snapshot.desired.endpoints:
         node = nodes_by_id.get(endpoint.node_id)
+        if node is not None and awaiting_manual_initial_access(snapshot, node):
+            continue
         target = Target(
             kind="node",
             slug=node.slug if node is not None else None,
