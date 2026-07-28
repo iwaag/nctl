@@ -275,12 +275,17 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
         if production["state"] != "skipped":
             continue
         for reason in production["reasons"]:
+            # node_existence owns this explicit post-create terminal.  The
+            # production report retains the skip reason, but emitting it here
+            # as a second drift finding is duplicate information.
+            if reason == "waiting_for_manual_initial_access":
+                continue
             if (identity["slug"], reason) in structured_error_keys:
                 continue
             yield DiffRecord(
                 target=target,
                 code=reason,
-                severity=Severity.INFO if reason == "waiting_for_manual_initial_access" else Severity.ERROR,
+                severity=Severity.ERROR,
                 message=f"{identity['slug']}: production composition skipped this node ({reason})",
                 sources=["desired", "actual"],
             )
