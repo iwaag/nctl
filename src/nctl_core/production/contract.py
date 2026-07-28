@@ -292,67 +292,6 @@ def actual_state_problem(
     return None
 
 
-def select_local_route(
-    *,
-    local_ip: str | None,
-    local_dns_hostname: str | None,
-    mdns_hostname: str | None,
-    inventory_hostname: str,
-) -> str:
-    """Pick the `ansible_host` value for the `local` connection path.
-
-    Priority: `local_ip` -> `local_dns_hostname` -> `mdns_hostname` ->
-    `inventory_hostname` (always a non-empty fallback). Extracted so
-    `resolve_connection_variables` (production composition) and
-    `nctl_core.inventory_trust` (the `nctl apply dnsmasq` preflight, which
-    reads these same variables back out of an already-rendered inventory
-    instead of Nautobot facts) can never independently drift on this
-    priority chain -- see fix_sshkey2 plan.md Step 4.
-    """
-    candidates = (local_ip, local_dns_hostname, mdns_hostname, inventory_hostname)
-    return next(value for value in candidates if _nonempty(value))
-
-
-def resolve_connection_variables(
-    *,
-    inventory_hostname: str,
-    actual_state_policy: str,
-    connection_path: str,
-    actual_local_ip: str | None = None,
-    local_endpoint: Mapping[str, Any] | None = None,
-    tailscale_endpoint: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Resolve only the desired/actual connection variables allowed by schema 2.0."""
-
-    variables: dict[str, Any] = {"connection_path": connection_path}
-    local_endpoint = local_endpoint or {}
-    tailscale_endpoint = tailscale_endpoint or {}
-    if actual_local_ip:
-        variables["local_ip"] = _normalize_ip(actual_local_ip, "actual_local_ip")
-    elif actual_state_policy == "declared" and local_endpoint.get("ip_address"):
-        variables["local_ip"] = _normalize_ip(local_endpoint["ip_address"], "local_endpoint.ip_address")
-    if _nonempty(local_endpoint.get("dns_name")):
-        variables["local_dns_hostname"] = local_endpoint["dns_name"].strip()
-    if _nonempty(local_endpoint.get("mdns_name")):
-        variables["mdns_hostname"] = local_endpoint["mdns_name"].strip()
-    if tailscale_endpoint.get("ip_address"):
-        variables["tailscale_ip"] = _normalize_ip(tailscale_endpoint["ip_address"], "tailscale_endpoint.ip_address")
-    if connection_path == "local":
-        variables["ansible_host"] = select_local_route(
-            local_ip=variables.get("local_ip"),
-            local_dns_hostname=variables.get("local_dns_hostname"),
-            mdns_hostname=variables.get("mdns_hostname"),
-            inventory_hostname=inventory_hostname,
-        )
-    elif connection_path == "tailscale":
-        if "tailscale_ip" not in variables:
-            raise ContractError("unresolved_connection_path", "tailscale path requires a usable tailscale endpoint")
-        variables["ansible_host"] = variables["tailscale_ip"]
-    else:
-        raise ContractError("unresolved_connection_path", f"unsupported connection path {connection_path!r}")
-    return variables
-
-
 def merge_host_variables(assignments: Iterable[tuple[str, Mapping[str, Any]]]) -> dict[str, Any]:
     """Merge mapped placement variables and fail on different values."""
 

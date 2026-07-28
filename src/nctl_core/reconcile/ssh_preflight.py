@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from nctl_core.config import Config
 from nctl_core.output import EnvelopeError
 from nctl_core.hosts_intent import select_mdns_endpoint
-from nctl_core.production.composer import ResolvedSshTarget
+from nctl_core.production.model import ResolvedSshTarget
 from nctl_core.reconcile.model import ReconcileAction, ReconcilePlan
 from nctl_core.sources.desired import DesiredSnapshot
 from nctl_core.ssh_enroll import (

@@ -15,6 +15,7 @@ import pytest
         "nctl_core.drift.gap_status",
         "nctl_core.drift.interfaces",
         "nctl_core.drift.ip_ranges",
+        "nctl_core.production.routes",
     ],
 )
 def test_pure_domain_modules_do_not_load_transport_or_cli(module: str) -> None:

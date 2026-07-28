@@ -20,7 +20,7 @@ from nctl_core.sources.desired import (
 )
 from nctl_core.sources.snapshot import SourceSnapshot
 
-from .composer import NodeInput, PlacementInput, RealizedState
+from .model import NodeInput, PlacementInput, RealizedState
 from .derivation import EndpointCandidate, OperationalOverride
 
 

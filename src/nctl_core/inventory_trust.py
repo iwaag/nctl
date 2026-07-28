@@ -5,7 +5,7 @@
 this path. This module therefore re-derives the expected trust variables from
 each host's own `nintent_desired_node_id` and validates the *rendered* host
 vars exactly, instead of trusting a hand-written or stale inventory's
-self-reported alias. It shares `production.contract.select_local_route` with
+self-reported alias. It shares `production.routes.select_local_route` with
 the production composer (Step 3's pure route helper) so route resolution can
 never independently drift between composition and this preflight.
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from nctl_core.production.contract import select_local_route
+from nctl_core.production.routes import select_local_route
 from nctl_core.reconcile.ssh_preflight import (
     STATUS_MISMATCH,
     STATUS_READY,

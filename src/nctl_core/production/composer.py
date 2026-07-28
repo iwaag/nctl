@@ -38,11 +38,12 @@ from .contract import (
     actual_state_problem,
     map_placement_config,
     merge_host_variables,
-    resolve_connection_variables,
     validate_deployment_profiles,
     validate_production_inventory_document,
     validate_production_report_v3,
 )
+from .routes import resolve_connection_variables
+from .model import NodeInput, NodeOutcome, PlacementInput, RealizedState, ResolvedSshTarget
 from .derivation import (
     DerivationFailure,
     EffectiveOperationalValues,
@@ -136,93 +137,7 @@ class LocalCompositionError(Exception):
         super().__init__(message)
 
 
-# Deterministic accepted_actual_types-per-node_type mapping (Phase 4 Decision 4), matching
-# nintent's `operations.hosts._accepted_actual_types` and `loaders._ACTUAL_TYPE_DEFAULTS`.
-# A stored list equal to this mapping (order-independent) means "derived"; anything else
-# means an explicit override -- no separate provenance field is needed since the rule is
-# deterministic (see p4/plan.md Decision 4).
-ACCEPTED_ACTUAL_TYPE_DEFAULTS = {
-    "device": frozenset({"device"}),
-    "virtual_machine": frozenset({"virtual_machine"}),
-    "container": frozenset({"container"}),
-    "service_host": frozenset({"device", "virtual_machine", "container"}),
-}
-
-
-def accepted_actual_types_source(node_type: str, accepted_actual_types: Iterable[str]) -> str:
-    """Return `"derived"` or `"override"` for a stored `accepted_actual_types` list."""
-
-    canonical = ACCEPTED_ACTUAL_TYPE_DEFAULTS.get(node_type)
-    if canonical is not None and frozenset(accepted_actual_types) == canonical:
-        return "derived"
-    return "override"
-
-
-@dataclass(frozen=True)
-class PlacementInput:
-    """Desired binding of one service instance to one node."""
-
-    id: str
-    instance_name: str
-    deployment_profile: str
-    config_schema_version: str
-    desired_state: str = "active"
-    config: Mapping[str, Any] = field(default_factory=dict)
-    service_id: str = ""
-    service_slug: str = ""
-    instance_role: str | None = None
-    assignment_source: str = "manual"
-    endpoint_id: str | None = None
-
-
-@dataclass(frozen=True)
-class RealizedState:
-    """A realized Nautobot object and its allowlisted actual facts."""
-
-    realized_type: str | None
-    facts: ActualFacts
-    nautobot_device_id: str | None = None
-
-
-@dataclass(frozen=True)
-class NodeInput:
-    """Everything the composer needs about one desired node."""
-
-    id: str
-    slug: str
-    name: str
-    lifecycle: str
-    node_type: str
-    role: str | None = None
-    accepted_actual_types: tuple[str, ...] = ()
-    endpoints: tuple[EndpointCandidate, ...] = ()
-    operational_override: OperationalOverride | None = None
-    placements: tuple[PlacementInput, ...] = ()
-    realized: RealizedState | None = None
-
-
-@dataclass(frozen=True)
-class ResolvedSshTarget:
-    """One production-composed node's immutable, single-generation SSH connection identity.
-
-    fix_sshkey3 Step 2: replaces the split
-    `resolve_production_routes(SourceSnapshot, ...) + verify_offered_keys(old_snapshot, ...)`
-    API. Every field here comes from the exact `NodeInput`/`EffectiveOperationalValues`
-    this composition run used to build the node's `ssh_hosts` entry -- never a
-    separately re-resolved snapshot -- so a post-regeneration SSH scan can
-    never combine a fresh route with a stale port or identity. Only nodes
-    actually included in the composed `ssh_hosts` group receive a target
-    (see `compose_production_inventory`); a planned service host missing
-    from the map must be treated as unreachable, never silently resolved
-    another way.
-    """
-
-    slug: str
-    desired_node_id: str
-    alias: str
-    route: str
-    port: int
-    generation_id: str
+from .report import build_node_report_record
 
 
 @dataclass(frozen=True)
@@ -475,25 +390,6 @@ def compose_production_inventory(
     return ProductionComposition(inventory=inventory, report=report, ssh_targets=ssh_targets)
 
 
-@dataclass
-class NodeOutcome:
-    """Per-node composition outcome, kept separate from the inventory-building loop's
-    own local variables so the report translation pass (`build_node_report_record`) cannot
-    influence inventory bytes.
-    """
-
-    state: str  # included | skipped | out_of_scope
-    reasons: list[str]
-    effective: EffectiveOperationalValues | None
-    finding: dict[str, Any] | None
-    active_placement_ids: list[str]
-    host_os: str | None = None
-    nautobot_device_id: str | None = None
-    local_error: LocalCompositionError | None = None
-    resolved_route: str | None = None
-    resolved_port: int | None = None
-
-
 def resolve_effective_route(node: NodeInput, effective: EffectiveOperationalValues) -> dict[str, Any]:
     """Resolve the connection variables (including `ansible_host`) production would use for `node`.
 
@@ -540,123 +436,6 @@ def try_resolve_operational_values(
             "message": exc.message,
             "evidence": {"field": exc.field, **dict(exc.evidence)},
         }
-
-
-def build_node_report_record(node: NodeInput, outcome: "NodeOutcome") -> dict[str, Any]:
-    """Build one closed report-3.0 node record (Phase 4 Decision 2) from a node and its
-    already-computed composition `NodeOutcome`. Pure translation -- performs no derivation
-    and touches no inventory-building state.
-    """
-
-    placement_effects = [
-        _placement_effect_entry(placement, outcome) for placement in sorted(node.placements, key=lambda p: p.instance_name)
-    ]
-    return {
-        "desired": {
-            "node": {
-                "id": node.id,
-                "slug": node.slug,
-                "name": node.name,
-                "lifecycle": node.lifecycle,
-                "node_type": node.node_type,
-                "role": node.role,
-                "accepted_actual_types": sorted(node.accepted_actual_types),
-                "accepted_actual_types_source": accepted_actual_types_source(node.node_type, node.accepted_actual_types),
-            },
-            "endpoints": [
-                {
-                    "id": endpoint.id,
-                    "name": endpoint.name,
-                    "endpoint_type": endpoint.endpoint_type,
-                    "ip_address": endpoint.ip_address,
-                    "dns_name": endpoint.dns_name,
-                    "mdns_name": endpoint.mdns_name,
-                }
-                for endpoint in sorted(node.endpoints, key=lambda item: item.id)
-            ],
-            "placements": [_placement_desired_entry(placement) for placement in sorted(node.placements, key=lambda p: p.instance_name)],
-            "operational_override": _operational_override_entry(node.operational_override),
-        },
-        "actual": {
-            "operational_values": outcome.effective.as_dict() if outcome.effective is not None else {},
-            "operational_finding": outcome.finding,
-            "local_findings": (
-                [
-                    {
-                        "code": outcome.local_error.code,
-                        "severity": "error",
-                        "message": outcome.local_error.message,
-                        "stage": outcome.local_error.stage,
-                        "evidence": outcome.local_error.evidence,
-                    }
-                ]
-                if outcome.local_error is not None
-                else []
-            ),
-            "production": {
-                "state": outcome.state,
-                "reasons": outcome.reasons,
-                "placement_effects": placement_effects,
-            },
-        },
-    }
-
-
-def _placement_desired_entry(placement: PlacementInput) -> dict[str, Any]:
-    return {
-        "id": placement.id,
-        "service_id": placement.service_id,
-        "service_slug": placement.service_slug,
-        "instance_name": placement.instance_name,
-        "desired_state": placement.desired_state,
-        "instance_role": placement.instance_role,
-        "deployment_profile": placement.deployment_profile,
-        "config_schema_version": placement.config_schema_version,
-        "config": dict(placement.config),
-        "assignment_source": placement.assignment_source,
-        "endpoint_id": placement.endpoint_id,
-    }
-
-
-def _operational_override_entry(override: OperationalOverride | None) -> dict[str, Any] | None:
-    if override is None:
-        return None
-    return {
-        "id": override.id,
-        "declared_host_os": override.declared_host_os,
-        "connection_path": override.connection_path,
-        "ansible_port": override.ansible_port,
-        "power_control": override.power_control,
-        "is_laptop": override.is_laptop,
-        "local_endpoint_id": override.local_endpoint_id,
-        "tailscale_endpoint_id": override.tailscale_endpoint_id,
-    }
-
-
-def _placement_effect_entry(placement: PlacementInput, outcome: "NodeOutcome") -> dict[str, Any]:
-    if outcome.state == "included":
-        if placement.id in outcome.active_placement_ids:
-            effect, reason = "applied", None
-        else:
-            effect, reason = "inactive_by_intent", None
-    elif placement.desired_state != "active":
-        effect, reason = "inactive_by_intent", None
-    else:
-        if outcome.reasons:
-            reason = outcome.reasons[0]
-        elif outcome.state == "out_of_scope":
-            reason = "node_out_of_scope"
-        elif outcome.state == "unknown":
-            reason = "production_unknown"
-        else:
-            reason = "node_skipped"
-        effect = "not_applied"
-    return {
-        "placement_id": placement.id,
-        "instance_name": placement.instance_name,
-        "effect": effect,
-        "reason": reason,
-    }
 
 
 def _host_actual_skip_reasons(

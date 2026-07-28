@@ -18,14 +18,12 @@ from nctl_core.production.composer import (
     MERGE_LOCAL_CODES,
     NODE_LOCAL_CODES,
     PLACEMENT_LOCAL_CODES,
-    NodeInput,
-    PlacementInput,
     ProductionComposition,
-    RealizedState,
     compose_production_inventory,
     render_production_inventory_yml,
     render_production_report_json,
 )
+from nctl_core.production.model import NodeInput, PlacementInput, RealizedState
 from nctl_core.production.contract import ContractError
 from nctl_core.production.derivation import EndpointCandidate, OperationalOverride
 from nctl_core.sources.actual import ActualFacts
@@ -229,7 +227,7 @@ def not_applied_out_of_scope_entries(composition: ProductionComposition):
 
 
 def test_accepted_actual_types_source_is_derived_or_override():
-    from nctl_core.production.composer import accepted_actual_types_source
+    from nctl_core.production.report import accepted_actual_types_source
 
     assert accepted_actual_types_source("device", ["device"]) == "derived"
     assert accepted_actual_types_source("service_host", ["container", "device", "virtual_machine"]) == "derived"

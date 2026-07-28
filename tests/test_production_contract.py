@@ -19,12 +19,12 @@ from nctl_core.production.contract import (
     actual_state_problem,
     map_placement_config,
     merge_host_variables,
-    resolve_connection_variables,
     validate_deployment_profiles,
     validate_endpoint_ownership,
     validate_production_inventory_document,
     validate_production_report_v3,
 )
+from nctl_core.production.routes import resolve_connection_variables
 
 PROFILES = {
     "demo": {

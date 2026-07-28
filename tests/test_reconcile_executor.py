@@ -166,7 +166,8 @@ def _resolved_ssh_targets_for_snapshot(snapshot, generation_id, generated_at):
     service-phase scan target would come back `no_resolvable_production_target`.
     """
     from nctl_core.production.adapter import build_production_node_inputs
-    from nctl_core.production.composer import ContractError, ResolvedSshTarget, resolve_effective_route, try_resolve_operational_values
+    from nctl_core.production.composer import ContractError, resolve_effective_route, try_resolve_operational_values
+    from nctl_core.production.model import ResolvedSshTarget
 
     targets = {}
     for node in build_production_node_inputs(snapshot):

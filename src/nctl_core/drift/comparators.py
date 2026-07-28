@@ -55,13 +55,12 @@ from nctl_core.production.adapter import build_production_node_inputs
 from nctl_core.production.composer import (
     ACTIVE_PLACEMENT_NOT_APPLIED,
     ContractError,
-    NodeInput,
-    NodeOutcome,
-    build_node_report_record,
     compose_production_inventory,
     try_resolve_operational_values,
     unapplied_placement_findings,
 )
+from nctl_core.production.model import NodeInput, NodeOutcome
+from nctl_core.production.report import build_node_report_record
 from nctl_core.sources.actual import ActualDevice
 from nctl_core.sources.snapshot import SourceSnapshot
 
@@ -269,7 +268,7 @@ def production_policy(snapshot: SourceSnapshot, context: DriftContext) -> Iterat
 
 
 def _intent_effect_summary_diff_from_record(node_record: dict) -> DiffRecord:
-    """Turn one report-3.0 node record (`production.composer.build_node_report_record`) into
+    """Turn one report-3.0 node record (`production.report.build_node_report_record`) into
     the `intent_effect_summary` INFO diff (Phase 4 Decision 2): the record's `desired` section
     already *is* the recorded intent, and its `actual` section already *is* the effective
     mechanism plus production/placement application -- this is a pure re-labeling, not a

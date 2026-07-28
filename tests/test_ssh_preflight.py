@@ -6,7 +6,7 @@ from pathlib import Path
 
 from nctl_core.config import Config
 from nctl_core.drift.model import Target
-from nctl_core.production.composer import ResolvedSshTarget
+from nctl_core.production.model import ResolvedSshTarget
 from nctl_core.reconcile.model import PlanScope, ReconcileAction, ReconcilePlan
 from nctl_core.reconcile.ssh_preflight import (
     STATUS_MISMATCH,
