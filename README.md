@@ -577,6 +577,34 @@ must not depend on registration order: the registry runs resource types determin
 the combined output by target identity and diff code. Add focused comparator tests plus an engine
 or `nctl.drift.v1` fixture whenever a new code affects target status or consumer behavior.
 
+Compute remains deliberately inert. When an approved first-realization roadmap owns it, its evaluator
+registers at `drift/registry.py` with `@register("compute_instance")`, reads the already typed
+`snapshot.desired.compute_platforms` and `.compute_instances`, and yields `DiffRecord`s. Do not add
+a stub comparator, registration, or no-data code before that roadmap supplies the second
+implementation and its tests.
+
+## Adding a reconciler
+
+Adding a reconciler changes the bounded plan/apply contract, so make each ownership point explicit:
+
+1. Declare one stable `Reconciler` in `reconcile/reconcilers.py` through
+   `reconcile/registry.py::register_reconciler()`. Its ID, default mutation posture, and action kind
+   participate in the deterministic action DAG; add any dependency wiring where the planner builds
+   the action.
+2. Classify only its owned drift codes in `reconcile/classify.py`, then have
+   `reconcile/planner.py::build_plan()` construct the `ReconcileAction`. The planner owns the exact
+   target set. A handler consumes `action.targets` and must never widen it or substitute a convenient
+   inventory group.
+3. Implement one handler under `reconcile/actions/`. It receives `ActionContext` and returns
+   `ExecutedAction`; use `ActionHandler` metadata to declare its `phase` (`bootstrap` or `service`)
+   and whether it `needs_client`.
+4. Register that handler in `reconcile/actions/dispatch.py`'s dispatch table. Keep expected
+   `LedgerActionError`, `NautobotJobError`, and `NautobotError` translation there, where their code,
+   mutation state, and durable action evidence are converted at the public action boundary.
+
+Add focused planner, handler, and executor evidence tests. Do not create a placeholder reconciler,
+handler, or dispatch entry: an inactive implementation is not a safe extension point.
+
 ## Development
 
 ```bash
