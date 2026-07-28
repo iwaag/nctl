@@ -100,7 +100,7 @@ def test_create_handler_runs_exactly_one_pinned_playbook_and_requires_local_succ
     assert _action().requires_observation is True
     assert seen["command"][:6] == [
         "ansible-playbook", "-i", str(tmp_path / "inventories/generated/production.yml"),
-        str(tmp_path / "ansible_agdev/proxmox/create_lxc.yml"), "--limit", "aghub",
+        str(tmp_path / "ansible_agdev/playbooks/proxmox/create_lxc.yml"), "--limit", "aghub",
     ]
     assert json.loads(seen["command"][7]) == {**PARAMETERS, "result_path": str(context.artifacts.path("round-01/compute/create_compute_instance:agfixture.result.json"))}
     assert all("stop" not in value and "destroy" not in value for value in seen["command"])

@@ -17,7 +17,7 @@ def execute(context: ActionContext, action: ReconcileAction) -> ExecutedAction:
     directory = context.cfg.ansible.resolved_playbook_dir(context.cfg.source_path.parent)
     inventory = context.cfg.ansible.resolved_inventory(context.cfg.source_path.parent)
     runner = AnsibleRunner(directory, timeout_seconds=context.cfg.reconcile.ansible_timeout_seconds, artifacts=context.artifacts, command_runner=context.command_runner)
-    command = ["ansible-playbook", "-i", str(inventory), str(directory / "proxmox/create_lxc.yml"), "--limit", creation.control_node.slug, "--extra-vars", json.dumps(variables, sort_keys=True)]
+    command = ["ansible-playbook", "-i", str(inventory), str(directory / "playbooks/proxmox/create_lxc.yml"), "--limit", creation.control_node.slug, "--extra-vars", json.dumps(variables, sort_keys=True)]
     run = runner.run(command, mode="apply", artifact_stem=f"round-{context.round_index:02d}/ansible/{action.id}")
     detail = {"command": run.command, "exit_code": run.exit_code, "result_path": str(result_path)}
     if run.exit_code != 0:
