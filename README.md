@@ -1,7 +1,7 @@
 # nctl
 
 Unified CLI for [pj-clusterintent](https://github.com/iwaag/pj-clusterintent): computes desired/actual
-drift and runs standard workflows. Implementation plan: `devdocs/vision/core_reconcile/` in the parent repo.
+drift and runs standard workflows. Implementation plan: `devdocs/big/core_reconcile/` in the parent repo.
 
 ## Layout
 
