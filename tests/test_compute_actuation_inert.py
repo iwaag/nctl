@@ -17,7 +17,8 @@ from nctl_core.drift.engine import compute_drift
 from nctl_core.reconcile.model import PlanScope
 from nctl_core.reconcile.planner import build_plan
 from nctl_core.sources.actual import ActualDevice, ActualSnapshot
-from nctl_core.sources.desired import DesiredComputeInstance, DesiredComputePlatform, DesiredNode, DesiredSnapshot
+from nctl_core.compute.model import DesiredComputeInstance, DesiredComputePlatform
+from nctl_core.sources.desired import DesiredNode, DesiredSnapshot
 from nctl_core.sources.snapshot import SourceSnapshot
 
 GENERATED_AT = "2026-07-25T12:00:00+00:00"

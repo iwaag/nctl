@@ -6,8 +6,8 @@ from nctl_core.dnsmasq_render import compute_dnsmasq_render
 from nctl_core.drift.evaluation_snapshot import evaluate_all_endpoints, evaluate_all_nodes, evaluate_all_services
 from nctl_core.reconcile.profiles import ManagedFileSpec, ProfileAction, ProfileReconciliation
 from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddress, ActualSnapshot
+from nctl_core.compute.model import DesiredComputeInstance
 from nctl_core.sources.desired import (
-    DesiredComputeInstance,
     DesiredDependency,
     DesiredEndpoint,
     DesiredNode,

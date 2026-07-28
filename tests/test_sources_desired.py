@@ -4,13 +4,12 @@ import httpx
 import respx
 
 from nctl_core.nautobot import NautobotClient
+from nctl_core.compute.contract import effective_lifecycle, select_compute_primary_endpoint
 from nctl_core.sources.desired import (
     DESIRED_QUERY,
     DesiredEndpoint,
     DesiredNode,
-    effective_lifecycle,
     fetch_desired_snapshot,
-    select_compute_primary_endpoint,
 )
 
 BASE_URL = "http://nautobot.test"
