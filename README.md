@@ -560,6 +560,25 @@ with hostile CLI options or environment variables are outside that supported pat
   unified client for both core DCIM/IPAM and `nintent`'s desired-state types); writes stay REST
   (Nautobot GraphQL is read-only by design, and the intent-catalog ViewSets remain the write path).
 
+### Module admission
+
+A module is admitted for a responsibility, not to make another file shorter. Every new or split
+module must:
+
+1. own one operational value, contract, target set, route, identity, or lifecycle decision;
+2. have a reason to change independent of the module it was separated from;
+3. name its consumers;
+4. belong to exactly one layer — transport, domain, orchestration, or presentation — and follow
+   the dependency direction `presentation → orchestration → domain ← transport` without importing
+   downward across it;
+5. not exist solely to reduce line count;
+6. not recreate a public schema deleted as an internal abstraction; and
+7. have a documented entry in this README's responsibility map.
+
+An interface needs either two current implementations, or one current implementation and a second
+one named in an approved roadmap. Treat line count only as a prompt to inspect ownership; it is
+never the reason to split by itself.
+
 ## Adding a comparator
 
 Comparators live under `src/nctl_core/drift/` and are registered by resource type:
