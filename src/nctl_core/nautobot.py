@@ -55,38 +55,30 @@ class NautobotClient:
         self.close()
 
     def _get(self, path: str) -> httpx.Response:
+        return self._request("get", path)
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Perform one HTTP request with the client's stable connection translation."""
         try:
-            return self._client.get(path)
+            return self._client.request(method, path, **kwargs)
         except httpx.RequestError as exc:
             raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
 
     def rest_get(self, path: str, params: dict[str, Any] | None = None) -> httpx.Response:
-        try:
-            return self._client.get(path, params=params)
-        except httpx.RequestError as exc:
-            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        return self._request("get", path, params=params)
 
     def rest_patch(self, path: str, payload: dict[str, Any]) -> httpx.Response:
-        try:
-            response = self._client.patch(path, json=payload)
-        except httpx.RequestError as exc:
-            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        response = self._request("patch", path, json=payload)
         self._raise_for_auth(response)
         return response
 
     def rest_post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
-        try:
-            response = self._client.post(path, json=payload)
-        except httpx.RequestError as exc:
-            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        response = self._request("post", path, json=payload)
         self._raise_for_auth(response)
         return response
 
     def rest_delete(self, path: str) -> httpx.Response:
-        try:
-            response = self._client.delete(path)
-        except httpx.RequestError as exc:
-            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        response = self._request("delete", path)
         self._raise_for_auth(response)
         return response
 
@@ -97,18 +89,10 @@ class NautobotClient:
             raise NautobotAuthError(f"authentication failed ({response.status_code})")
 
     def rest_download(self, path: str) -> httpx.Response:
-        try:
-            return self._client.get(path, headers={"Accept": "*/*"})
-        except httpx.RequestError as exc:
-            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        return self._request("get", path, headers={"Accept": "*/*"})
 
     def graphql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
-        try:
-            response = self._client.post(
-                "/api/graphql/", json={"query": query, "variables": variables or {}}
-            )
-        except httpx.RequestError as exc:
-            raise NautobotConnectionError(f"cannot reach {self.url}: {exc}") from exc
+        response = self._request("post", "/api/graphql/", json={"query": query, "variables": variables or {}})
         if response.status_code in (401, 403):
             raise NautobotAuthError(f"authentication failed ({response.status_code})")
         response.raise_for_status()
