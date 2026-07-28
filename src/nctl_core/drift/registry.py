@@ -7,6 +7,15 @@ detail, not something `nctl drift`'s consumers should be able to observe. So
 `run_comparators` always returns diff records sorted by
 `(target.kind, target identity, code)`, regardless of registration order —
 covered by a dedicated ordering-independence test.
+
+Compute evaluator registration is intentionally documented but not activated:
+the future evaluator calls `@register("compute_instance")`, receives
+`(SourceSnapshot, DriftContext)`, reads the already typed
+`snapshot.desired.compute_platforms` and `.compute_instances`, and emits its
+own `DiffRecord`s. `Target.kind` is deliberately an open string, so no model
+change is required for its target kind. Any compute no-data codes belong in
+`drift.status.UNKNOWN_CODES`. This package must not add a stub comparator or
+registration until the separately approved realization roadmap owns it.
 """
 
 from __future__ import annotations
