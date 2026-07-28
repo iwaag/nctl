@@ -27,6 +27,7 @@ from nctl_core.reconcile.profiles import ProfileReconciliation
 from nctl_core.sources.snapshot import SourceSnapshot
 
 from .evaluation import EvaluationResult, evaluate_endpoint_intent, evaluate_node_intent, evaluate_service_intent
+from .gap_status import status_from_gaps
 from .service_placement import ContentSpec, evaluate_placement_drift
 
 
@@ -187,7 +188,7 @@ def evaluate_all_services(
                     "actual": unexpected,
                 }
             )
-        status = _status_from_gaps(gaps)
+        status = status_from_gaps(gaps)
         summary = dict(base.deterministic_summary)
         summary.update(
             status=status,
@@ -289,14 +290,6 @@ def _content_spec_by_service_id(
             digest_algo=spec.digest,
         )
     return result
-
-
-def _status_from_gaps(gaps: list[dict]) -> str:
-    severities = {gap.get("severity") for gap in gaps}
-    for severity in ("conflict", "missing", "partial", "needs_review", "unknown"):
-        if severity in severities:
-            return severity
-    return "satisfied"
 
 
 def _interfaces_by_device_id(interfaces: list[ActualInterface]) -> dict[str, list[ActualInterface]]:

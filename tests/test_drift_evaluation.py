@@ -9,10 +9,12 @@ docstring for why.
 from __future__ import annotations
 
 from nctl_core.drift.evaluation import (
-    classify_endpoint_ip_ranges,
     evaluate_endpoint_intent,
     evaluate_node_intent,
     evaluate_service_intent,
+)
+from nctl_core.drift.ip_ranges import (
+    classify_endpoint_ip_ranges,
     invalid_desired_ip_ranges,
     matching_desired_ip_ranges,
     normalize_desired_range_addresses,

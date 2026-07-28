@@ -50,7 +50,18 @@ from typing import Any, Iterable, Mapping
 
 from nctl_core.names import canonical_node_name
 from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddress, ActualVirtualMachine
-from nctl_core.sources.desired import DesiredDependency, DesiredEndpoint, DesiredIPRange, DesiredNode, DesiredService
+from nctl_core.sources.desired import DesiredDependency, DesiredEndpoint, DesiredNode, DesiredService
+
+from .ip_ranges import (
+    classify_endpoint_ip_ranges,
+    invalid_desired_ip_ranges,
+    matching_desired_ip_ranges,
+    normalize_desired_range_addresses,
+    normalize_endpoint_ip_string,
+    overlapping_desired_ip_ranges,
+)
+from .gap_status import status_from_gaps
+from .interfaces import normalize_mac
 
 NODE_TARGET_TYPE = "desired_node"
 ENDPOINT_TARGET_TYPE = "desired_endpoint"
@@ -101,115 +112,6 @@ class EvaluationResult:
             "deterministic_summary": self.deterministic_summary,
             "actual_refs": self.actual_refs,
         }
-
-
-def normalize_endpoint_ip_string(value: Any) -> str:
-    """Return a host IP string for endpoint intent, or an empty string when invalid."""
-    normalized = _strict_host_address(value)
-    return str(normalized) if normalized is not None else ""
-
-
-def normalize_desired_range_addresses(ip_range: DesiredIPRange) -> dict[str, Any]:
-    """Return normalized range address data and deterministic validation errors."""
-    start_text = _text(ip_range.start_address)
-    end_text = _text(ip_range.end_address)
-    start_ip = _strict_host_address(start_text)
-    end_ip = _strict_host_address(end_text)
-    errors: list[str] = []
-
-    if not start_text:
-        errors.append("missing_start_address")
-    elif start_ip is None:
-        errors.append("invalid_start_address")
-
-    if not end_text:
-        errors.append("missing_end_address")
-    elif end_ip is None:
-        errors.append("invalid_end_address")
-
-    if start_ip is not None and end_ip is not None:
-        if start_ip.version != end_ip.version:
-            errors.append("address_family_mismatch")
-        elif int(start_ip) > int(end_ip):
-            errors.append("range_start_after_end")
-
-    return {
-        "start_address": str(start_ip) if start_ip is not None else start_text,
-        "end_address": str(end_ip) if end_ip is not None else end_text,
-        "valid": not errors,
-        "errors": errors,
-    }
-
-
-def desired_ip_range_facts(ip_range: DesiredIPRange) -> dict[str, Any]:
-    """Return serializable facts for a `DesiredIPRange`."""
-    normalized = normalize_desired_range_addresses(ip_range)
-    facts = {
-        "desired_ip_range_id": ip_range.id,
-        "name": _text(ip_range.name),
-        "slug": _text(ip_range.slug),
-        "start_address": normalized["start_address"],
-        "end_address": normalized["end_address"],
-        "range_policy": _text(ip_range.range_policy),
-        "lifecycle": _text(ip_range.lifecycle),
-        "generate_dnsmasq": bool(ip_range.generate_dnsmasq),
-    }
-    if not normalized["valid"]:
-        facts["valid"] = False
-        facts["errors"] = normalized["errors"]
-    return facts
-
-
-def matching_desired_ip_ranges(endpoint_ip: Any, range_candidates: Iterable[DesiredIPRange]) -> list[dict[str, Any]]:
-    return classify_endpoint_ip_ranges(endpoint_ip, range_candidates)["matching_ranges"]
-
-
-def invalid_desired_ip_ranges(range_candidates: Iterable[DesiredIPRange]) -> list[dict[str, Any]]:
-    classified = _classified_ip_ranges(range_candidates)
-    return [entry["facts"] for entry in classified["invalid"]]
-
-
-def overlapping_desired_ip_ranges(range_candidates: Iterable[DesiredIPRange]) -> list[dict[str, Any]]:
-    valid_ranges = _classified_ip_ranges(range_candidates)["valid"]
-    return _overlap_records(valid_ranges)
-
-
-def classify_endpoint_ip_ranges(endpoint_ip: Any, range_candidates: Iterable[DesiredIPRange]) -> dict[str, Any]:
-    """Classify an endpoint IP against desired ranges."""
-    normalized_endpoint_ip = _strict_host_address(endpoint_ip)
-    classified = _classified_ip_ranges(range_candidates)
-    matching_ranges: list[NormalizedIPRange] = []
-
-    if normalized_endpoint_ip is not None:
-        for ip_range in classified["valid"]:
-            if (
-                normalized_endpoint_ip.version == ip_range.start_ip.version
-                and int(ip_range.start_ip) <= int(normalized_endpoint_ip) <= int(ip_range.end_ip)
-            ):
-                matching_ranges.append(ip_range)
-
-    overlap_records = _overlap_records(classified["valid"])
-    matching_ids = {entry.facts["desired_ip_range_id"] for entry in matching_ranges}
-    matching_keys = {_range_identity_key(entry.facts) for entry in matching_ranges}
-    overlapping_matching_ranges = [
-        overlap
-        for overlap in overlap_records
-        if (
-            overlap["first"].get("desired_ip_range_id") in matching_ids
-            or overlap["second"].get("desired_ip_range_id") in matching_ids
-            or _range_identity_key(overlap["first"]) in matching_keys
-            or _range_identity_key(overlap["second"]) in matching_keys
-        )
-    ]
-
-    return {
-        "endpoint_ip": str(normalized_endpoint_ip) if normalized_endpoint_ip is not None else _text(endpoint_ip),
-        "endpoint_ip_valid": normalized_endpoint_ip is not None or not _text(endpoint_ip),
-        "matching_ranges": [entry.facts for entry in sorted(matching_ranges, key=lambda entry: entry.sort_key)],
-        "invalid_ranges": [entry["facts"] for entry in classified["invalid"]],
-        "overlapping_ranges": overlap_records,
-        "overlapping_matching_ranges": overlapping_matching_ranges,
-    }
 
 
 def evaluate_node_intent(
@@ -592,7 +494,7 @@ def evaluate_service_intent(
     if observed_facts is None:
         gaps.append({"code": "service_observed_facts_unknown", "severity": "unknown"})
 
-    status = _status_from_gaps(gaps)
+    status = status_from_gaps(gaps)
     summary = {
         "target": _target_ref(desired_service.id, desired_service.name),
         "status": status,
@@ -860,7 +762,7 @@ def _actual_node_facts(
     if isinstance(actual, ActualDevice):
         custom_fields = actual.facts or {}
         interfaces = interfaces_by_device_id.get(actual.id, [])
-        primary_mac_address = _normalize_mac(
+        primary_mac_address = normalize_mac(
             _first_text(
                 custom_fields.get("primary_mac_address"), custom_fields.get("primary_mac"), custom_fields.get("mac_address")
             )
@@ -974,7 +876,7 @@ def _interface_facts(object_type: str, actual_node: Any, interface: ActualInterf
         "actual_node_ref": _actual_ref(object_type, actual_node),
         "interface_id": interface.id,
         "interface_name": _text(interface.name),
-        "mac_address": _normalize_mac(interface.mac_address),
+        "mac_address": normalize_mac(interface.mac_address),
         "enabled": bool(interface.enabled),
     }
 
@@ -983,7 +885,7 @@ def _primary_mac_candidate(object_type: str, actual_node: Any) -> dict[str, Any]
     if not isinstance(actual_node, ActualDevice):
         return {}
     custom_fields = actual_node.facts or {}
-    mac_address = _normalize_mac(
+    mac_address = normalize_mac(
         _first_text(custom_fields.get("primary_mac_address"), custom_fields.get("primary_mac"), custom_fields.get("mac_address"))
     )
     if not mac_address:
@@ -999,7 +901,7 @@ def _primary_mac_candidate(object_type: str, actual_node: Any) -> dict[str, Any]
 
 def _primary_mac_candidate_from_facts(actual: dict[str, Any]) -> dict[str, Any]:
     custom_fields = actual.get("custom_fields") if isinstance(actual.get("custom_fields"), dict) else {}
-    mac_address = _normalize_mac(
+    mac_address = normalize_mac(
         _first_text(
             actual.get("primary_mac_address"),
             custom_fields.get("primary_mac_address"),
@@ -1023,21 +925,6 @@ def _wants_dhcp_material(desired_endpoint: DesiredEndpoint) -> bool:
         and bool(desired_endpoint.generate_dnsmasq)
         and bool(_text(desired_endpoint.ip_address))
     )
-
-
-def _status_from_gaps(gaps: list[dict[str, Any]]) -> str:
-    severities = {gap.get("severity") for gap in gaps}
-    if "conflict" in severities:
-        return "conflict"
-    if "missing" in severities:
-        return "missing"
-    if "partial" in severities:
-        return "partial"
-    if "needs_review" in severities:
-        return "needs_review"
-    if "unknown" in severities:
-        return "unknown"
-    return "satisfied"
 
 
 def _actual_ref(object_type: str, obj: Any) -> dict[str, Any]:
@@ -1201,13 +1088,6 @@ def _invalid_range_sort_key(facts: dict[str, Any]) -> tuple[str, str, str, str, 
 
 def _range_identity_key(facts: dict[str, Any]) -> tuple[str, str, str]:
     return (_text(facts.get("desired_ip_range_id")), _text(facts.get("slug")), _text(facts.get("name")))
-
-
-def _normalize_mac(value: Any) -> str:
-    text = re.sub(r"[^0-9A-Fa-f]", "", _text(value))
-    if len(text) != 12:
-        return ""
-    return ":".join(text[index : index + 2].lower() for index in range(0, 12, 2))
 
 
 def _first_text(*values: Any) -> str:

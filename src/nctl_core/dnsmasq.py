@@ -15,6 +15,8 @@ import json
 import re
 from typing import Any, Iterable, Mapping
 
+from nctl_core.drift.interfaces import normalize_mac
+
 
 ELIGIBLE_NODE_LIFECYCLES = frozenset({"planned", "approved", "active"})
 ELIGIBLE_ENDPOINT_TYPES = frozenset({"primary", "management", "service", "vpn"})
@@ -197,11 +199,11 @@ def resolve_dhcp_reservation(
     actual_refs = _unique_actual_refs(mac_candidates, node_actual_refs)
     normalized_mac_candidates = []
     for candidate in mac_candidates:
-        mac_address = _normalize_mac(candidate.get("mac_address"))
+        mac_address = normalize_mac(candidate.get("mac_address"))
         if mac_address:
             normalized_mac_candidates.append({**candidate, "mac_address": mac_address})
 
-    desired_mac = _normalize_mac(endpoint.get("mac_address"))
+    desired_mac = normalize_mac(endpoint.get("mac_address"))
     if desired_mac and not base_skip_reasons:
         gap_codes = set(_list(endpoint_summary.get("gap_codes")))
         return _resolve_desired_mac_reservation(
@@ -532,7 +534,7 @@ def _blocking_finding(endpoint: Mapping[str, Any], reservation: dict[str, Any]) 
         "desired_endpoint": _text(endpoint.get("name")),
         "desired_node_id": _pk(desired_node),
         "desired_node_slug": _text(desired_node.get("slug")),
-        "desired_mac": _normalize_mac(endpoint.get("mac_address")) or None,
+        "desired_mac": normalize_mac(endpoint.get("mac_address")) or None,
         "actual_mac_candidates": reservation.get("actual_mac_candidates", []),
     }
 
@@ -631,13 +633,6 @@ def _range_host_address(value: Any) -> str:
         return str(ip_interface(text).ip)
     except ValueError:
         return ""
-
-
-def _normalize_mac(value: Any) -> str:
-    text = re.sub(r"[^0-9A-Fa-f]", "", _text(value))
-    if len(text) != 12:
-        return ""
-    return ":".join(text[index : index + 2].lower() for index in range(0, 12, 2))
 
 
 def _mapping(value: Any) -> dict[str, Any]:
