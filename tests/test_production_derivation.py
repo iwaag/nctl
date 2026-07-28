@@ -6,12 +6,19 @@ from nctl_core.production.derivation import (
     DerivationFailure,
     EndpointCandidate,
     OperationalOverride,
+    actual_type_problem,
     resolve_operational_values,
 )
 from nctl_core.sources.actual import ActualFacts
 
 
 GENERATED_AT = "2026-07-20T00:00:00Z"
+
+
+def test_actual_type_problem_is_owned_by_production_derivation():
+    assert actual_type_problem(None) == "no_realized_device"
+    assert actual_type_problem("device") is None
+    assert actual_type_problem("virtual_machine") == "unsupported_actual_type"
 
 
 def _facts(system: str = "Linux", *, local_ip: str | None = "192.0.2.10") -> ActualFacts:

@@ -10,10 +10,9 @@ inventory document plus a structured companion report — byte-identical in
 shape to nintent's `ExportProductionInventory` Job output (see p2/report2.md
 for the parity check).
 
-`ActualFacts`/`read_actual_facts`/`actual_type_problem`/`missing_required_facts`
-already live in `nctl_core.sources.actual` (ported there in Phase 2 Step 1,
-since the actual-fact allowlist is also needed by the drift engine); this
-module imports them rather than re-porting them a second time.
+`ActualFacts` and `read_actual_facts` live in `nctl_core.sources.actual`, the
+transport boundary that owns the actual-fact allowlist. Composition eligibility
+is owned by `production.derivation`, beside its only consumer.
 
 No value here is inferred from another fact. Service-group membership comes only
 from active placements and the deployment-profile map, OS selector groups come

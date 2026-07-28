@@ -7,9 +7,7 @@ from nctl_core.nautobot import NautobotClient
 from nctl_core.sources.actual import (
     ACTUAL_QUERY,
     ActualFacts,
-    actual_type_problem,
     fetch_actual_snapshot,
-    missing_required_facts,
     read_actual_facts,
 )
 
@@ -148,29 +146,6 @@ def test_read_actual_facts_handles_missing_and_blank_values():
     facts = read_actual_facts({"host_system": "  "})
     assert facts.observed_system is None
     assert facts.local_ip is None
-
-
-def test_actual_type_problem():
-    assert actual_type_problem(None) == "no_realized_device"
-    assert actual_type_problem("device") is None
-    assert actual_type_problem("virtual_machine") == "unsupported_actual_type"
-
-
-def test_missing_required_facts_only_checks_requested_consumers():
-    facts = ActualFacts(
-        observed_system=None,
-        local_ip=None,
-        mac_address=None,
-        network_interface="eth0",
-        collected_at=None,
-        inventory_source=None,
-    )
-    assert missing_required_facts(facts, {"host_os"}) == ["missing_observed_system"]
-    assert missing_required_facts(facts, {"network_interface"}) == []
-    assert missing_required_facts(facts, {"host_os", "wol"}) == [
-        "missing_mac_address",
-        "missing_observed_system",
-    ]
 
 
 @respx.mock

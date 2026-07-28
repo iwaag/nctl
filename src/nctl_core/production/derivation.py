@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import ipaddress
 from typing import Any, Mapping
 
-from nctl_core.sources.actual import ActualFacts, actual_type_problem
+from nctl_core.sources.actual import ActualFacts
 
 from .contract import actual_state_problem
 
@@ -23,6 +23,15 @@ _POWER_BY_PLATFORM = {
     "macos": frozenset({"none", "macos_sleep"}),
     "haos": frozenset({"none"}),
 }
+
+
+def actual_type_problem(realized_type: str | None) -> str | None:
+    """Return the composition failure for an unusable realized type."""
+    if not realized_type:
+        return "no_realized_device"
+    if realized_type == "device":
+        return None
+    return "unsupported_actual_type"
 
 
 @dataclass(frozen=True)

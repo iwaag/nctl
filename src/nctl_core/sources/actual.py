@@ -1,10 +1,9 @@
 """GraphQL fetch layer for the actual-state source (Phase 2 Step 1).
 
-`ActualFacts`/`read_actual_facts`/`actual_type_problem`/`missing_required_facts`
-are ported unchanged from nintent's `actual_facts.py`: the closed allowlist of
-custom fields the nauto `Ingest Nodeutils Inventory` Job writes onto a realized
+`ActualFacts` and `read_actual_facts` define the closed allowlist of custom
+fields the nauto `Ingest Nodeutils Inventory` Job writes onto a realized
 Device. Nothing here infers a derived value (package manager, power policy,
-service placement) from actual data — same guarantee as the original.
+service placement) from actual data.
 
 Deviation from the ORM version, confirmed by introspecting the live schema
 (2026-07-15): `host_system` and `network_interface` have no registered
@@ -28,7 +27,7 @@ allowlisted-facts query.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -85,11 +84,6 @@ ACTUAL_QUERY = """
 }
 """
 
-# The only realized object type schema 1.0 supports for actual-backed
-# composition.  Realized Virtual Machines are skipped with
-# ``unsupported_actual_type`` and deferred to a later schema.
-SUPPORTED_REALIZED_TYPE = "device"
-
 # Closed allowlist mapping each exportable actual fact to the dedicated custom
 # field that the nauto nodeutils ingest job persists.  The exporter reads only
 # these stable fields; adding a fact requires a concrete current consumer, a
@@ -103,15 +97,6 @@ ACTUAL_FACT_FIELDS = {
     "inventory_source": "inventory_source",
     "observed_services": "observed_services",
     "service_inventory_updated_at": "service_inventory_updated_at",
-}
-
-# Per-consumer required actual facts.  A fact is required only when a concrete
-# current consumer needs it; not every allowlisted field is required on every
-# host.
-REQUIRED_FACT_BY_CONSUMER = {
-    "host_os": "observed_system",  # observed OS selector groups and drift
-    "wol": "mac_address",  # wake-on-LAN power control
-    "network_interface": "network_interface",  # playbooks/profiles that bind to it
 }
 
 
@@ -170,38 +155,6 @@ def _observed_services(value: Any) -> dict[str, dict[str, Any]] | None:
         for name, entry in value.items()
         if name not in (None, "") and isinstance(entry, Mapping)
     }
-
-
-def actual_type_problem(realized_type: str | None) -> str | None:
-    """Return a host-skip reason for an unusable realized actual type.
-
-    ``None`` means the realized object is a Device and is eligible for
-    actual-backed composition.
-    """
-
-    if not realized_type:
-        return "no_realized_device"
-    if realized_type == SUPPORTED_REALIZED_TYPE:
-        return None
-    return "unsupported_actual_type"
-
-
-def missing_required_facts(facts: ActualFacts, consumers: Iterable[str]) -> list[str]:
-    """Return skip reasons for consumer-specific facts that are absent.
-
-    ``consumers`` lists which current consumers apply to this host (for example
-    ``{"host_os", "wol"}``).  Only the facts those consumers need are required.
-    """
-
-    problems: list[str] = []
-    for consumer in sorted(set(consumers)):
-        try:
-            attr = REQUIRED_FACT_BY_CONSUMER[consumer]
-        except KeyError as exc:
-            raise KeyError(f"unknown actual-fact consumer: {consumer!r}") from exc
-        if getattr(facts, attr) is None:
-            problems.append(f"missing_{attr}")
-    return sorted(problems)
 
 
 class ActualDevice(BaseModel):

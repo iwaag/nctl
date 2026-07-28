@@ -30,8 +30,8 @@ _CODE_LITERAL_RE = re.compile(r'"code":\s*"([a-z0-9_]+)"|code="([a-z0-9_]+)"')
 # Codes built from an f-string / variable rather than a literal, enumerated
 # by hand from the exact source that constructs them (evaluation.py's
 # `_node_mismatches` iterates ("serial", "uuid", "platform") into
-# f"{key}_mismatch", and `missing_required_facts` iterates
-# `REQUIRED_FACT_BY_CONSUMER`'s values into f"missing_{attr}").
+# f"{key}_mismatch"; each production consumer now emits its own missing-fact
+# code beside the rule that requires it).
 _DYNAMIC_CODES = {
     "serial_mismatch",
     "uuid_mismatch",
