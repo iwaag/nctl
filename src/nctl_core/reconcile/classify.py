@@ -147,7 +147,6 @@ _MANUAL_REVIEW_CODES = frozenset(
         "compute_platform_ambiguous",
         "compute_instance_missing",
         "compute_instance_candidate_ambiguous",
-        "compute_instance_not_linked",
         "compute_realized_instance_missing",
         "compute_identity_conflict",
         "compute_endpoint_mac_conflict",
@@ -192,6 +191,7 @@ _TABLE: dict[str, CodeClassification] = {}
 _TABLE.update(
     {code: CodeClassification(Classification.OBSERVATION, "observe_node") for code in _OBSERVATION_CODES}
 )
+_TABLE.update({"compute_instance_not_linked": CodeClassification(Classification.AUTOMATIC, "link_compute_realization")})
 _TABLE.update(
     {code: CodeClassification(Classification.AUTOMATIC, "link_actual_node") for code in _LINK_ACTUAL_NODE_CODES}
 )

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Union
 
 from nctl_core.drift.evaluation_snapshot import evaluate_all_nodes
+from nctl_core.drift.compute_realization import derive_compute_realizations
 from nctl_core.drift.model import DiffRecord, Target
 from nctl_core.sources.snapshot import SourceSnapshot
 
@@ -45,6 +46,9 @@ OBSERVE_NODE = register_reconciler(
 )
 LINK_ACTUAL_NODE = register_reconciler(
     Reconciler(id="link_actual_node", action_kind="ledger_patch", mutates=True, requires_observation=False)
+)
+LINK_COMPUTE_REALIZATION = register_reconciler(
+    Reconciler(id="link_compute_realization", action_kind="ledger_patch", mutates=True, requires_observation=False)
 )
 RECONCILE_IPAM = register_reconciler(
     Reconciler(id="reconcile_ipam", action_kind="job", mutates=True, requires_observation=False)
@@ -105,6 +109,47 @@ def plan_link_actual_node(target: Target, snapshot: SourceSnapshot) -> Union[Rec
         mutates=LINK_ACTUAL_NODE.mutates,
         requires_observation=LINK_ACTUAL_NODE.requires_observation,
         parameters={"candidate": candidate},
+    )
+
+
+def plan_link_compute_realization(target: Target, snapshot: SourceSnapshot, *, generated_at: str) -> Union[ReconcileAction, Fallback]:
+    """Pin the two ledger writes from the same typed decision as compute drift."""
+    realization = derive_compute_realizations(snapshot, generated_at=generated_at).get(target.id or "")
+    if realization is None or realization.cluster is None or realization.virtual_machine is None:
+        return Fallback(Classification.MANUAL_REVIEW, "compute link candidate is missing or not unique")
+    if realization.platform_failures or realization.instance_failures:
+        return Fallback(Classification.MANUAL_REVIEW, "compute link candidate failed identity or freshness validation")
+    if realization.platform_link_state == "linked_to_other" or realization.instance_link_state == "linked_to_other":
+        return Fallback(
+            Classification.MANUAL_REVIEW,
+            "existing compute realization link points to a different object; refusing to replace it",
+            {"platform_link_state": realization.platform_link_state, "instance_link_state": realization.instance_link_state},
+        )
+    platform = realization.platform
+    vm = realization.virtual_machine
+    cluster = realization.cluster
+    control = next((node for node in snapshot.desired.nodes if node.id == platform.control_node_id), None)
+    parameters = {
+        "compute_instance_id": realization.instance.id,
+        "virtual_machine_id": vm.id,
+        "compute_platform_id": platform.id,
+        "cluster_id": cluster.id,
+        "platform_link_state": realization.platform_link_state,
+        "instance_link_state": realization.instance_link_state,
+        "match_basis": realization.match_basis,
+        "vmid": realization.instance.config.get("vmid"),
+    }
+    return ReconcileAction(
+        id=f"link_compute_realization:{target.slug}",
+        reconciler_id=LINK_COMPUTE_REALIZATION.id,
+        action_kind=LINK_COMPUTE_REALIZATION.action_kind,
+        targets=[target],
+        claimed_diff_codes=["compute_instance_not_linked"],
+        reason="A fresh, unique compute realization candidate can be recorded in the desired ledger.",
+        evidence={"platform_slug": platform.slug, "control_node_slug": control.slug if control else None, **parameters},
+        parameters=parameters,
+        mutates=LINK_COMPUTE_REALIZATION.mutates,
+        requires_observation=LINK_COMPUTE_REALIZATION.requires_observation,
     )
 
 

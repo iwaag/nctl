@@ -24,6 +24,7 @@ _SCANNED_FILES = [
     _SRC / "drift" / "service_placement.py",
     _SRC / "drift" / "evaluation_snapshot.py",
     _SRC / "drift" / "compute_evaluation.py",
+    _SRC / "drift" / "compute_realization.py",
     _SRC / "sources" / "actual.py",
 ]
 _CODE_LITERAL_RE = re.compile(r'"code":\s*"([a-z0-9_]+)"|code="([a-z0-9_]+)"')

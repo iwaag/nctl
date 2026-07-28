@@ -600,7 +600,9 @@ Compute realization is an active comparator example: `drift/compute_evaluation.p
 platform/guest matching and field-comparison decision, while the thin `compute_instance`
 registration in `comparators.py` attaches it to drift. Phase 1 deliberately classifies every
 compute finding as manual review or unsupported: the evaluator may derive a candidate, but it
-does not write a realization link or authorize an action.
+derives a unique existing guest candidate. A Phase 2 `ledger_patch` action may
+record that candidate through the narrow compute-link API; it never creates or
+mutates a Proxmox guest.
 
 ## Adding a reconciler
 

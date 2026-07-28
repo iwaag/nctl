@@ -32,7 +32,7 @@ from pydantic import BaseModel
 
 from nctl_core.jobs import NautobotJobResult, NautobotJobRunner
 from nctl_core.nautobot import NautobotClient, NautobotError
-from nctl_core.sources.desired import DesiredNode, fetch_desired_snapshot
+from nctl_core.sources.desired import DesiredComputeInstance, DesiredComputePlatform, DesiredNode, fetch_desired_snapshot
 
 from .model import ReconcileAction
 
@@ -70,6 +70,18 @@ class LinkActualNodeResult(BaseModel):
     field: str
     candidate_id: str
     candidate_name: str = ""
+
+
+class ComputeLinkResult(BaseModel):
+    node_slug: str
+    compute_platform_id: str
+    cluster_id: str
+    compute_instance_id: str
+    virtual_machine_id: str
+    vmid: int | None = None
+    match_basis: str | None = None
+    platform_write: str
+    instance_write: str
 
 
 _IPAM_APPLIED_ACTIONS = frozenset({"create_ip_address_applied", "link_ip_address_applied", "noop"})
@@ -159,6 +171,79 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
         candidate_id=candidate_id,
         candidate_name=str(candidate.get("name") or ""),
     )
+
+
+def execute_link_compute_realization(client: NautobotClient, action: ReconcileAction) -> ComputeLinkResult:
+    """Write platform then instance links, confirming each write by GraphQL.
+
+    Existing correct links are idempotent; links to any other object are never
+    replaced.  Once either PATCH succeeds every later error carries
+    ``mutated=True`` so durable operation evidence preserves partial progress.
+    """
+    if action.reconciler_id != "link_compute_realization":
+        raise LedgerActionError("wrong_action", f"not a link_compute_realization action: {action.reconciler_id!r}")
+    p = action.parameters
+    platform_id = str(p.get("compute_platform_id") or "")
+    instance_id = str(p.get("compute_instance_id") or "")
+    cluster_id = str(p.get("cluster_id") or "")
+    vm_id = str(p.get("virtual_machine_id") or "")
+    if not all((platform_id, instance_id, cluster_id, vm_id)):
+        raise LedgerActionError("missing_compute_link_parameter", "compute link action has incomplete pinned identities")
+    mutated = False
+    try:
+        desired = fetch_desired_snapshot(client)
+        platform = next((row for row in desired.compute_platforms if row.id == platform_id), None)
+        instance = next((row for row in desired.compute_instances if row.id == instance_id), None)
+        if platform is None or instance is None:
+            raise LedgerActionError("compute_link_fetch_failed", "planned compute platform or instance no longer exists")
+        if platform.realized_cluster_id not in (None, cluster_id):
+            raise LedgerActionError("platform_link_already_other", "platform link points to a different Cluster; refusing to replace it")
+        if instance.realized_vm_id not in (None, vm_id):
+            raise LedgerActionError("instance_link_already_other", "instance link points to a different VirtualMachine; refusing to replace it")
+        platform_write = "already_correct"
+        if platform.realized_cluster_id is None:
+            _patch_compute_link(client, "compute-platforms", platform_id, "realized_cluster", cluster_id)
+            mutated = True
+            platform_write = "patched"
+        after_platform = _get_compute_rows(client, platform_id, instance_id)[0]
+        if after_platform.realized_cluster_id != cluster_id or after_platform.realized_cluster_source != "derived":
+            raise LedgerActionError("platform_link_not_confirmed", "platform link PATCH was not confirmed by GraphQL", mutated=mutated)
+        instance_write = "already_correct"
+        if instance.realized_vm_id is None:
+            _patch_compute_link(client, "compute-instances", instance_id, "realized_vm", vm_id)
+            mutated = True
+            instance_write = "patched"
+        _after_platform, after_instance = _get_compute_rows(client, platform_id, instance_id)
+        if after_instance.realized_vm_id != vm_id or after_instance.realized_vm_source != "derived":
+            raise LedgerActionError("instance_link_not_confirmed", "instance link PATCH was not confirmed by GraphQL", mutated=mutated)
+    except LedgerActionError as exc:
+        if exc.mutated or not mutated:
+            raise
+        raise LedgerActionError(exc.code, str(exc), exc.detail, mutated=True) from exc
+    target = action.targets[0]
+    return ComputeLinkResult(
+        node_slug=target.slug or "", compute_platform_id=platform_id, cluster_id=cluster_id,
+        compute_instance_id=instance_id, virtual_machine_id=vm_id, vmid=p.get("vmid"),
+        match_basis=p.get("match_basis"), platform_write=platform_write, instance_write=instance_write,
+    )
+
+
+def _patch_compute_link(client: NautobotClient, collection: str, object_id: str, field: str, value: str) -> None:
+    response = client.rest_patch(f"{INTENT_API_BASE}/{collection}/{object_id}/", {field: value, f"{field}_source": "derived"})
+    if not response.is_success:
+        raise LedgerActionError("compute_link_patch_failed", f"PATCH {field} on {collection}/{object_id} failed: HTTP {response.status_code}", {"status_code": response.status_code, "body": response.text[:200]})
+
+
+def _get_compute_rows(client: NautobotClient, platform_id: str, instance_id: str) -> tuple[DesiredComputePlatform, DesiredComputeInstance]:
+    try:
+        desired = fetch_desired_snapshot(client)
+    except Exception as exc:
+        raise LedgerActionError("compute_link_fetch_failed", f"cannot refetch desired compute rows: {exc}") from exc
+    platform = next((row for row in desired.compute_platforms if row.id == platform_id), None)
+    instance = next((row for row in desired.compute_instances if row.id == instance_id), None)
+    if platform is None or instance is None:
+        raise LedgerActionError("compute_link_fetch_failed", "compute platform or instance is absent after PATCH")
+    return platform, instance
 
 
 def execute_reconcile_ipam(

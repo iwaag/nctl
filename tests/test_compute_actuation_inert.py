@@ -1,4 +1,4 @@
-"""Compute realization is visible in drift but remains non-actuating in P1."""
+"""Compute realization link planning is precise and has no Proxmox path."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _snapshot_with_valid_compute() -> SourceSnapshot:
     )
 
 
-def test_valid_compute_collections_produce_drift_but_no_plan_actions():
+def test_unique_compute_candidate_produces_one_ledger_action_and_no_proxmox_action():
     snapshot = _snapshot_with_valid_compute()
     context = DriftContext(generated_at=GENERATED_AT)
 
@@ -59,7 +59,11 @@ def test_valid_compute_collections_produce_drift_but_no_plan_actions():
         drift_generated_at=GENERATED_AT, profile_reconciliation={},
     )
 
-    assert any(record.target.id == "instance-1" for record in plan.manual_review)
-    for action in plan.actions:
-        assert all(target.kind not in ("compute_platform", "compute_instance") for target in action.targets)
-        assert all(target.id not in ("platform-1", "instance-1") for target in action.targets)
+    actions = [action for action in plan.actions if action.reconciler_id == "link_compute_realization"]
+    assert len(actions) == 1
+    action = actions[0]
+    assert [(target.kind, target.id) for target in action.targets] == [("compute_instance", "instance-1")]
+    assert action.action_kind == "ledger_patch"
+    assert action.parameters["compute_platform_id"] == "platform-1"
+    assert action.parameters["virtual_machine_id"] == "vm-1"
+    assert all("proxmox" not in candidate.reconciler_id for candidate in plan.actions)
