@@ -5,11 +5,8 @@ from pathlib import Path
 import yaml
 
 from nctl_core.config import Config
-from nctl_core.dnsmasq_apply import (
-    _inventory_group_hosts,
-    _parse_recap,
-    build_dnsmasq_apply,
-)
+from nctl_core.ansible import inventory_group_hosts, parse_recap
+from nctl_core.dnsmasq_apply import build_dnsmasq_apply
 from nctl_core.dnsmasq import dnsmasq_content_sha256
 from nctl_core.dnsmasq_render import DnsmasqRenderData
 from nctl_core.output import Envelope, EnvelopeError
@@ -1024,10 +1021,10 @@ def test_inventory_group_hosts_includes_child_groups():
         "dnsmasq_server": {"children": ["primary_dns"]},
         "primary_dns": {"hosts": ["dns-1", "dns-2"]},
     }
-    assert _inventory_group_hosts(payload, "dnsmasq_server") == {"dns-1", "dns-2"}
+    assert inventory_group_hosts(payload, "dnsmasq_server") == {"dns-1", "dns-2"}
 
 
 def test_parse_recap_ignores_non_recap_lines():
-    assert _parse_recap("TASK [x] ***\nhost-a : ok=2 changed=1 unreachable=0 failed=0\n") == {
+    assert parse_recap("TASK [x] ***\nhost-a : ok=2 changed=1 unreachable=0 failed=0\n") == {
         "host-a": {"ok": 2, "changed": 1, "unreachable": 0, "failed": 0}
     }

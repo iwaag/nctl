@@ -17,6 +17,8 @@ from nctl_core.reconcile.actions import ipam as ipam_module
 from nctl_core.reconcile.actions import dnsmasq as dnsmasq_module
 from nctl_core.reconcile.actions import ledger_link as ledger_link_module
 from nctl_core.reconcile.actions import observe as observe_module
+from nctl_core.reconcile.actions import playbook as playbook_module
+from nctl_core.reconcile import ssh_preflight as ssh_preflight_module
 from nctl_core.reconcile.executor import run_reconcile
 from nctl_core.reconcile.ledger import IpamReconcileResult, LedgerActionError, LinkActualNodeResult
 from nctl_core.reconcile.lock import acquire_reconcile_lock
@@ -234,9 +236,9 @@ def test_playbook_grouping_passes_the_fixed_operation_timestamp_to_resolver(monk
         seen["generated_at"] = kwargs["generated_at"]
         return SimpleNamespace(host_os=SimpleNamespace(value="linux"))
 
-    monkeypatch.setattr(executor_module, "resolve_operational_values", fake_resolve)
+    monkeypatch.setattr(playbook_module, "resolve_operational_values", fake_resolve)
 
-    groups = executor_module._group_hosts_by_playbook(
+    groups = playbook_module._group_hosts_by_playbook(
         action, ["agweb"], snapshot, generated_at="2026-07-20T12:34:56+00:00"
     )
 
@@ -552,7 +554,7 @@ def test_manual_review_blocks_before_any_mutation(tmp_path, monkeypatch):
     diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="ambiguous_actual_node_candidates", severity=Severity.ERROR, message="x")
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
     calls = {"n": 0}
-    monkeypatch.setattr(executor_module, "AnsibleRunner", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+    monkeypatch.setattr(playbook_module, "AnsibleRunner", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
 
     envelope = run_reconcile(cfg, apply_changes=True)
 
@@ -764,7 +766,7 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
 
     playbook_run_calls = {"n": 0}
     monkeypatch.setattr(
-        executor_module,
+        playbook_module,
         "AnsibleRunner",
         lambda *a, **k: SimpleNamespace(run=lambda *a2, **k2: playbook_run_calls.__setitem__("n", playbook_run_calls["n"] + 1)),
     )
@@ -856,7 +858,7 @@ def test_production_write_failure_starts_no_service_ansible_process(tmp_path, mo
 
     playbook_run_calls = {"n": 0}
     monkeypatch.setattr(
-        executor_module,
+        playbook_module,
         "AnsibleRunner",
         lambda *a, **k: SimpleNamespace(run=lambda *a2, **k2: playbook_run_calls.__setitem__("n", playbook_run_calls["n"] + 1)),
     )
@@ -926,7 +928,7 @@ def test_service_phase_scans_freshly_regenerated_route_not_round_start_snapshot(
         playbook_run_calls["n"] += 1
         return AnsibleRunResult(mode=mode, command=args, exit_code=0)
 
-    monkeypatch.setattr(executor_module.AnsibleRunner, "run", fake_runner_run)
+    monkeypatch.setattr(playbook_module.AnsibleRunner, "run", fake_runner_run)
 
     node = _node()
     good_service = _service_and_placement("good-svc", "good", node)
@@ -1093,7 +1095,7 @@ def test_independent_service_action_failure_does_not_block_the_other(tmp_path, m
         ok = "bad.yml" not in " ".join(args)
         return AnsibleRunResult(mode=mode, command=args, exit_code=0 if ok else 1)
 
-    monkeypatch.setattr(executor_module.AnsibleRunner, "run", fake_runner_run)
+    monkeypatch.setattr(playbook_module.AnsibleRunner, "run", fake_runner_run)
 
     envelope = run_reconcile(cfg, apply_changes=True, max_rounds=3)
 
@@ -1192,7 +1194,7 @@ def test_interruption_mid_round_retains_actions_completed_before_it(tmp_path, mo
         flag.triggered = True  # interrupt is discovered only after this action's playbook ran
         return AnsibleRunResult(mode=mode, command=args, exit_code=0)
 
-    monkeypatch.setattr(executor_module.AnsibleRunner, "run", fake_runner_run)
+    monkeypatch.setattr(playbook_module.AnsibleRunner, "run", fake_runner_run)
 
     envelope = run_reconcile(cfg, apply_changes=True)
 
@@ -1320,7 +1322,7 @@ def test_local_blocker_with_no_actions_terminates_without_mutation(tmp_path, mon
     )
     _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
     calls = {"n": 0}
-    monkeypatch.setattr(executor_module, "AnsibleRunner", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+    monkeypatch.setattr(playbook_module, "AnsibleRunner", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
 
     envelope = run_reconcile(cfg, apply_changes=True)
 
@@ -1449,7 +1451,7 @@ def test_ssh_scan_errors_maps_unenrolled_status_too(tmp_path):
     entries = [
         executor_module.SshPreflightEntry(slug="agdnsmasq", alias="nctl-node-x", status=executor_module.STATUS_UNENROLLED)
     ]
-    errors = executor_module._ssh_scan_errors(entries)
+    errors = ssh_preflight_module.ssh_scan_errors(entries)
     assert len(errors) == 1
     assert errors[0].code == "ssh_host_key_unenrolled"
     assert "agdnsmasq" in errors[0].message
@@ -2187,7 +2189,7 @@ deployment_profile_reconciliation:
             return AnsibleRunResult(mode=mode, command=args, exit_code=0, stdout=json.dumps(inventory_payload))
         return AnsibleRunResult(mode=mode, command=args, exit_code=0, stdout="agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n")
 
-    monkeypatch.setattr(executor_module.AnsibleRunner, "run", fake_runner_run)
+    monkeypatch.setattr(playbook_module.AnsibleRunner, "run", fake_runner_run)
 
     # Round 0: content mismatch -> service_config_mismatch -> exact production
     # SSH preflight -> dnsmasq_config deploy succeeds -> post-actuation

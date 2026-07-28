@@ -26,6 +26,7 @@ from typing import Iterable, Mapping
 from pydantic import BaseModel, Field
 
 from nctl_core.config import Config
+from nctl_core.output import EnvelopeError
 from nctl_core.hosts_intent import select_mdns_endpoint
 from nctl_core.production.composer import ResolvedSshTarget
 from nctl_core.reconcile.model import ReconcileAction, ReconcilePlan
@@ -51,6 +52,17 @@ STATUS_READY = "ready"
 STATUS_UNENROLLED = "unenrolled"
 STATUS_MISMATCH = "mismatch"
 STATUS_UNREACHABLE = "unreachable"
+
+
+def ssh_scan_errors(entries: list["SshPreflightEntry"]) -> list[EnvelopeError]:
+    """Map non-ready scan records to the stable public error vocabulary."""
+    errors: list[EnvelopeError] = []
+    for status, code in ((STATUS_UNENROLLED, "ssh_host_key_unenrolled"), (STATUS_MISMATCH, "ssh_host_key_mismatch"), (STATUS_UNREACHABLE, "ssh_host_key_unreachable")):
+        matching = [entry for entry in entries if entry.status == status]
+        if matching:
+            slugs = ", ".join(sorted(entry.slug for entry in matching))
+            errors.append(EnvelopeError(code=code, message=f"{code}: {slugs}", detail={"hosts": [entry.model_dump() for entry in matching]}))
+    return errors
 
 
 class SshPreflightEntry(BaseModel):

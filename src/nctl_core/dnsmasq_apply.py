@@ -29,11 +29,8 @@ from nctl_core.reconcile.profiles import (
     resolve_dnsmasq_records_spec,
 )
 from nctl_core.reconcile.ssh_preflight import (
-    STATUS_MISMATCH,
-    STATUS_READY,
-    STATUS_UNENROLLED,
-    STATUS_UNREACHABLE,
     SshPreflightEntry,
+    ssh_scan_errors,
 )
 from nctl_core.ssh_enroll import SshProbeRunner, SshStoreReadError, default_ssh_probe_runner
 
@@ -228,7 +225,7 @@ def build_dnsmasq_apply(
         error = EnvelopeError(code="ssh_store_read_failed", message=str(exc))
         return _failure(op, data, [error], error.message)
     data.ssh_preflight = [entry.model_dump() for entry in preflight_entries]
-    ssh_errors = _ssh_preflight_errors(preflight_entries)
+    ssh_errors = ssh_scan_errors(preflight_entries)
     if ssh_errors:
         return _failure(op, data, ssh_errors, ssh_errors[0].message)
 
@@ -420,42 +417,6 @@ def _inventory_host_vars(payload: dict[str, Any], hostname: str) -> dict[str, An
             if isinstance(value, dict):
                 return value
     return {}
-
-
-_PREFLIGHT_STATUS_CODES = (
-    (STATUS_UNENROLLED, "ssh_host_key_unenrolled"),
-    (STATUS_MISMATCH, "ssh_host_key_mismatch"),
-    (STATUS_UNREACHABLE, "ssh_host_key_unreachable"),
-)
-
-
-def _ssh_preflight_errors(entries: list[SshPreflightEntry]) -> list[EnvelopeError]:
-    """Turn non-ready `check_inventory_ssh_preflight` entries into structured envelope errors.
-
-    Distinguishes `ssh_host_key_unenrolled` from `ssh_host_key_mismatch` from
-    `ssh_host_key_unreachable` (fix_sshkey2 Step 4 item 7) -- and from the
-    separate `dnsmasq_inventory_untrusted_host` contract-validation error,
-    which is raised earlier and never reaches this function.
-    """
-    bad = [entry for entry in entries if entry.status != STATUS_READY]
-    errors: list[EnvelopeError] = []
-    for status, code in _PREFLIGHT_STATUS_CODES:
-        matching = [entry for entry in bad if entry.status == status]
-        if matching:
-            hosts = ", ".join(sorted(entry.slug for entry in matching))
-            errors.append(
-                EnvelopeError(
-                    code=code,
-                    message=f"{code}: {hosts}",
-                    detail={"hosts": [entry.model_dump() for entry in matching]},
-                )
-            )
-    return errors
-
-
-# Compatibility aliases for callers/tests that used the pre-Step-1 private names.
-_inventory_group_hosts = inventory_group_hosts
-_parse_recap = parse_recap
 
 
 def _failure(

@@ -22,23 +22,18 @@ from __future__ import annotations
 import signal
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from pydantic import BaseModel, Field
 
-from nctl_core.ansible import AnsibleRunner, CommandRunner
 from nctl_core.artifacts import ArtifactError, OperationArtifacts
 from nctl_core.config import Config, ConfigError
-from nctl_core.dnsmasq_apply import build_dnsmasq_apply
 from nctl_core.drift.engine import DriftResult, TargetStatus
 from nctl_core.drift.model import Target
 from nctl_core.drift_render import DriftData, fetch_and_compute_drift, render_drift_data
 from nctl_core.events import OperationLog
-from nctl_core.jobs import NautobotJobError, NautobotJobRunner
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
-from nctl_core.production.adapter import build_production_node_inputs
-from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
 from nctl_core.production_render import (
     ProductionRenderContext,
@@ -65,9 +60,13 @@ from .ssh_preflight import (
     action_host_slugs,
     check_ssh_enrollment,
     ssh_required_host_slugs,
+    ssh_scan_errors,
     verify_offered_keys,
     verify_resolved_ssh_targets,
 )
+
+if TYPE_CHECKING:
+    from nctl_core.ansible import CommandRunner
 
 def _action_had_side_effects(result: ActionResult) -> bool:
     """Whether this result makes the round-start drift unsafe as final evidence."""
@@ -95,35 +94,6 @@ class RoundOutcome(BaseModel):
     had_side_effects: bool = False
 
 
-
-def _ssh_scan_errors(entries: list["SshPreflightEntry"]) -> list[EnvelopeError]:
-    """Turn non-ready `verify_offered_keys` entries into structured envelope errors.
-
-    fix_sshkey3 Step 1 (contract item 6): includes `STATUS_UNENROLLED`, not
-    only mismatch/unreachable. A managed-store entry can be removed between
-    the round-start `check_ssh_enrollment` gate and this post-scan check (a
-    concurrent `nctl ssh enroll` or store edit); without this mapping that
-    host would fall through as neither an error nor `STATUS_READY` and the
-    round could proceed to Ansible against an unenrolled host.
-    """
-    bad = [entry for entry in entries if entry.status != STATUS_READY]
-    errors: list[EnvelopeError] = []
-    for status, code in (
-        (STATUS_UNENROLLED, "ssh_host_key_unenrolled"),
-        (STATUS_MISMATCH, "ssh_host_key_mismatch"),
-        (STATUS_UNREACHABLE, "ssh_host_key_unreachable"),
-    ):
-        matching = [entry for entry in bad if entry.status == status]
-        if matching:
-            slugs = ", ".join(sorted(entry.slug for entry in matching))
-            errors.append(
-                EnvelopeError(
-                    code=code,
-                    message=f"{code}: {slugs}",
-                    detail={"hosts": [entry.model_dump() for entry in matching]},
-                )
-            )
-    return errors
 
 
 def run_reconcile(
@@ -360,7 +330,7 @@ def _run_apply(
                     state = "failed"
                     errors = [EnvelopeError(code="ssh_store_read_failed", message=str(exc))]
                     break
-                bad_errors = _ssh_scan_errors(verified)
+                bad_errors = ssh_scan_errors(verified)
                 if bad_errors:
                     state, errors = "failed", bad_errors
                     break
@@ -548,7 +518,7 @@ def _execute_round(
                     had_side_effects=had_side_effects,
                 )
             summary.ssh_preflight = [entry.model_dump() for entry in verified]
-            scan_errors = _ssh_scan_errors(verified)
+            scan_errors = ssh_scan_errors(verified)
             if scan_errors:
                 return RoundOutcome(summary=summary, terminal_errors=scan_errors, had_side_effects=had_side_effects)
 
@@ -680,158 +650,6 @@ def _regenerate_production_inventory(cfg: Config) -> tuple[ActionResult, Product
     )
     return result, (render_context if success else None)
 
-
-
-def _actuation_result(
-    op: OperationLog,
-    action: ReconcileAction,
-    target_slugs: list[str],
-    success: bool,
-    detail: dict[str, Any],
-    *,
-    requires_observation: bool,
-    mutated: bool | None = None,
-) -> ActionResult:
-    op.emit(
-        "action_completed",
-        f"action {action.id} completed",
-        action_id=action.id,
-        reconciler_id=action.reconciler_id,
-        success=success,
-    )
-    op.emit(
-        "actuation_completed",
-        f"actuation {action.id} completed",
-        target_slugs=target_slugs,
-        claimed_diff_codes=action.claimed_diff_codes,
-        requires_observation=requires_observation,
-        success=success,
-    )
-    return ActionResult(
-        action_id=action.id,
-        reconciler_id=action.reconciler_id,
-        action_kind=action.action_kind,
-        target_slugs=target_slugs,
-        success=success,
-        detail=detail,
-        mutated=success if mutated is None else mutated,
-    )
-
-
-def _run_playbook_action(
-    cfg: Config,
-    op: OperationLog,
-    artifacts: OperationArtifacts,
-    round_index: int,
-    action: ReconcileAction,
-    snapshot: SourceSnapshot,
-    command_runner: CommandRunner | None,
-    ssh_probe: SshProbeRunner,
-    *,
-    generated_at: str,
-) -> ActionResult:
-    target_slugs = [t.slug for t in action.targets if t.slug]
-    if action.action_kind == "dnsmasq_config":
-        # fix_sshkey4 Step 3 (corrected contract 5): reconcile always
-        # supplies its exact planned host set, so a host-scoped action can
-        # never actuate a sibling host `TARGET_GROUP` membership alone
-        # would include -- the same `action.parameters["host_slugs"]`
-        # source `action_host_slugs`/production-preflight/post-actuation
-        # observation already use for this action.
-        host_limit = sorted(action.parameters.get("host_slugs") or [])
-        envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=ssh_probe, host_limit=host_limit)
-        if envelope.ok:
-            return _actuation_result(op, action, target_slugs, True, {}, requires_observation=action.requires_observation)
-        return _failed_action_result(
-            op, action, target_slugs, {"errors": [e.model_dump() for e in envelope.errors]}, "dnsmasq apply failed"
-        )
-
-    host_slugs = sorted(action.parameters.get("host_slugs") or target_slugs)
-    playbook_groups = _group_hosts_by_playbook(action, host_slugs, snapshot, generated_at=generated_at)
-    playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
-    runner = AnsibleRunner(
-        playbook_dir, timeout_seconds=cfg.reconcile.ansible_timeout_seconds, artifacts=artifacts, command_runner=command_runner
-    )
-    inventory = cfg.ansible.resolved_inventory(cfg.source_path.parent)
-
-    all_ok = True
-    detail: dict[str, Any] = {"runs": []}
-    for rel_path, hosts in sorted(playbook_groups.items()):
-        playbook_path = playbook_dir / rel_path
-        result = runner.run(
-            ["ansible-playbook", "-i", str(inventory), str(playbook_path), "--limit", ",".join(hosts)],
-            mode="apply",
-            artifact_stem=f"round-{round_index:02d}/ansible/{action.id}-{Path(rel_path).stem}",
-        )
-        detail["runs"].append({"playbook": rel_path, "hosts": hosts, "exit_code": result.exit_code, "recap": result.recap})
-        if result.exit_code != 0:
-            all_ok = False
-
-    if all_ok:
-        return _actuation_result(op, action, target_slugs, True, detail, requires_observation=action.requires_observation)
-    return _failed_action_result(op, action, target_slugs, detail, "one or more playbook runs failed")
-
-
-def _failed_action_result(
-    op: OperationLog, action: ReconcileAction, target_slugs: list[str], detail: dict[str, Any], message: str
-) -> ActionResult:
-    op.emit(
-        "action_completed",
-        f"action {action.id} failed",
-        level="error",
-        action_id=action.id,
-        reconciler_id=action.reconciler_id,
-        success=False,
-    )
-    return ActionResult(
-        action_id=action.id,
-        reconciler_id=action.reconciler_id,
-        action_kind=action.action_kind,
-        target_slugs=target_slugs,
-        success=False,
-        detail=detail,
-        error=message,
-    )
-
-
-def _group_hosts_by_playbook(
-    action: ReconcileAction,
-    host_slugs: list[str],
-    snapshot: SourceSnapshot,
-    *,
-    generated_at: str,
-) -> dict[str, list[str]]:
-    single = action.parameters.get("playbook")
-    if single:
-        return {single: host_slugs}
-
-    playbook_by_os = action.parameters.get("playbook_by_os") or {}
-    inputs_by_slug = {node.slug: node for node in build_production_node_inputs(snapshot)}
-    groups: dict[str, list[str]] = {}
-    for slug in host_slugs:
-        node_input = inputs_by_slug.get(slug)
-        if node_input is None:
-            raise ValueError(f"planned host {slug!r} is absent from the fixed source snapshot")
-        try:
-            effective = resolve_operational_values(
-                node_id=node_input.id,
-                node_slug=node_input.slug,
-                endpoints=node_input.endpoints,
-                override=node_input.operational_override,
-                realized_type=node_input.realized.realized_type if node_input.realized else None,
-                facts=node_input.realized.facts if node_input.realized else None,
-                generated_at=generated_at,
-            )
-        except DerivationFailure as exc:
-            raise ValueError(
-                f"planner invariant violated: host {slug!r} reached execution with {exc.code!r}"
-            ) from exc
-        os_name = effective.host_os.value
-        rel_path = playbook_by_os.get(os_name)
-        if not rel_path:
-            raise ValueError(f"no playbook is configured for derived host OS {os_name!r} on {slug!r}")
-        groups.setdefault(rel_path, []).append(slug)
-    return groups
 
 
 
