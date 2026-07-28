@@ -555,11 +555,10 @@ def _execute_round(
         for action in service_actions:
             if interrupted.is_set():
                 return _interrupted_outcome()
-            result = _run_playbook_action(
-                cfg, op, artifacts, round_index, action, snapshot, command_runner, ssh_probe,
-                generated_at=operation_generated_at,
-            )
-            executed = ExecutedAction(result=result)
+            executed = execute_action(
+                ActionContext(cfg=cfg, operation_log=op, artifacts=artifacts, round_index=round_index,
+                              snapshot=snapshot, client=None, now=now, command_runner=command_runner,
+                              ssh_probe=ssh_probe, generated_at=operation_generated_at), action)
             summary.actions.append(executed.result)
             had_side_effects = had_side_effects or _action_had_side_effects(executed.result)
             if executed.terminal_errors:

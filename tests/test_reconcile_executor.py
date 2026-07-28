@@ -14,6 +14,7 @@ from nctl_core.drift.model import DiffRecord, Severity, Status, Target
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.reconcile import executor as executor_module
 from nctl_core.reconcile.actions import ipam as ipam_module
+from nctl_core.reconcile.actions import dnsmasq as dnsmasq_module
 from nctl_core.reconcile.actions import ledger_link as ledger_link_module
 from nctl_core.reconcile.actions import observe as observe_module
 from nctl_core.reconcile.executor import run_reconcile
@@ -1810,8 +1811,8 @@ def test_post_actuation_observation_store_failure_retains_deployment_evidence(tm
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
     _patch_production_render(monkeypatch, lambda: ctx.snapshot)
     monkeypatch.setattr(
-        executor_module,
-        "build_dnsmasq_apply",
+            dnsmasq_module,
+            "build_dnsmasq_apply",
         lambda cfg, apply_changes=False, probe=None, host_limit=None: _Envelope.build(
             "nctl.dnsmasq.apply.v2",
             DnsmasqApplyData(operation_id="op-1", mode="apply", event_log_path="events/op-1.jsonl"),
