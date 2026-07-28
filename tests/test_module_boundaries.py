@@ -15,6 +15,8 @@ import pytest
         "nctl_core.drift.gap_status",
         "nctl_core.drift.interfaces",
         "nctl_core.drift.ip_ranges",
+        "nctl_core.drift.node_evaluation",
+        "nctl_core.drift.endpoint_evaluation",
         "nctl_core.production.routes",
     ],
 )

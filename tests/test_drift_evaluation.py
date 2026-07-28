@@ -8,10 +8,8 @@ docstring for why.
 
 from __future__ import annotations
 
-from nctl_core.drift.evaluation import (
-    evaluate_endpoint_intent,
-    evaluate_node_intent,
-)
+from nctl_core.drift.endpoint_evaluation import evaluate_endpoint_intent
+from nctl_core.drift.node_evaluation import evaluate_node_intent
 from nctl_core.drift.service_evaluation import evaluate_service_intent
 from nctl_core.drift.ip_ranges import (
     classify_endpoint_ip_ranges,

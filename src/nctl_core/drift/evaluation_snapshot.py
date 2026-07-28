@@ -26,7 +26,9 @@ from nctl_core.production.derivation import DerivationFailure, resolve_operation
 from nctl_core.reconcile.profiles import ProfileReconciliation
 from nctl_core.sources.snapshot import SourceSnapshot
 
-from .evaluation import EvaluationResult, evaluate_endpoint_intent, evaluate_node_intent
+from .endpoint_evaluation import evaluate_endpoint_intent
+from .evaluation import EvaluationResult
+from .node_evaluation import evaluate_node_intent
 from .service_evaluation import evaluate_service_intent
 from .gap_status import status_from_gaps
 from .service_placement import ContentSpec, evaluate_placement_drift
