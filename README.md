@@ -604,8 +604,35 @@ derives a unique existing guest candidate. A Phase 2 `ledger_patch` action may
 record that candidate through the narrow compute-link API. A fully preflighted absent LXC is
 instead planned as one `create_compute_instance` action, pinned to its control host and exact
 `pct create` grammar; its handler re-derives those values and invokes only the bounded Proxmox
-create playbook. Dry plans never invoke that handler.
-mutates a Proxmox guest.
+create playbook. Dry plans never invoke that handler or mutate a Proxmox guest.
+
+## Adding one Proxmox LXC guest
+
+This is the ordinary, bounded workflow for an approved LXC guest; it is not a generic Proxmox
+lifecycle interface.
+
+1. Record a user-confirmed Braindump wish, then write the exact desired node, one primary endpoint
+   (static IP and explicit MAC), compute platform, VMID, LXC template, rootfs storage, bridge,
+   resources, and desired running state through nintent's canonical writer. A prose wish alone
+   cannot plan or create a guest.
+2. Run `nctl reconcile GUEST --json` without `--yes`. The plan must name only that guest and its
+   pinned control host. Its preflight requires fresh platform evidence, the exact template,
+   storage, and bridge, one NIC-bearing endpoint, and no desired or actual VMID/MAC/IP collision.
+   A missing template, collision, stale ledger, ambiguous endpoint, or unreachable platform is a
+   stop to correct or refresh evidence; do not bypass it with direct `pct` commands.
+3. After reviewing the unchanged plan, run `nctl reconcile GUEST --yes` under separate apply
+   authority. The registered handler uses the existing strict SSH trust and only the bounded
+   `ansible_agdev/playbooks/proxmox/create_lxc.yml` adapter (`pct status`, `pct create`, and
+   `pct start`). It cannot stop, delete, resize, replace, migrate, clone, or create QEMU guests.
+4. Reconcile re-observes and ingests the guest, then links the exact realized VirtualMachine. If
+   creation succeeded but observation or identification failed, treat the operation evidence as
+   partial progress: find the recorded VMID, refresh observation, and link the identified guest.
+   Never submit a second create as recovery.
+5. A newly linked LXC without guest OS access reaches
+   `waiting_for_manual_initial_access`. Use the Proxmox console for the guest's network, user,
+   key, privilege, SSH, and mDNS setup; complete normal node observation and enrollment afterward.
+   Until then it is intentionally excluded from production inventory. A repeat dry plan must not
+   create, start, or link it again.
 
 ## Adding a reconciler
 
