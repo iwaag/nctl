@@ -3,43 +3,57 @@
 > [!NOTE]
 > **Superseded (Interface Contract Phase 3/4):** the nintent Nautobot UI is read-only. UI
 > add/edit/delete forms, `sources/add/`, and Quick Host Add (`nodes/quick-add/`) have been
-> deleted, not merely deprecated. Sections 1-3 below describe the current, only path: declare
-> the `IntentSource`, `DesiredNode`, and `DesiredEndpoint` rows in `nauto/seed/intent_sources.yaml`
-> and load them with the `Import Intent Sources` Job (`apply=false` to preview, then `apply=true`).
+> deleted, not merely deprecated. Sections 1-3 below use the current, only path: place
+> `IntentSource`, `DesiredNode`, and `DesiredEndpoint` operations in a private batch document,
+> preview with `nctl desired apply -f .local/desired-state.yaml`, then add `--yes` to commit.
 > Use `nctl lifecycle NODE` for lifecycle transitions.
 
 The literal current path from "here is a new machine" to "converged, running under nctl
 reconcile" — the intent-first flow Better Usability Phase 4 (`devdocs/big/better_usability/p4/`)
-consolidated, now expressed as YAML instead of a UI form. Every mechanism step below (accepted
+consolidated, now expressed as a private batch document instead of a UI form. Every mechanism step below (accepted
 actual types, lifecycle, DNS/mDNS names) is derived by default; you only ever supply genuine
 intent, and every derivation is visible with an explicit override control if you need one.
 
 ## 1. One-time prerequisite: an `IntentSource`
 
 Every `DesiredNode`/`DesiredService` needs a non-null `intent_source` FK. If this is your first
-node, add one entry under the `intent_sources` root of `nauto/seed/intent_sources.yaml`:
+node, add an operation to the private batch document:
 
 ```yaml
-intent_sources:
-  - slug: manual
-    source_type: manual
-    enabled: true
+dry_run: true
+operations:
+  - op: upsert
+    kind: intent_source
+    key: {slug: manual}
+    values: {}
 ```
 
-Skip this step entirely if a `manual` source already exists — check the existing
-`intent_sources` root, or the read-only `/plugins/intent-catalog/sources/` list page, first.
+Skip this operation if a `manual` source already exists — check the read-only
+`/plugins/intent-catalog/sources/` list page first.
 
-## 2. Declare the node and its endpoint in YAML
+## 2. Declare the node and its endpoint in the batch document
 
-Add entries under the `desired_nodes` and `desired_endpoints` roots of the same file, filling in
-only genuine identity/address/publishing choices:
+Add `upsert` operations with `kind: desired_node` and `kind: desired_endpoint`, filling in only
+genuine identity/address/publishing choices. Each operation has `op`, `kind`, `key`, and `values`;
+the endpoint key references the node by slug, so both can be applied atomically in one document:
+
+```yaml
+  - op: upsert
+    kind: desired_node
+    key: {slug: example-node}
+    values: {name: Example node, node_type: device, lifecycle: active}
+  - op: upsert
+    kind: desired_endpoint
+    key: {desired_node: example-node, name: primary, endpoint_type: primary}
+    values: {ip_policy: external, ip_address: 192.0.2.10}
+```
 
 - `name` / `slug`: the machine's name.
 - `node_type`: `device` (a physical machine) is the personal-cluster default since Better
   Usability Phase 4. Use `virtual_machine`/`container`/`service_host` only if this registration
   genuinely isn't a physical device.
 - `lifecycle`: `active` (Better Usability Phase 3) makes the node live and eligible for
-  production composition as soon as the Import Job applies it. Use `planned` only if you
+  production composition as soon as the batch applies it. Use `planned` only if you
   deliberately want to stage it before it takes effect (see `nctl lifecycle` below).
 - the endpoint's `ip_address` / `dns_name` / `mdns_name`: whatever addressing you actually have.
   `generate_dnsmasq: true` with `ip_policy: dhcp_reserved` is the narrower, named policy for a
@@ -47,9 +61,8 @@ only genuine identity/address/publishing choices:
   produce dnsmasq records. Turn publishing off or pick `external`/`static` directly if that's not
   what you want.
 
-Run the `Import Intent Sources` Job with `apply=false` first and review the proposed
-create/update actions in its artifact before applying; run again with `apply=true` once the
-preview matches what you intended.
+Keep `dry_run: true` and review the proposed create/update actions. Change it to `false` only
+when the preview matches what you intended, then run `nctl desired apply -f .local/desired-state.yaml --yes`.
 
 ## 3. The derived node type, accepted actual types, lifecycle, and DNS/mDNS names
 
@@ -58,7 +71,7 @@ the YAML — this is the common case and needs no input. Set it explicitly only 
 node genuinely accepts more than one realized-object kind (e.g. a `service_host` that might
 realize as either a Nautobot Device or a VM).
 
-The Import Job's preview/apply artifact states the effective `accepted_actual_types` value and
+The batch preview/apply result states the effective `accepted_actual_types` value and
 whether it was `derived` or an explicit override, so you can confirm what actually got recorded
 before moving on. The read-only detail page for the node
 (`/plugins/intent-catalog/desired-nodes/<id>/`) shows the same recorded/effective values after

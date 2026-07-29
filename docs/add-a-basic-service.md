@@ -30,8 +30,8 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
 > `nctl desired apply -f FILE` to preview, then add `--yes` to commit. The
 > batch endpoint is the only desired-state writer.
 
-1. **Add a `desired_services` entry** — one row per service, not per
-   instance:
+1. **Add a `desired_service` upsert operation** — one row per service, not per
+   instance. Each batch operation has `op`, `kind`, `key`, and `values`:
    - `name` / `slug`: e.g. `dnsmasq`.
    - `display_name`: human label.
    - `service_type`: `service` (or the closest fit).
@@ -41,8 +41,8 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
      nothing promotes a service to `active` for you, so this is genuine
      intent you must state, not an oversight.
    - `intent_source`: required (non-null FK) — use a `manual` IntentSource
-     for hand-entered services; add one under the `intent_sources` root
-     (`slug: manual`, `source_type: manual`) if none exists yet, same as
+     for hand-entered services; add an `intent_source` `upsert` operation
+     (`key: {slug: manual}`, `values: {}`) if none exists yet, same as
      [register-a-new-pc.md](register-a-new-pc.md#1-one-time-prerequisite-an-intentsource).
    - `catalog_namespace` / `catalog_metadata_name`: `default` / the service
      slug is enough for a manual entry (these plus `intent_source` are the
@@ -53,7 +53,7 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
      from operator intent, so a re-analysis run can never overwrite what you
      put here).
 
-2. **Add a `desired_service_placements` entry**, binding that service to the
+2. **Add a `desired_service_placement` upsert operation**, binding that service to the
    target node:
    - `desired_service`: the row from step 1.
    - `desired_node`: the target `DesiredNode` (e.g. `agdnsmasq`).
@@ -76,8 +76,24 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
      knobs your deployment actually needs. A non-default `config` is genuine
      placement intent too — it is never inferred.
 
-3. **Preview, then apply** — run the `Import Intent Sources` Job with
-   `apply=false` and review its artifact before re-running with `apply=true`.
+3. **Preview, then apply** — set `dry_run: true` in the document and run
+   `nctl desired apply -f .local/desired-state.yaml`; review the result, set
+   `dry_run: false`, then re-run with `--yes`. For example:
+
+```yaml
+dry_run: true
+operations:
+  - op: upsert
+    kind: desired_service
+    key: {intent_source: manual, catalog_namespace: default, catalog_metadata_name: example-service, service_type: service}
+    values: {name: Example service, slug: example-service, lifecycle: active}
+  - op: upsert
+    kind: desired_service_placement
+    key:
+      desired_service: {intent_source: manual, catalog_namespace: default, catalog_metadata_name: example-service, service_type: service}
+      instance_name: example-service
+    values: {desired_node: example-node, desired_state: active, deployment_profile: example-service}
+```
 
 ## Verify with drift before touching anything
 
