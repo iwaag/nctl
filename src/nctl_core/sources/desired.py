@@ -85,6 +85,7 @@ DESIRED_QUERY = """
     name
     endpoint_type
     ip_address
+    gateway_address
     ip_policy
     dns_name
     dns_name_source
@@ -195,6 +196,7 @@ class DesiredEndpointRef(BaseModel):
     endpoint_type: str
     node_slug: str
     ip_address: str | None = None
+    gateway_address: str | None = None
     dns_name: str | None = None
     mdns_name: str | None = None
 
@@ -219,6 +221,7 @@ class DesiredEndpoint(BaseModel):
     node_id: str
     node_slug: str
     ip_address: str | None = None
+    gateway_address: str | None = None
     ip_policy: str = "static"
     dns_name: str | None = None
     dns_name_source: str | None = None
@@ -364,6 +367,7 @@ def _build_endpoint(row: dict[str, Any]) -> DesiredEndpoint:
         node_id=node["id"],
         node_slug=node["slug"],
         ip_address=row.get("ip_address"),
+        gateway_address=row.get("gateway_address"),
         ip_policy=_lower(row.get("ip_policy")) or "static",
         dns_name=row.get("dns_name"),
         dns_name_source=_lower(row.get("dns_name_source")),

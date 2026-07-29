@@ -318,6 +318,22 @@ def endpoint_has_usable_ip(endpoint: DesiredEndpoint) -> bool:
     return True
 
 
+def static_ipv4_network(endpoint: DesiredEndpoint) -> list[str] | None:
+    """Return normalized initial-LXC IPv4 CIDR and gateway, or ``None``."""
+    if endpoint.ip_policy != "static":
+        return None
+    try:
+        interface = ipaddress.ip_interface(str(endpoint.ip_address or ""))
+        gateway = ipaddress.ip_address(str(endpoint.gateway_address or ""))
+    except ValueError:
+        return None
+    if interface.version != 4 or gateway.version != 4 or gateway not in interface.network:
+        return None
+    if gateway in {interface.network.network_address, interface.network.broadcast_address}:
+        return None
+    return [str(interface), str(gateway)]
+
+
 def endpoint_satisfies_compute_address_contract(endpoint: DesiredEndpoint) -> bool:
     """One primary DesiredEndpoint is create-ready when it satisfies the first Proxmox contract.
 
@@ -332,7 +348,7 @@ def endpoint_satisfies_compute_address_contract(endpoint: DesiredEndpoint) -> bo
             and bool(endpoint.generate_dnsmasq)
         )
     if endpoint.ip_policy == "static":
-        return endpoint_has_usable_ip(endpoint)
+        return static_ipv4_network(endpoint) is not None
     return False
 
 

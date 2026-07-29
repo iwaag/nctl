@@ -18,7 +18,7 @@ NOW = "2026-07-28T12:00:00+00:00"
 
 def _snapshot(*, cluster: dict | None = None, vm: dict | None = None, interfaces: list[dict] | None = None, link: bool = False) -> SourceSnapshot:
     node = DesiredNode(id="node", slug="guest", name="guest", lifecycle="active", node_type="device", realized_device_id="device")
-    endpoint = DesiredEndpoint(id="endpoint", name="primary", endpoint_type="primary", node_id="node", node_slug="guest", ip_address="192.0.2.10", ip_policy="static", mdns_name="guest.local", mac_address="bc:24:11:23:dc:b7")
+    endpoint = DesiredEndpoint(id="endpoint", name="primary", endpoint_type="primary", node_id="node", node_slug="guest", ip_address="192.0.2.10/24", gateway_address="192.0.2.1", ip_policy="static", mdns_name="guest.local", mac_address="bc:24:11:23:dc:b7")
     platform = DesiredComputePlatform(id="platform", name="pve", slug="pve", provider_type="proxmox", lifecycle="active", control_node_id="node", config_schema_version="v1", config={"cluster_name": "cluster", "default_storage": "local-lvm", "default_bridge": "vmbr0"}, realized_cluster_id="cluster" if link else None)
     instance = DesiredComputeInstance(id="instance", desired_node_id="node", platform_id="platform", instance_kind="container", desired_power_state="running", vcpus=1, memory_mb=512, root_disk_gb=8, config_schema_version="v1", config={"vmid": 108, "template": "local:vztmpl/ubuntu.tar.zst", "storage": "local-lvm", "bridge": "vmbr0", "unprivileged": True}, realized_vm_id="vm" if link else None)
     cluster_data = {"id": "cluster", "name": "cluster", "proxmox": {"observer_device_id": "device", "observed_at": NOW, "observation_state": "complete", "observed_node_names": ["host"]}}

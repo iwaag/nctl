@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nctl_core.compute.contract import effective_lifecycle, select_compute_primary_endpoint
+from nctl_core.compute.contract import effective_lifecycle, select_compute_primary_endpoint, static_ipv4_network
 from nctl_core.drift.compute_realization import derive_compute_realizations
 
 
@@ -37,6 +37,9 @@ def derive_compute_creations(snapshot, *, generated_at: str) -> dict[str, Comput
         endpoint, endpoint_code = select_compute_primary_endpoint(endpoints.get(node.id, []))
         if endpoint_code:
             failures.append((endpoint_code, f"{node.slug}: no unique primary endpoint for compute creation", {}, {}))
+        network = static_ipv4_network(endpoint) if endpoint else None
+        if endpoint and network is None:
+            failures.append(("compute_endpoint_network_incomplete", f"{node.slug}: static LXC creation requires an IPv4 CIDR and usable same-subnet gateway", {}, {}))
         facts = realization.cluster.proxmox
         scopes = facts.storage_content if facts else {}
         template = realization.instance.config.get("template")
@@ -55,10 +58,10 @@ def derive_compute_creations(snapshot, *, generated_at: str) -> dict[str, Comput
             failures.append(("compute_vmid_conflict", f"{node.slug}: VMID is already observed", {"vmid": vmid}, {}))
         if endpoint and any(iface.mac_address and iface.mac_address.casefold() == endpoint.mac_address.casefold() for iface in [*snapshot.actual.interfaces, *snapshot.actual.vm_interfaces]):
             failures.append(("compute_endpoint_mac_conflict", f"{node.slug}: endpoint MAC is already observed", {"mac_address": endpoint.mac_address}, {}))
-        if endpoint and any(ip.host == endpoint.ip_address for ip in snapshot.actual.ip_addresses):
+        if endpoint and any(ip.host == endpoint.ip_address.split("/", 1)[0] for ip in snapshot.actual.ip_addresses):
             failures.append(("compute_endpoint_ip_conflict", f"{node.slug}: endpoint IP is already observed", {"ip_address": endpoint.ip_address}, {}))
         if not control.realized_device_id:
             failures.append(("compute_control_node_not_actionable", f"{control.slug}: control node is not actionable", {}, {}))
-        params = {"host_slugs": [control.slug], "vmid": vmid, "template": template, "storage": storage, "bridge": bridge, "unprivileged": realization.instance.config.get("unprivileged"), "vcpus": realization.instance.vcpus, "memory_mb": realization.instance.memory_mb, "root_disk_gb": realization.instance.root_disk_gb, "hostname": node.slug, "mac_address": endpoint.mac_address if endpoint else None}
+        params = {"host_slugs": [control.slug], "vmid": vmid, "template": template, "storage": storage, "bridge": bridge, "unprivileged": realization.instance.config.get("unprivileged"), "vcpus": realization.instance.vcpus, "memory_mb": realization.instance.memory_mb, "root_disk_gb": realization.instance.root_disk_gb, "hostname": node.slug, "mac_address": endpoint.mac_address if endpoint else None, "ipv4_cidr": network[0] if network else None, "gateway_ipv4": network[1] if network else None}
         result[instance_id] = ComputeCreation(realization.instance, node, realization.platform, realization.cluster, control, params, tuple(failures))
     return result

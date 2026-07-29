@@ -19,6 +19,7 @@ PARAMETERS = {
     "storage": "local-lvm", "bridge": "vmbr0", "unprivileged": True,
     "vcpus": 1, "memory_mb": 512, "root_disk_gb": 8,
     "hostname": "agfixture", "mac_address": "bc:24:11:00:01:09",
+    "ipv4_cidr": "192.168.0.9/24", "gateway_ipv4": "192.168.0.1",
 }
 
 

@@ -303,6 +303,7 @@
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "192.0.2.10/24",
+          "gateway_address": "192.0.2.1",
           "dns_name": null,
           "generate_dnsmasq": false
         }
@@ -321,12 +322,92 @@
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "bad",
+          "gateway_address": "192.0.2.1",
           "dns_name": null,
           "generate_dnsmasq": false
         }
       },
       "result": {
         "ok": false
+      }
+    },
+    {
+      "id": "network-ok",
+      "rule": "static_ipv4_network",
+      "input": {
+        "endpoint": {
+          "endpoint_type": "primary",
+          "mac_address": "bc:24:11:23:dc:b7",
+          "mdns_name": "node.local",
+          "ip_policy": "static",
+          "ip_address": "192.0.2.10/24",
+          "gateway_address": "192.0.2.1",
+          "dns_name": null,
+          "generate_dnsmasq": false
+        }
+      },
+      "result": {
+        "ok": [
+          "192.0.2.10/24",
+          "192.0.2.1"
+        ]
+      }
+    },
+    {
+      "id": "network-no-cidr",
+      "rule": "static_ipv4_network",
+      "input": {
+        "endpoint": {
+          "endpoint_type": "primary",
+          "mac_address": "bc:24:11:23:dc:b7",
+          "mdns_name": "node.local",
+          "ip_policy": "static",
+          "ip_address": "192.0.2.10",
+          "gateway_address": "192.0.2.1",
+          "dns_name": null,
+          "generate_dnsmasq": false
+        }
+      },
+      "result": {
+        "ok": null
+      }
+    },
+    {
+      "id": "network-other-subnet",
+      "rule": "static_ipv4_network",
+      "input": {
+        "endpoint": {
+          "endpoint_type": "primary",
+          "mac_address": "bc:24:11:23:dc:b7",
+          "mdns_name": "node.local",
+          "ip_policy": "static",
+          "ip_address": "192.0.2.10/24",
+          "gateway_address": "192.0.3.1",
+          "dns_name": null,
+          "generate_dnsmasq": false
+        }
+      },
+      "result": {
+        "ok": null
+      }
+    },
+    {
+      "id": "network-ipv6",
+      "rule": "static_ipv4_network",
+      "input": {
+        "endpoint": {
+          "endpoint_type": "primary",
+          "mac_address": "bc:24:11:23:dc:b7",
+          "mdns_name": "node.local",
+          "ip_policy": "static",
+          "ip_address": "2001:db8::10/64",
+          "gateway_address": "2001:db8::1",
+          "dns_name": null,
+          "generate_dnsmasq": false
+        }
+      },
+      "result": {
+        "ok": null
       }
     },
     {
@@ -339,6 +420,7 @@
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "192.0.2.10/24",
+          "gateway_address": "192.0.2.1",
           "dns_name": null,
           "generate_dnsmasq": false
         }
@@ -357,6 +439,7 @@
           "mdns_name": "node.local",
           "ip_policy": "external",
           "ip_address": "192.0.2.10/24",
+          "gateway_address": "192.0.2.1",
           "dns_name": null,
           "generate_dnsmasq": false
         }
@@ -389,6 +472,7 @@
             "mdns_name": "node.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
+            "gateway_address": "192.0.2.1",
             "dns_name": null,
             "generate_dnsmasq": false
           }
@@ -412,6 +496,7 @@
             "mdns_name": "node.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
+            "gateway_address": "192.0.2.1",
             "dns_name": null,
             "generate_dnsmasq": false
           },
@@ -421,6 +506,7 @@
             "mdns_name": "two.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
+            "gateway_address": "192.0.2.1",
             "dns_name": null,
             "generate_dnsmasq": false
           }
@@ -444,6 +530,7 @@
             "mdns_name": "node.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
+            "gateway_address": "192.0.2.1",
             "dns_name": null,
             "generate_dnsmasq": false
           }
@@ -467,6 +554,7 @@
             "mdns_name": "",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
+            "gateway_address": "192.0.2.1",
             "dns_name": null,
             "generate_dnsmasq": false
           }
@@ -490,6 +578,7 @@
             "mdns_name": "node.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
+            "gateway_address": "192.0.2.1",
             "dns_name": null,
             "generate_dnsmasq": false
           }

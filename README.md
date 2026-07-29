@@ -612,7 +612,7 @@ This is the ordinary, bounded workflow for an approved LXC guest; it is not a ge
 lifecycle interface.
 
 1. Record a user-confirmed Braindump wish, then write the exact desired node, one primary endpoint
-   (static IP and explicit MAC), compute platform, VMID, LXC template, rootfs storage, bridge,
+   (static IPv4 CIDR, same-subnet gateway, and explicit MAC), compute platform, VMID, LXC template, rootfs storage, bridge,
    resources, and desired running state through nintent's canonical writer. A prose wish alone
    cannot plan or create a guest.
 2. Run `nctl reconcile GUEST --json` without `--yes`. The plan must name only that guest and its
@@ -629,8 +629,9 @@ lifecycle interface.
    partial progress: find the recorded VMID, refresh observation, and link the identified guest.
    Never submit a second create as recovery.
 5. A newly linked LXC without guest OS access reaches
-   `waiting_for_manual_initial_access`. Use the Proxmox console for the guest's network, user,
-   key, privilege, SSH, and mDNS setup; complete normal node observation and enrollment afterward.
+   `waiting_for_manual_initial_access`. The static IPv4 CIDR and gateway are already configured by
+   `pct create`; use the Proxmox console for guest user, key, privilege, SSH, and mDNS setup;
+   complete normal node observation and enrollment afterward.
    Until then it is intentionally excluded from production inventory. A repeat dry plan must not
    create, start, or link it again.
 

@@ -26,9 +26,8 @@ def _run(case):
     if rule == "select_compute_primary_endpoint":
         selected, code = contract.select_compute_primary_endpoint([_endpoint(item) for item in data["endpoints"]])
         return {"selected": selected is not None, "code": code}
-    if rule in {"endpoint_has_usable_ip", "endpoint_satisfies_compute_address_contract"}:
-        name = "endpoint_has_usable_ip" if rule == "endpoint_has_usable_ip" else "endpoint_satisfies_compute_address_contract"
-        return getattr(contract, name)(_endpoint(data["endpoint"]))
+    if rule in {"endpoint_has_usable_ip", "static_ipv4_network", "endpoint_satisfies_compute_address_contract"}:
+        return getattr(contract, rule)(_endpoint(data["endpoint"]))
     if rule == "validate_instance_config":
         return contract.validate_instance_config(data["value"], instance_kind=data["instance_kind"])
     if rule == "link_source_pairing_is_valid":

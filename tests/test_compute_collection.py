@@ -365,7 +365,7 @@ def test_effective_lifecycle_all_branches():
 def _endpoint(**overrides) -> DesiredEndpoint:
     base = dict(
         id="endpoint-1", name="primary", endpoint_type="primary", node_id="node-1", node_slug="agvm1",
-        mac_address="aa:bb:cc:dd:ee:ff", mdns_name="agvm1.local", ip_policy="static", ip_address="192.0.2.5/32",
+        mac_address="aa:bb:cc:dd:ee:ff", mdns_name="agvm1.local", ip_policy="static", ip_address="192.0.2.5/24", gateway_address="192.0.2.1",
     )
     base.update(overrides)
     return DesiredEndpoint(**base)
