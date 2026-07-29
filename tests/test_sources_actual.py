@@ -14,24 +14,24 @@ from nctl_core.sources.actual import (
 BASE_URL = "http://nautobot.test"
 
 # Phase 2 Step 6 gate fixture (plan.md Section 7 Step 6 gate / Section 8.2 "nctl" row):
-# the live `agdnsmasq` LXC guest, VMID 108, under Cluster `aghub-proxmox`, exactly as
+# a synthetic LXC guest, VMID 101, under an example Proxmox cluster, exactly as
 # nauto/jobs/proxmox_upsert.py + proxmox_interfaces.py would have written it.
-_AGHUB_CLUSTER_ROW = {
+_EXAMPLE_CLUSTER_ROW = {
     "id": "cluster-1",
-    "name": "aghub-proxmox",
+    "name": "example-proxmox",
     "cluster_type": {"name": "Proxmox VE"},
     "_custom_field_data": {
-        "proxmox_scope_key": "standalone-device:aghub-device-uuid",
+        "proxmox_scope_key": "standalone-device:example-host-uuid",
         "proxmox_identity_source": "standalone_node_fallback",
-        "proxmox_observer_device_id": "aghub-device-uuid",
-        "proxmox_observed_node_names": ["aghub"],
+        "proxmox_observer_device_id": "example-host-uuid",
+        "proxmox_observed_node_names": ["example-host"],
         "proxmox_node_count": 1,
         "proxmox_observed_at": "2026-07-24T00:00:00+00:00",
         "proxmox_observation_state": "complete",
         "proxmox_observation_detail": {"state": "complete", "omitted_error_count": 0, "errors": []},
         "proxmox_storage_content": {
-            "aghub:local:vztmpl": {
-                "node": "aghub",
+            "example-host:local:vztmpl": {
+                "node": "example-host",
                 "storage": "local",
                 "content_type": "vztmpl",
                 "state": "complete",
@@ -49,9 +49,9 @@ _AGHUB_CLUSTER_ROW = {
     },
 }
 
-_AGDNSMASQ_VM_ROW = {
-    "id": "vm-108",
-    "name": "agdnsmasq",
+_EXAMPLE_VM_ROW = {
+    "id": "vm-101",
+    "name": "example-dns",
     "cluster": {"id": "cluster-1"},
     "status": {"name": "Active"},
     "role": {"name": "lxc-container"},
@@ -60,23 +60,23 @@ _AGDNSMASQ_VM_ROW = {
     "disk": 8,
     "_custom_field_data": {
         "proxmox_guest_type": "lxc",
-        "proxmox_vmid": 108,
-        "proxmox_node": "aghub",
+        "proxmox_vmid": 101,
+        "proxmox_node": "example-host",
         "proxmox_status": "running",
         "proxmox_observed_at": "2026-07-24T00:00:00+00:00",
         "proxmox_observation_state": "complete",
         "proxmox_observation_detail": {"state": "complete", "omitted_error_count": 0, "errors": []},
-        "proxmox_lxc_rootfs": {"storage": "local-lvm", "volume": "vm-108-disk-0", "size_gb": 8},
+        "proxmox_lxc_rootfs": {"storage": "local-lvm", "volume": "vm-101-disk-0", "size_gb": 8},
         "proxmox_interface_evidence": {},
         "inventory_raw_json": {"anything": "must not leak"},
     },
 }
 
-_AGDNSMASQ_VMINTERFACE_ROW = {
-    "id": "iface-108-net0",
+_EXAMPLE_VMINTERFACE_ROW = {
+    "id": "iface-101-net0",
     "name": "net0",
     "mac_address": "aa:bb:cc:dd:ee:01",
-    "virtual_machine": {"id": "vm-108"},
+    "virtual_machine": {"id": "vm-101"},
     "_custom_field_data": {
         "proxmox_config_slot": "net0",
         "proxmox_guest_interface_name": None,
@@ -85,7 +85,7 @@ _AGDNSMASQ_VMINTERFACE_ROW = {
         "proxmox_observed_at": "2026-07-24T00:00:00+00:00",
         "proxmox_presence": "present",
         "proxmox_managed_ip_evidence": {
-            "managed": {"192.168.0.108/24": {"ip_id": "ip-108", "evidence_observed_at": "2026-07-24T00:00:00+00:00"}},
+            "managed": {"192.0.2.101/24": {"ip_id": "ip-101", "evidence_observed_at": "2026-07-24T00:00:00+00:00"}},
             "evidence_observed_at": "2026-07-24T00:00:00+00:00",
         },
     },
@@ -95,9 +95,9 @@ _AGDNSMASQ_VMINTERFACE_ROW = {
 def _graphql_payload(**overrides):
     base = {
         "devices": [],
-        "clusters": [_AGHUB_CLUSTER_ROW],
-        "virtual_machines": [_AGDNSMASQ_VM_ROW],
-        "vm_interfaces": [_AGDNSMASQ_VMINTERFACE_ROW],
+        "clusters": [_EXAMPLE_CLUSTER_ROW],
+        "virtual_machines": [_EXAMPLE_VM_ROW],
+        "vm_interfaces": [_EXAMPLE_VMINTERFACE_ROW],
         "interfaces": [],
         "ip_addresses": [],
     }
@@ -109,7 +109,7 @@ def test_read_actual_facts_reads_only_the_allowlist():
     facts = read_actual_facts(
         {
             "host_system": "linux",
-            "primary_ip_address": "192.168.0.10",
+            "primary_ip_address": "192.0.2.10",
             "primary_mac_address": "aa:bb:cc:dd:ee:ff",
             "network_interface": "eth0",
             "last_seen": "2026-07-14T00:00:00+00:00",
@@ -122,7 +122,7 @@ def test_read_actual_facts_reads_only_the_allowlist():
     )
     assert facts == ActualFacts(
         observed_system="linux",
-        local_ip="192.168.0.10",
+        local_ip="192.0.2.10",
         mac_address="aa:bb:cc:dd:ee:ff",
         network_interface="eth0",
         collected_at="2026-07-14T00:00:00+00:00",
@@ -171,13 +171,13 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
                     "devices": [
                         {
                             "id": "dev-1",
-                            "name": "agpc",
+                            "name": "example-pc",
                             "serial": "SER123",
                             "platform": {"name": "ubuntu"},
                             "_custom_field_data": {
                                 "host_system": "linux",
                                 "primary_mac_address": "aa:bb:cc:dd:ee:ff",
-                                "primary_ip_address": "192.168.0.110",
+                                "primary_ip_address": "192.0.2.110",
                                 "network_interface": "eth0",
                                 "last_seen": "2026-07-14T00:00:00+00:00",
                                 "inventory_source": "nodeutils",
@@ -199,9 +199,9 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
                     "ip_addresses": [
                         {
                             "id": "ip-1",
-                            "host": "192.168.0.110",
+                            "host": "192.0.2.110",
                             "mask_length": 24,
-                            "dns_name": "agpc.example.test",
+                            "dns_name": "example-pc.example.test",
                             "interfaces": [{"id": "iface-1"}],
                         }
                     ],
@@ -214,7 +214,7 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
     snapshot = fetch_actual_snapshot(client)
 
     device = snapshot.devices[0]
-    assert device.name == "agpc"
+    assert device.name == "example-pc"
     assert device.serial == "SER123"
     assert device.platform == "ubuntu"
     assert device.actual_facts().observed_system == "linux"
@@ -229,8 +229,8 @@ def test_fetch_actual_snapshot_reads_custom_field_data_and_relations():
     assert interface.device_id == "dev-1"
 
     ip_address = snapshot.ip_addresses[0]
-    assert ip_address.host == "192.168.0.110"
-    assert ip_address.dns_name == "agpc.example.test"
+    assert ip_address.host == "192.0.2.110"
+    assert ip_address.dns_name == "example-pc.example.test"
     assert ip_address.interface_ids == ["iface-1"]
 
 
@@ -251,7 +251,7 @@ def test_query_pins_dedicated_vm_interfaces_root_not_dcim_interfaces():
 
 
 @respx.mock
-def test_fetch_actual_snapshot_reads_aghub_proxmox_cluster_and_agdnsmasq_vmid_108():
+def test_fetch_actual_snapshot_reads_example_proxmox_cluster_and_guest_vmid_101():
     respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json={"data": _graphql_payload()}))
     client = NautobotClient(BASE_URL, "tok")
 
@@ -259,29 +259,29 @@ def test_fetch_actual_snapshot_reads_aghub_proxmox_cluster_and_agdnsmasq_vmid_10
 
     assert snapshot.proxmox_read_errors == []
     cluster = snapshot.clusters[0]
-    assert cluster.name == "aghub-proxmox"
+    assert cluster.name == "example-proxmox"
     assert cluster.cluster_type == "Proxmox VE"
     assert cluster.proxmox.identity_source == "standalone_node_fallback"
-    assert cluster.proxmox.scope_key == "standalone-device:aghub-device-uuid"
-    assert cluster.proxmox.observed_node_names == ["aghub"]
+    assert cluster.proxmox.scope_key == "standalone-device:example-host-uuid"
+    assert cluster.proxmox.observed_node_names == ["example-host"]
     assert cluster.proxmox.observation_state == "complete"
-    scope = cluster.proxmox.storage_content["aghub:local:vztmpl"]
+    scope = cluster.proxmox.storage_content["example-host:local:vztmpl"]
     assert scope.state == "complete"
     assert scope.items[0].volid == "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
 
     vm = snapshot.virtual_machines[0]
-    assert vm.name == "agdnsmasq"
+    assert vm.name == "example-dns"
     assert vm.cluster_id == "cluster-1"
     assert vm.proxmox.guest_type == "lxc"
-    assert vm.proxmox.vmid == 108
-    assert vm.proxmox.node == "aghub"
-    assert vm.proxmox.lxc_rootfs.volume == "vm-108-disk-0"
+    assert vm.proxmox.vmid == 101
+    assert vm.proxmox.node == "example-host"
+    assert vm.proxmox.lxc_rootfs.volume == "vm-101-disk-0"
 
     iface = snapshot.vm_interfaces[0]
-    assert iface.virtual_machine_id == "vm-108"
+    assert iface.virtual_machine_id == "vm-101"
     assert iface.proxmox.config_slot == "net0"
     assert iface.proxmox.interface_source == "lxc_config"
-    assert iface.proxmox.managed_ip_evidence.managed["192.168.0.108/24"].ip_id == "ip-108"
+    assert iface.proxmox.managed_ip_evidence.managed["192.0.2.101/24"].ip_id == "ip-101"
 
 
 @respx.mock
@@ -305,10 +305,10 @@ def test_fetch_actual_snapshot_reports_malformed_proxmox_json_as_structured_erro
     payload = _graphql_payload(
         clusters=[
             {
-                **_AGHUB_CLUSTER_ROW,
+                **_EXAMPLE_CLUSTER_ROW,
                 "id": "cluster-bad",
                 "_custom_field_data": {
-                    **_AGHUB_CLUSTER_ROW["_custom_field_data"],
+                    **_EXAMPLE_CLUSTER_ROW["_custom_field_data"],
                     # Unknown nested key inside the dedicated proxmox_observation_detail
                     # JSON must fail the strict extra="forbid" model, not pass silently.
                     "proxmox_observation_detail": {"state": "complete", "unexpected_key": "boom"},
@@ -335,12 +335,12 @@ def test_fetch_actual_snapshot_drops_only_malformed_storage_scope():
     payload = _graphql_payload(
         clusters=[
             {
-                **_AGHUB_CLUSTER_ROW,
+                **_EXAMPLE_CLUSTER_ROW,
                 "_custom_field_data": {
-                    **_AGHUB_CLUSTER_ROW["_custom_field_data"],
+                    **_EXAMPLE_CLUSTER_ROW["_custom_field_data"],
                     "proxmox_storage_content": {
-                        **_AGHUB_CLUSTER_ROW["_custom_field_data"]["proxmox_storage_content"],
-                        "bad": {"node": "aghub", "unexpected": True},
+                        **_EXAMPLE_CLUSTER_ROW["_custom_field_data"]["proxmox_storage_content"],
+                        "bad": {"node": "example-host", "unexpected": True},
                     },
                 },
             }
@@ -353,7 +353,7 @@ def test_fetch_actual_snapshot_drops_only_malformed_storage_scope():
     facts = snapshot.clusters[0].proxmox
     assert facts is not None
     assert facts.observation_state == "complete"
-    assert set(facts.storage_content) == {"aghub:local:vztmpl"}
+    assert set(facts.storage_content) == {"example-host:local:vztmpl"}
     assert facts.storage_content_invalid_scope_count == 1
     assert snapshot.proxmox_read_errors == []
 
@@ -380,10 +380,10 @@ def test_existing_device_and_interface_consumers_are_unaffected_by_step6_additio
     from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualSnapshot
 
     snapshot = ActualSnapshot(
-        devices=[ActualDevice(id="d1", name="agpc")],
+        devices=[ActualDevice(id="d1", name="example-pc")],
         interfaces=[ActualInterface(id="i1", name="eth0")],
     )
-    assert snapshot.devices[0].name == "agpc"
+    assert snapshot.devices[0].name == "example-pc"
     assert snapshot.interfaces[0].name == "eth0"
     assert snapshot.clusters == []
     assert snapshot.vm_interfaces == []

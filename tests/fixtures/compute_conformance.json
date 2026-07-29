@@ -273,10 +273,10 @@
       "id": "mac-ok",
       "rule": "normalize_mac_address",
       "input": {
-        "value": "BC-24-11-23-DC-B7"
+        "value": "AA-BB-CC-DD-EE-01"
       },
       "result": {
-        "ok": "bc:24:11:23:dc:b7"
+        "ok": "aa:bb:cc:dd:ee:01"
       }
     },
     {
@@ -299,7 +299,7 @@
       "input": {
         "endpoint": {
           "endpoint_type": "primary",
-          "mac_address": "bc:24:11:23:dc:b7",
+          "mac_address": "aa:bb:cc:dd:ee:01",
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "192.0.2.10/24",
@@ -318,7 +318,7 @@
       "input": {
         "endpoint": {
           "endpoint_type": "primary",
-          "mac_address": "bc:24:11:23:dc:b7",
+          "mac_address": "aa:bb:cc:dd:ee:01",
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "bad",
@@ -337,7 +337,7 @@
       "input": {
         "endpoint": {
           "endpoint_type": "primary",
-          "mac_address": "bc:24:11:23:dc:b7",
+          "mac_address": "aa:bb:cc:dd:ee:01",
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "192.0.2.10/24",
@@ -359,7 +359,7 @@
       "input": {
         "endpoint": {
           "endpoint_type": "primary",
-          "mac_address": "bc:24:11:23:dc:b7",
+          "mac_address": "aa:bb:cc:dd:ee:01",
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "192.0.2.10",
@@ -378,7 +378,7 @@
       "input": {
         "endpoint": {
           "endpoint_type": "primary",
-          "mac_address": "bc:24:11:23:dc:b7",
+          "mac_address": "aa:bb:cc:dd:ee:01",
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "192.0.2.10/24",
@@ -397,7 +397,7 @@
       "input": {
         "endpoint": {
           "endpoint_type": "primary",
-          "mac_address": "bc:24:11:23:dc:b7",
+          "mac_address": "aa:bb:cc:dd:ee:01",
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "2001:db8::10/64",
@@ -416,7 +416,7 @@
       "input": {
         "endpoint": {
           "endpoint_type": "primary",
-          "mac_address": "bc:24:11:23:dc:b7",
+          "mac_address": "aa:bb:cc:dd:ee:01",
           "mdns_name": "node.local",
           "ip_policy": "static",
           "ip_address": "192.0.2.10/24",
@@ -435,7 +435,7 @@
       "input": {
         "endpoint": {
           "endpoint_type": "primary",
-          "mac_address": "bc:24:11:23:dc:b7",
+          "mac_address": "aa:bb:cc:dd:ee:01",
           "mdns_name": "node.local",
           "ip_policy": "external",
           "ip_address": "192.0.2.10/24",
@@ -468,7 +468,7 @@
         "endpoints": [
           {
             "endpoint_type": "primary",
-            "mac_address": "bc:24:11:23:dc:b7",
+            "mac_address": "aa:bb:cc:dd:ee:01",
             "mdns_name": "node.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
@@ -492,7 +492,7 @@
         "endpoints": [
           {
             "endpoint_type": "primary",
-            "mac_address": "bc:24:11:23:dc:b7",
+            "mac_address": "aa:bb:cc:dd:ee:01",
             "mdns_name": "node.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
@@ -502,7 +502,7 @@
           },
           {
             "endpoint_type": "primary",
-            "mac_address": "bc:24:11:23:dc:b7",
+            "mac_address": "aa:bb:cc:dd:ee:01",
             "mdns_name": "two.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
@@ -550,7 +550,7 @@
         "endpoints": [
           {
             "endpoint_type": "primary",
-            "mac_address": "bc:24:11:23:dc:b7",
+            "mac_address": "aa:bb:cc:dd:ee:01",
             "mdns_name": "",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
@@ -574,7 +574,7 @@
         "endpoints": [
           {
             "endpoint_type": "secondary",
-            "mac_address": "bc:24:11:23:dc:b7",
+            "mac_address": "aa:bb:cc:dd:ee:01",
             "mdns_name": "node.local",
             "ip_policy": "static",
             "ip_address": "192.0.2.10/24",
