@@ -104,8 +104,8 @@ def test_link_actual_node_happy_path():
             httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=DEVICE_ID, realized_device_source="derived")),
         ]
     )
-    patch_route = respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID, "realized_device": DEVICE_ID, "realized_device_source": "derived"})
+    batch_route = respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(200, json={"transaction": {"status": "committed", "committed": True}, "operations": [{"action": "update"}]})
     )
 
     result = execute_link_actual_node(_client(), _link_action())
@@ -113,7 +113,7 @@ def test_link_actual_node_happy_path():
     assert result.field == "realized_device"
     assert result.candidate_id == DEVICE_ID
     assert result.node_slug == "agweb"
-    assert json.loads(patch_route.calls[0].request.content) == {"realized_device": DEVICE_ID}
+    assert json.loads(batch_route.calls[0].request.content) == {"dry_run": False, "operations": [{"op": "upsert", "kind": "desired_node", "key": {"slug": "agweb"}, "values": {"realized_device": DEVICE_ID}}]}
     assert gql_route.call_count == 2
 
 
@@ -134,13 +134,13 @@ def test_link_actual_node_patch_failure_is_typed():
     respx.post(f"{BASE_URL}/api/graphql/").mock(
         return_value=httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None))
     )
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(500, text="boom")
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(409, json={"transaction": {"status": "blocked", "committed": False}, "operations": [{"reason": "boom"}]})
     )
 
     with pytest.raises(LedgerActionError) as exc:
         execute_link_actual_node(_client(), _link_action())
-    assert exc.value.code == "node_link_patch_failed"
+    assert exc.value.code == "node_link_write_failed"
     assert exc.value.mutated is False
 
 
@@ -152,8 +152,8 @@ def test_link_actual_node_refetch_mismatch_is_not_confirmed():
             httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
         ]
     )
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID})
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(200, json={"transaction": {"status": "committed", "committed": True}, "operations": [{"action": "update"}]})
     )
 
     with pytest.raises(LedgerActionError) as exc:
@@ -170,8 +170,8 @@ def test_link_actual_node_post_patch_graphql_failure_preserves_mutation_evidence
             httpx.Response(500, text="boom"),
         ]
     )
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID})
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(200, json={"transaction": {"status": "committed", "committed": True}, "operations": [{"action": "update"}]})
     )
 
     with pytest.raises(LedgerActionError) as exc:
@@ -196,8 +196,8 @@ def test_link_actual_node_post_patch_missing_node_preserves_mutation_evidence():
             httpx.Response(200, json=absent),
         ]
     )
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID})
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(200, json={"transaction": {"status": "committed", "committed": True}, "operations": [{"action": "update"}]})
     )
 
     with pytest.raises(LedgerActionError) as exc:
@@ -216,8 +216,8 @@ def test_link_actual_node_post_patch_slug_mismatch_preserves_mutation_evidence()
             httpx.Response(200, json=mismatch),
         ]
     )
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID})
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(200, json={"transaction": {"status": "committed", "committed": True}, "operations": [{"action": "update"}]})
     )
 
     with pytest.raises(LedgerActionError) as exc:

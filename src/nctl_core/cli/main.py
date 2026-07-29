@@ -40,6 +40,7 @@ from nctl_core.hosts_intent_render import (
     write_hosts_intent_artifacts,
 )
 from nctl_core.lifecycle import LIFECYCLE_STATES, build_lifecycle, render_lifecycle_text
+from nctl_core.desired_apply import apply_document
 from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
 from nctl_core.production_render import (
@@ -61,12 +62,14 @@ ops_app = typer.Typer(help="Inspect past and running operations from the event-l
 braindump_app = typer.Typer(help="Read immutable Braindumps and manage their Alignment Reviews.")
 ssh_app = typer.Typer(help="Manage the local, alias-keyed SSH trust store nctl uses for actuation.")
 session_app = typer.Typer(help="Create isolated agent-workspace session folders under .local/workspace/.")
+desired_app = typer.Typer(help="Preview or atomically apply a desired-state batch document.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
 app.add_typer(ops_app, name="ops")
 app.add_typer(braindump_app, name="braindump")
 app.add_typer(ssh_app, name="ssh")
 app.add_typer(session_app, name="session")
+app.add_typer(desired_app, name="desired")
 
 
 @app.callback()
@@ -393,6 +396,27 @@ def lifecycle(
     if any(error.code in ("invalid_lifecycle", "unknown_node") for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+@desired_app.command("apply")
+def desired_apply(
+    file: Annotated[str, typer.Option("-f", help="Phase 0 batch document path, or - for standard input.")],
+    yes: Annotated[bool, typer.Option("--yes", help="Commit instead of the default dry-run.")] = False,
+    config: ConfigOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the raw batch artifact.")] = False,
+) -> None:
+    """Preview a batch document, or atomically commit it with --yes."""
+    try:
+        artifact = apply_document(_load_config(config), file, commit=yes)
+    except Exception as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(EXIT_FAILURE) from exc
+    if json_output:
+        import json
+        typer.echo(json.dumps(artifact, sort_keys=True))
+    else:
+        typer.echo(f"{artifact.get('transaction', {}).get('status', 'unknown')}: {artifact.get('totals', {})}")
+    raise typer.Exit(EXIT_OK)
 
 
 class AuthorshipChoice(str, Enum):

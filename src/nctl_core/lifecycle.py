@@ -19,11 +19,11 @@ from pydantic import BaseModel
 
 from nctl_core.config import Config, ConfigError
 from nctl_core.nautobot import NautobotClient, NautobotError
+from nctl_core.desired_write import DesiredWriteError, submit_batch
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.sources.desired import fetch_desired_snapshot
 
 LIFECYCLE_SCHEMA = "nctl.lifecycle.v1"
-INTENT_API_BASE = "/api/plugins/intent-catalog"
 
 LIFECYCLE_STATES: tuple[str, ...] = ("planned", "approved", "active", "deprecated", "retired")
 
@@ -54,7 +54,7 @@ def unknown_node_error(node_slug: str) -> LifecycleError:
 def lifecycle_update_rejected_error(node_slug: str, requested_state: str, status_code: int, detail_text: str) -> LifecycleError:
     return lifecycle_error(
             "lifecycle_update_rejected",
-            f"PATCH lifecycle={requested_state!r} on DesiredNode {node_slug!r} failed: HTTP {status_code}",
+            f"batch lifecycle={requested_state!r} on DesiredNode {node_slug!r} failed: HTTP {status_code}",
             {"node_slug": node_slug, "requested_state": requested_state, "status_code": status_code, "detail": detail_text[:200]},
         )
 
@@ -106,9 +106,10 @@ def set_node_lifecycle(client: NautobotClient, node_slug: str, requested_state: 
             changed=False,
         )
 
-    response = client.rest_patch(f"{INTENT_API_BASE}/nodes/{node.id}/", {"lifecycle": requested_state})
-    if not response.is_success:
-        raise lifecycle_update_rejected_error(node_slug, requested_state, response.status_code, response.text)
+    try:
+        submit_batch(client, [{"op": "upsert", "kind": "desired_node", "key": {"slug": node.slug}, "values": {"lifecycle": requested_state}}])
+    except DesiredWriteError as exc:
+        raise lifecycle_update_rejected_error(node_slug, requested_state, exc.status_code, str(exc.artifact)) from exc
 
     confirmed = _resolve_node(client, node_slug)
     if confirmed.lifecycle != requested_state:

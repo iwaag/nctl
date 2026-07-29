@@ -21,15 +21,14 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
   lifecycle promotion step and no operational-config row are required before
   it's eligible for production composition.
 
-## Steps (`nauto/seed/intent_sources.yaml` — no nautobot-server shell)
+## Steps (batch document — no nautobot-server shell)
 
 > [!NOTE]
 > **Superseded (Interface Contract Phase 3/4):** the nintent Nautobot UI is read-only; there is
 > no `/plugins/intent-catalog/services/add/` or `/plugins/intent-catalog/placements/add/` form
-> anymore. Declare both rows below in `nauto/seed/intent_sources.yaml` and load them with the
-> `Import Intent Sources` Job (`apply=false` to preview, then `apply=true`). `nodes` also has a
-> REST API for its narrow `lifecycle`/`realized_device` mutation fields, per
-> `nintent/README_DEV.md`; `services`/`endpoints`/`placements` have no REST API today.
+> anymore. Put the desired rows in a Phase 0 batch document and run
+> `nctl desired apply -f FILE` to preview, then add `--yes` to commit. The
+> batch endpoint is the only desired-state writer.
 
 1. **Add a `desired_services` entry** — one row per service, not per
    instance:

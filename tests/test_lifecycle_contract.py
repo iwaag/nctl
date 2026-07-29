@@ -103,21 +103,21 @@ def test_idempotent_no_write_when_current_state_already_matches(monkeypatch):
 
 
 @respx.mock
-def test_change_patches_exactly_the_lifecycle_field_at_the_expected_path(monkeypatch):
+def test_change_posts_exact_batch_envelope(monkeypatch):
     from nctl_core.lifecycle import set_node_lifecycle
 
     _patch_fetch(monkeypatch, [_snapshot("planned"), _snapshot("active")])
-    patch_route = respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={})
+    batch_route = respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(200, json={"transaction": {"status": "committed", "committed": True}, "operations": [{"action": "update"}]})
     )
 
     with _client() as client:
         result = set_node_lifecycle(client, NODE_SLUG, "active")
 
-    assert patch_route.call_count == 1
+    assert batch_route.call_count == 1
     import json
 
-    assert json.loads(patch_route.calls.last.request.content) == {"lifecycle": "active"}
+    assert json.loads(batch_route.calls.last.request.content) == {"dry_run": False, "operations": [{"op": "upsert", "kind": "desired_node", "key": {"slug": NODE_SLUG}, "values": {"lifecycle": "active"}}]}
     assert result.changed is True
     assert result.previous_state == "planned"
     assert result.requested_state == "active"
@@ -125,12 +125,12 @@ def test_change_patches_exactly_the_lifecycle_field_at_the_expected_path(monkeyp
 
 
 @respx.mock
-def test_rejected_patch_raises_and_does_not_claim_success(monkeypatch):
+def test_rejected_batch_raises_and_does_not_claim_success(monkeypatch):
     from nctl_core.lifecycle import LifecycleError, set_node_lifecycle
 
     _patch_fetch(monkeypatch, [_snapshot("planned")])
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(400, json={"lifecycle": ["invalid"]})
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(409, json={"transaction": {"status": "blocked", "committed": False}, "operations": [{"reason": "conflict"}]})
     )
 
     with _client() as client:
@@ -143,10 +143,10 @@ def test_rejected_patch_raises_and_does_not_claim_success(monkeypatch):
 def test_confirmation_mismatch_after_patch_fails_closed(monkeypatch):
     from nctl_core.lifecycle import LifecycleError, set_node_lifecycle
 
-    # Refetch still shows "planned" despite a 200 PATCH response -- must not report changed=True.
+    # Refetch still shows "planned" despite a committed batch -- must not report changed=True.
     _patch_fetch(monkeypatch, [_snapshot("planned"), _snapshot("planned")])
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={})
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/desired-state/batch/").mock(
+        return_value=httpx.Response(200, json={"transaction": {"status": "committed", "committed": True}, "operations": [{"action": "update"}]})
     )
 
     with _client() as client:

@@ -18,6 +18,7 @@ RETAINED_COMMANDS = {
     "drift",
     "reconcile",
     "lifecycle",
+    "desired",
     "render",
     "apply",
     "ops",

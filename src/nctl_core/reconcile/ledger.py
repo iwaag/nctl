@@ -32,11 +32,11 @@ from pydantic import BaseModel
 
 from nctl_core.jobs import NautobotJobResult, NautobotJobRunner
 from nctl_core.nautobot import NautobotClient, NautobotError
+from nctl_core.desired_write import DesiredWriteError, operation_action, submit_batch
 from nctl_core.sources.desired import DesiredComputeInstance, DesiredComputePlatform, DesiredNode, fetch_desired_snapshot
 
 from .model import ReconcileAction
 
-INTENT_API_BASE = "/api/plugins/intent-catalog"
 IPAM_JOB_NAME = "Reconcile Desired IPAM Intent"
 IPAM_SUMMARY_ARTIFACT_NAME = "ipam-reconcile-summary.json"
 IPAM_SUMMARY_SCHEMA_VERSION = "nctl.ipam.reconcile.summary.v1"
@@ -133,15 +133,13 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
             {"before": {"realized_device_id": before.realized_device_id}},
         )
 
-    response = client.rest_patch(
-        f"{INTENT_API_BASE}/nodes/{node_id}/",
-        {field: candidate_id},
-    )
-    if not response.is_success:
+    try:
+        submit_batch(client, [{"op": "upsert", "kind": "desired_node", "key": {"slug": target.slug}, "values": {field: candidate_id}}])
+    except DesiredWriteError as exc:
         raise LedgerActionError(
-            "node_link_patch_failed",
-            f"PATCH {field}={candidate_id!r} on DesiredNode {target.slug!r} failed: HTTP {response.status_code}",
-            {"status_code": response.status_code, "body": response.text[:200]},
+            "node_link_write_failed",
+            f"batch {field}={candidate_id!r} on DesiredNode {target.slug!r} failed: HTTP {exc.status_code}",
+            {"status_code": exc.status_code, "artifact": exc.artifact},
         )
 
     # A successful REST response is the mutation boundary. Every error from
@@ -196,20 +194,34 @@ def execute_link_compute_realization(client: NautobotClient, action: ReconcileAc
             raise LedgerActionError("instance_link_already_other", "instance link points to a different VirtualMachine; refusing to replace it")
         platform_write = "already_correct"
         if platform.realized_cluster_id is None:
-            _patch_compute_link(client, "compute-platforms", platform_id, "realized_cluster", cluster_id)
-            mutated = True
-            platform_write = "patched"
-        after_platform = _get_compute_rows(client, platform_id, instance_id)[0]
-        if after_platform.realized_cluster_id != cluster_id:
-            raise LedgerActionError("platform_link_not_confirmed", "platform link PATCH was not confirmed by GraphQL", mutated=mutated)
+            pass
         instance_write = "already_correct"
         if instance.realized_vm_id is None:
-            _patch_compute_link(client, "compute-instances", instance_id, "realized_vm", vm_id)
-            mutated = True
-            instance_write = "patched"
+            pass
+        operations = []
+        if platform.realized_cluster_id is None:
+            operations.append({"op": "upsert", "kind": "desired_compute_platform", "key": {"slug": platform.slug}, "values": {"realized_cluster": cluster_id}})
+        if instance.realized_vm_id is None:
+            instance_node = next((row for row in desired.nodes if row.id == instance.desired_node_id), None)
+            if instance_node is None:
+                raise LedgerActionError("compute_link_fetch_failed", "compute instance desired node no longer exists")
+            operations.append({"op": "upsert", "kind": "desired_compute_instance", "key": {"desired_node": instance_node.slug}, "values": {"realized_vm": vm_id}})
+        if operations:
+            try:
+                artifact = submit_batch(client, operations)
+            except DesiredWriteError as exc:
+                raise LedgerActionError("compute_link_write_failed", f"compute link batch failed: HTTP {exc.status_code}", {"status_code": exc.status_code, "artifact": exc.artifact}) from exc
+            mutated = bool(artifact.get("transaction", {}).get("committed"))
+            if platform.realized_cluster_id is None:
+                platform_write = operation_action(artifact, 0)
+            if instance.realized_vm_id is None:
+                instance_write = operation_action(artifact, len(operations) - 1)
+        after_platform = _get_compute_rows(client, platform_id, instance_id)[0]
+        if after_platform.realized_cluster_id != cluster_id:
+            raise LedgerActionError("platform_link_not_confirmed", "platform link batch was not confirmed by GraphQL", mutated=mutated)
         _after_platform, after_instance = _get_compute_rows(client, platform_id, instance_id)
         if after_instance.realized_vm_id != vm_id:
-            raise LedgerActionError("instance_link_not_confirmed", "instance link PATCH was not confirmed by GraphQL", mutated=mutated)
+            raise LedgerActionError("instance_link_not_confirmed", "instance link batch was not confirmed by GraphQL", mutated=mutated)
     except LedgerActionError as exc:
         if exc.mutated or not mutated:
             raise
@@ -220,12 +232,6 @@ def execute_link_compute_realization(client: NautobotClient, action: ReconcileAc
         compute_instance_id=instance_id, virtual_machine_id=vm_id, vmid=p.get("vmid"),
         match_basis=p.get("match_basis"), platform_write=platform_write, instance_write=instance_write,
     )
-
-
-def _patch_compute_link(client: NautobotClient, collection: str, object_id: str, field: str, value: str) -> None:
-    response = client.rest_patch(f"{INTENT_API_BASE}/{collection}/{object_id}/", {field: value})
-    if not response.is_success:
-        raise LedgerActionError("compute_link_patch_failed", f"PATCH {field} on {collection}/{object_id} failed: HTTP {response.status_code}", {"status_code": response.status_code, "body": response.text[:200]})
 
 
 def _get_compute_rows(client: NautobotClient, platform_id: str, instance_id: str) -> tuple[DesiredComputePlatform, DesiredComputeInstance]:
