@@ -104,8 +104,8 @@ class IpamReconcileResult(BaseModel):
 def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) -> LinkActualNodeResult:
     """PATCH `realized_device`, then refetch via GraphQL and assert it landed.
 
-    Never clears or replaces an existing link: if the row already has either
-    field set, this raises rather than PATCHing over it (Decision 5).
+    Never clears or replaces an existing link: if the row already has a link,
+    this raises rather than PATCHing over it (Decision 5).
     """
 
     if action.reconciler_id != "link_actual_node":
@@ -126,17 +126,16 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
         raise LedgerActionError("missing_candidate_id", "link_actual_node action's candidate has no id")
 
     before = _get_desired_node_by_id(client, node_id, expected_slug=target.slug)
-    if before.realized_device_id or before.realized_device_source:
+    if before.realized_device_id:
         raise LedgerActionError(
             "node_already_linked",
             f"DesiredNode {target.slug!r} already has a realized link; refusing to replace it",
-            {"before": {"realized_device_id": before.realized_device_id, "realized_device_source": before.realized_device_source}},
+            {"before": {"realized_device_id": before.realized_device_id}},
         )
 
-    source_field = f"{field}_source"
     response = client.rest_patch(
         f"{INTENT_API_BASE}/nodes/{node_id}/",
-        {field: candidate_id, source_field: "derived"},
+        {field: candidate_id},
     )
     if not response.is_success:
         raise LedgerActionError(
@@ -159,14 +158,6 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
             {"after": after.realized_device_id},
             mutated=True,
         )
-    if after.realized_device_source != "derived":
-        raise LedgerActionError(
-            "node_link_source_not_confirmed",
-            f"expected DesiredNode {target.slug!r}.{source_field}='derived'",
-            {"after": after.realized_device_source},
-            mutated=True,
-        )
-
     return LinkActualNodeResult(
         node_id=node_id,
         node_slug=target.slug or "",
@@ -209,7 +200,7 @@ def execute_link_compute_realization(client: NautobotClient, action: ReconcileAc
             mutated = True
             platform_write = "patched"
         after_platform = _get_compute_rows(client, platform_id, instance_id)[0]
-        if after_platform.realized_cluster_id != cluster_id or after_platform.realized_cluster_source != "derived":
+        if after_platform.realized_cluster_id != cluster_id:
             raise LedgerActionError("platform_link_not_confirmed", "platform link PATCH was not confirmed by GraphQL", mutated=mutated)
         instance_write = "already_correct"
         if instance.realized_vm_id is None:
@@ -217,7 +208,7 @@ def execute_link_compute_realization(client: NautobotClient, action: ReconcileAc
             mutated = True
             instance_write = "patched"
         _after_platform, after_instance = _get_compute_rows(client, platform_id, instance_id)
-        if after_instance.realized_vm_id != vm_id or after_instance.realized_vm_source != "derived":
+        if after_instance.realized_vm_id != vm_id:
             raise LedgerActionError("instance_link_not_confirmed", "instance link PATCH was not confirmed by GraphQL", mutated=mutated)
     except LedgerActionError as exc:
         if exc.mutated or not mutated:
@@ -232,7 +223,7 @@ def execute_link_compute_realization(client: NautobotClient, action: ReconcileAc
 
 
 def _patch_compute_link(client: NautobotClient, collection: str, object_id: str, field: str, value: str) -> None:
-    response = client.rest_patch(f"{INTENT_API_BASE}/{collection}/{object_id}/", {field: value, f"{field}_source": "derived"})
+    response = client.rest_patch(f"{INTENT_API_BASE}/{collection}/{object_id}/", {field: value})
     if not response.is_success:
         raise LedgerActionError("compute_link_patch_failed", f"PATCH {field} on {collection}/{object_id} failed: HTTP {response.status_code}", {"status_code": response.status_code, "body": response.text[:200]})
 

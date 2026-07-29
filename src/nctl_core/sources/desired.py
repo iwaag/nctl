@@ -78,7 +78,6 @@ DESIRED_QUERY = """
     accepted_actual_types
     expected_spec
     realized_device { id }
-    realized_device_source
   }
   desired_endpoints {
     id
@@ -88,9 +87,7 @@ DESIRED_QUERY = """
     gateway_address
     ip_policy
     dns_name
-    dns_name_source
     mdns_name
-    mdns_name_source
     vpn_dns_name
     mac_address
     protocol
@@ -98,7 +95,6 @@ DESIRED_QUERY = """
     generate_dnsmasq
     dnsmasq_record_type
     realized_ip_address { id }
-    realized_ip_address_source
     desired_node { id slug }
   }
   desired_ip_ranges {
@@ -130,22 +126,18 @@ DESIRED_QUERY = """
     desired_endpoint { id }
     instance_name
     desired_state
-    instance_role
     deployment_profile
     config_schema_version
     config
-    assignment_source
   }
   desired_services {
     id
     slug
     name
-    display_name
     service_type
     lifecycle
     catalog_namespace
     catalog_metadata_name
-    requirements
   }
   desired_dependencies {
     id
@@ -162,13 +154,10 @@ DESIRED_QUERY = """
     id
     name
     slug
-    provider_type
     lifecycle
     control_node { id slug }
-    config_schema_version
     config
     realized_cluster { id }
-    realized_cluster_source
   }
   desired_compute_instances {
     id
@@ -179,10 +168,8 @@ DESIRED_QUERY = """
     vcpus
     memory_mb
     root_disk_gb
-    config_schema_version
     config
     realized_vm { id }
-    realized_vm_source
   }
 }
 """
@@ -211,7 +198,6 @@ class DesiredNode(BaseModel):
     accepted_actual_types: list[str] = []
     expected_spec: dict[str, Any] = {}
     realized_device_id: str | None = None
-    realized_device_source: str | None = None
 
 
 class DesiredEndpoint(BaseModel):
@@ -224,9 +210,7 @@ class DesiredEndpoint(BaseModel):
     gateway_address: str | None = None
     ip_policy: str = "static"
     dns_name: str | None = None
-    dns_name_source: str | None = None
     mdns_name: str | None = None
-    mdns_name_source: str | None = None
     vpn_dns_name: str | None = None
     mac_address: str | None = None
     protocol: str | None = None
@@ -234,7 +218,6 @@ class DesiredEndpoint(BaseModel):
     generate_dnsmasq: bool = False
     dnsmasq_record_type: str = "host_record"
     realized_ip_address_id: str | None = None
-    realized_ip_address_source: str | None = None
 
 
 class DesiredIPRange(BaseModel):
@@ -268,22 +251,21 @@ class DesiredServicePlacement(BaseModel):
     endpoint_id: str | None = None
     instance_name: str
     desired_state: str = "active"
-    instance_role: str | None = None
     deployment_profile: str
     config_schema_version: str
     config: dict[str, Any] = {}
-    assignment_source: str = "manual"
 
 
 class DesiredService(BaseModel):
     id: str
     slug: str
     name: str
-    display_name: str
     service_type: str
     lifecycle: str
     catalog_namespace: str
     catalog_metadata_name: str
+    # The schema no longer persists requirements. Keep the consumer's stable
+    # empty value until that evaluator contract is independently simplified.
     requirements: dict[str, Any] = {}
 
 
@@ -353,7 +335,6 @@ def _build_node(row: dict[str, Any]) -> DesiredNode:
         accepted_actual_types=[_lower(item) for item in (row.get("accepted_actual_types") or [])],
         expected_spec=row.get("expected_spec") or {},
         realized_device_id=realized_device["id"] if realized_device else None,
-        realized_device_source=_lower(row.get("realized_device_source")),
     )
 
 
@@ -370,9 +351,7 @@ def _build_endpoint(row: dict[str, Any]) -> DesiredEndpoint:
         gateway_address=row.get("gateway_address"),
         ip_policy=_lower(row.get("ip_policy")) or "static",
         dns_name=row.get("dns_name"),
-        dns_name_source=_lower(row.get("dns_name_source")),
         mdns_name=row.get("mdns_name"),
-        mdns_name_source=_lower(row.get("mdns_name_source")),
         vpn_dns_name=row.get("vpn_dns_name"),
         mac_address=_canonical_mac_or_none(row.get("mac_address")),
         protocol=row.get("protocol"),
@@ -380,7 +359,6 @@ def _build_endpoint(row: dict[str, Any]) -> DesiredEndpoint:
         generate_dnsmasq=bool(row.get("generate_dnsmasq")),
         dnsmasq_record_type=_lower(row.get("dnsmasq_record_type")) or "host_record",
         realized_ip_address_id=realized_ip_address["id"] if realized_ip_address else None,
-        realized_ip_address_source=_lower(row.get("realized_ip_address_source")),
     )
 
 
@@ -435,11 +413,9 @@ def _build_placement(row: dict[str, Any]) -> DesiredServicePlacement:
         endpoint_id=endpoint["id"] if endpoint else None,
         instance_name=row["instance_name"],
         desired_state=_lower(row.get("desired_state")) or "active",
-        instance_role=row.get("instance_role"),
         deployment_profile=row["deployment_profile"],
         config_schema_version=row["config_schema_version"],
         config=row.get("config") or {},
-        assignment_source=_lower(row.get("assignment_source")) or "manual",
     )
 
 
@@ -448,12 +424,10 @@ def _build_service(row: dict[str, Any]) -> DesiredService:
         id=row["id"],
         slug=row["slug"],
         name=row["name"],
-        display_name=row["display_name"],
         service_type=_lower(row["service_type"]),
         lifecycle=_lower(row["lifecycle"]),
         catalog_namespace=row["catalog_namespace"],
         catalog_metadata_name=row["catalog_metadata_name"],
-        requirements=row.get("requirements") or {},
     )
 
 

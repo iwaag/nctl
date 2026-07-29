@@ -246,13 +246,13 @@ def test_node_report_record_carries_role_and_accepted_actual_types_source():
     assert identity["accepted_actual_types_source"] == "override"
 
 
-def test_placement_desired_entry_carries_service_identity_and_assignment_source():
+def test_placement_desired_entry_carries_service_identity():
     node = linux_node(
         "agweb",
         placements=[
             PlacementInput(
                 "p1", "primary", "web", "1", config={"enabled": True},
-                service_id="svc-1", service_slug="web", instance_role="primary", assignment_source="yaml",
+                service_id="svc-1", service_slug="web",
                 endpoint_id="endpoint-agweb",
             )
         ],
@@ -262,8 +262,6 @@ def test_placement_desired_entry_carries_service_identity_and_assignment_source(
     placement = node_record(result, "agweb")["desired"]["placements"][0]
     assert placement["service_id"] == "svc-1"
     assert placement["service_slug"] == "web"
-    assert placement["instance_role"] == "primary"
-    assert placement["assignment_source"] == "yaml"
     assert placement["endpoint_id"] == "endpoint-agweb"
 
 

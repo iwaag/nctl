@@ -225,11 +225,9 @@ def _v3_node_record(*, state: str, effect: str = "applied", reason: str | None =
                     "service_slug": "web",
                     "instance_name": "primary",
                     "desired_state": "active",
-                    "instance_role": None,
                     "deployment_profile": "demo",
                     "config_schema_version": "1",
                     "config": {},
-                    "assignment_source": "manual",
                     "endpoint_id": None,
                 }
             ],

@@ -113,10 +113,7 @@ def test_link_actual_node_happy_path():
     assert result.field == "realized_device"
     assert result.candidate_id == DEVICE_ID
     assert result.node_slug == "agweb"
-    assert json.loads(patch_route.calls[0].request.content) == {
-        "realized_device": DEVICE_ID,
-        "realized_device_source": "derived",
-    }
+    assert json.loads(patch_route.calls[0].request.content) == {"realized_device": DEVICE_ID}
     assert gql_route.call_count == 2
 
 
@@ -302,38 +299,6 @@ def test_link_actual_node_rejects_slug_mismatch():
 
 
 @respx.mock
-def test_link_actual_node_refuses_partial_pre_existing_link_source_only():
-    """`realized_device_source` set without `realized_device_id` still counts as an existing
-    link for the never-clear-or-replace guard (Decision 5) -- not a benign half-empty state."""
-    response = _graphql_desired_node_response(realized_device_id=None)
-    response["data"]["desired_nodes"][0]["realized_device_source"] = "override"
-    respx.post(f"{BASE_URL}/api/graphql/").mock(return_value=httpx.Response(200, json=response))
-
-    with pytest.raises(LedgerActionError) as exc:
-        execute_link_actual_node(_client(), _link_action())
-    assert exc.value.code == "node_already_linked"
-
-
-@respx.mock
-def test_link_actual_node_rejects_wrong_confirmed_source_after_successful_patch():
-    respx.post(f"{BASE_URL}/api/graphql/").mock(
-        side_effect=[
-            httpx.Response(200, json=_graphql_desired_node_response(realized_device_id=None)),
-            httpx.Response(
-                200, json=_graphql_desired_node_response(realized_device_id=DEVICE_ID, realized_device_source="override")
-            ),
-        ]
-    )
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/nodes/{NODE_ID}/").mock(
-        return_value=httpx.Response(200, json={"id": NODE_ID, "realized_device": DEVICE_ID, "realized_device_source": "override"})
-    )
-
-    with pytest.raises(LedgerActionError) as exc:
-        execute_link_actual_node(_client(), _link_action())
-    assert exc.value.code == "node_link_source_not_confirmed"
-    assert exc.value.mutated is True
-
-
 # --- execute_reconcile_ipam -------------------------------------------------
 
 

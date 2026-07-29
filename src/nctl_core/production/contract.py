@@ -113,11 +113,9 @@ _DESIRED_PLACEMENT_KEYS = {
     "service_slug",
     "instance_name",
     "desired_state",
-    "instance_role",
     "deployment_profile",
     "config_schema_version",
     "config",
-    "assignment_source",
     "endpoint_id",
 }
 _OPERATIONAL_OVERRIDE_KEYS = {

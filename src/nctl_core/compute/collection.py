@@ -7,19 +7,16 @@ from typing import TYPE_CHECKING, Any
 from .contract import (
     COMPUTE_PRIMARY_ENDPOINT_MISSING,
     ComputeContractError,
-    _validate_link_source_xnor,
     effective_lifecycle,
     is_actionable_lifecycle,
     normalize_mac_address,
     select_compute_primary_endpoint,
     validate_compute_lifecycle,
-    validate_config_schema_version,
     validate_instance_config,
     validate_instance_kind,
     validate_memory_mb,
     validate_platform_config,
     validate_power_state,
-    validate_provider_type,
     validate_root_disk_gb,
     validate_vcpus,
 )
@@ -45,18 +42,12 @@ def _build_compute_platform(row: dict[str, Any]) -> DesiredComputePlatform:
     if not control_node:
         raise ComputeContractError("missing_control_node", "control_node is required", path="control_node")
     realized_cluster = row.get("realized_cluster")
-    realized_cluster_source = _validate_link_source_xnor(
-        realized_cluster, row.get("realized_cluster_source"), path="realized_cluster_source"
-    )
     return DesiredComputePlatform(
         id=row["id"], name=row["name"], slug=row["slug"],
-        provider_type=validate_provider_type(_lower(row.get("provider_type"))),
         lifecycle=validate_compute_lifecycle(_lower(row.get("lifecycle"))),
         control_node_id=control_node["id"],
-        config_schema_version=validate_config_schema_version(row.get("config_schema_version")),
         config=validate_platform_config(row.get("config")),
         realized_cluster_id=realized_cluster["id"] if realized_cluster else None,
-        realized_cluster_source=realized_cluster_source,
     )
 
 
@@ -69,17 +60,13 @@ def _build_compute_instance(row: dict[str, Any]) -> DesiredComputeInstance:
         raise ComputeContractError("missing_platform", "platform is required", path="platform")
     instance_kind = validate_instance_kind(_lower(row.get("instance_kind")))
     realized_vm = row.get("realized_vm")
-    realized_vm_source = _validate_link_source_xnor(
-        realized_vm, row.get("realized_vm_source"), path="realized_vm_source"
-    )
     return DesiredComputeInstance(
         id=row["id"], desired_node_id=desired_node["id"], platform_id=platform["id"], instance_kind=instance_kind,
         desired_power_state=validate_power_state(_lower(row.get("desired_power_state")) or "running"),
         vcpus=validate_vcpus(row.get("vcpus")), memory_mb=validate_memory_mb(row.get("memory_mb")),
         root_disk_gb=validate_root_disk_gb(row.get("root_disk_gb")),
-        config_schema_version=validate_config_schema_version(row.get("config_schema_version")),
         config=validate_instance_config(row.get("config"), instance_kind=instance_kind),
-        realized_vm_id=realized_vm["id"] if realized_vm else None, realized_vm_source=realized_vm_source,
+        realized_vm_id=realized_vm["id"] if realized_vm else None,
     )
 
 

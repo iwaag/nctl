@@ -45,9 +45,9 @@ def build_node_report_record(node: NodeInput, outcome: NodeOutcome) -> dict[str,
 def _placement_desired_entry(placement: PlacementInput) -> dict[str, Any]:
     return {"id": placement.id, "service_id": placement.service_id, "service_slug": placement.service_slug,
         "instance_name": placement.instance_name, "desired_state": placement.desired_state,
-        "instance_role": placement.instance_role, "deployment_profile": placement.deployment_profile,
+        "deployment_profile": placement.deployment_profile,
         "config_schema_version": placement.config_schema_version, "config": dict(placement.config),
-        "assignment_source": placement.assignment_source, "endpoint_id": placement.endpoint_id}
+        "endpoint_id": placement.endpoint_id}
 
 
 def _operational_override_entry(override: Any | None) -> dict[str, Any] | None:

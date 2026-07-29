@@ -240,7 +240,6 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert node.accepted_actual_types == ["device"]
     assert node.expected_spec == {"serial": "SER123"}
     assert node.realized_device_id == "dev-1"
-    assert node.realized_device_source == "derived"
     assert not hasattr(node, "realized_vm_id")
 
     endpoint = snapshot.endpoints[0]
@@ -249,15 +248,11 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert endpoint.dnsmasq_record_type == "host_record"
     assert endpoint.node_slug == "edge-1"
     assert endpoint.realized_ip_address_id == "ip-1"
-    assert endpoint.dns_name_source == "intent"
-    assert endpoint.mdns_name_source == "derived"
-    assert endpoint.realized_ip_address_source == "override"
     assert endpoint.mac_address == "aa:bb:cc:dd:ee:ff"
 
     assert snapshot.source_issues == []
     platform = snapshot.compute_platforms[0]
     assert platform.slug == "aghub-pve"
-    assert platform.provider_type == "proxmox"
     assert platform.lifecycle == "planned"
     assert platform.control_node_id == "node-1"
     assert platform.config == {"cluster_name": "aghub", "default_storage": "local-lvm", "default_bridge": "vmbr0"}
@@ -282,7 +277,6 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
 
     placement = snapshot.placements[0]
     assert placement.desired_state == "active"
-    assert placement.assignment_source == "manual"
     assert placement.config == {"enable_dhcp": True}
     assert placement.endpoint_id is None
 

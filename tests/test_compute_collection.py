@@ -175,18 +175,17 @@ def test_malformed_compute_rows_are_isolated_from_healthy_snapshot():
     bad = next(e for e in snapshot.endpoints if e.id == "endpoint-bad-mac")
     assert bad.mac_address is None  # malformed MAC never crashes endpoint parsing
 
-    # The bad platform/instance are excluded from the typed collections.
-    assert snapshot.compute_platforms == []
+    # Provider/schema discriminators are code constants, so only the invalid
+    # instance is excluded from the typed collections.
+    assert [platform.id for platform in snapshot.compute_platforms] == ["platform-bad"]
     assert snapshot.compute_instances == []
 
     codes_by_target = {issue.target_id: issue.code for issue in snapshot.source_issues}
     assert codes_by_target == {
-        "platform-bad": "invalid_provider_type",
         "instance-bad": "invalid_instance_kind",
         "endpoint-bad-mac": "invalid_mac_address",
     }
     assert {issue.target_kind for issue in snapshot.source_issues} == {
-        "compute_platform",
         "compute_instance",
         "endpoint",
     }

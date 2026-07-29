@@ -20,8 +20,6 @@ class PlacementInput:
     config: Mapping[str, Any] = field(default_factory=dict)
     service_id: str = ""
     service_slug: str = ""
-    instance_role: str | None = None
-    assignment_source: str = "manual"
     endpoint_id: str | None = None
 
 

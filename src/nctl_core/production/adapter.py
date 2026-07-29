@@ -104,8 +104,6 @@ def _placement_input(
         config=placement.config,
         service_id=placement.service_id,
         service_slug=service.slug if service is not None else "",
-        instance_role=placement.instance_role,
-        assignment_source=placement.assignment_source,
         endpoint_id=placement.endpoint_id,
     )
 

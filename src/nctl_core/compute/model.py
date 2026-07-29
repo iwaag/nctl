@@ -11,13 +11,10 @@ class DesiredComputePlatform(BaseModel):
     id: str
     name: str
     slug: str
-    provider_type: str
     lifecycle: str
     control_node_id: str
-    config_schema_version: str
     config: dict[str, Any] = {}
     realized_cluster_id: str | None = None
-    realized_cluster_source: str | None = None
 
 
 class DesiredComputeInstance(BaseModel):
@@ -31,10 +28,8 @@ class DesiredComputeInstance(BaseModel):
     vcpus: int
     memory_mb: int
     root_disk_gb: int
-    config_schema_version: str
     config: dict[str, Any] = {}
     realized_vm_id: str | None = None
-    realized_vm_source: str | None = None
 
 
 class DesiredSourceIssue(BaseModel):
