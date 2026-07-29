@@ -608,6 +608,16 @@ create playbook. Dry plans never invoke that handler or mutate a Proxmox guest.
 
 ## Adding one Proxmox LXC guest
 
+### Guest OS and compute are separate realization layers
+
+For a compute-backed guest, the Nautobot **Device** represents the managed guest OS: it is the
+`DesiredNode.realized_device` target and owns nodeutils facts, observed services, operational
+derivation, and node-level IPAM evidence. The Nautobot **VirtualMachine** represents the Proxmox
+compute resource: it is the `DesiredComputeInstance.realized_vm` target and owns VMID, guest
+kind, capacity, power, interfaces, and Proxmox realization. Both objects may legitimately
+describe one guest; a VirtualMachine never replaces the Device link for guest-OS realization.
+See [`devdocs/big/vm/roadmap.md`](../devdocs/big/vm/roadmap.md) for the detailed contract.
+
 This is the ordinary, bounded workflow for an approved LXC guest; it is not a generic Proxmox
 lifecycle interface.
 

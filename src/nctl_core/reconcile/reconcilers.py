@@ -41,6 +41,7 @@ from nctl_core.sources.snapshot import SourceSnapshot
 from .model import Classification, ReconcileAction
 from .profiles import ProfileReconciliation
 from .registry import Reconciler, register_reconciler
+from .ledger import NODE_LINK_CANDIDATE_FIELD_BY_OBJECT_TYPE
 
 OBSERVE_NODE = register_reconciler(
     Reconciler(id="observe_node", action_kind="observation", mutates=True, requires_observation=False)
@@ -102,6 +103,15 @@ def plan_link_actual_node(target: Target, snapshot: SourceSnapshot) -> Union[Rec
             "re-derived from the current snapshot",
         )
     candidate = evaluation.actual_refs[0]
+    object_type = candidate.get("object_type")
+    if object_type not in NODE_LINK_CANDIDATE_FIELD_BY_OBJECT_TYPE:
+        return Fallback(
+            Classification.MANUAL_REVIEW,
+            "the unique actual candidate cannot realize a DesiredNode; guest-OS realization "
+            "requires a dcim.device, while compute VirtualMachine realization belongs to "
+            "DesiredComputeInstance.realized_vm",
+            {"candidate": candidate, "supported_object_types": sorted(NODE_LINK_CANDIDATE_FIELD_BY_OBJECT_TYPE)},
+        )
     return ReconcileAction(
         id=f"link_actual_node:{target.slug}",
         reconciler_id=LINK_ACTUAL_NODE.id,

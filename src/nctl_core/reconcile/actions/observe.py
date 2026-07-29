@@ -23,4 +23,27 @@ def execute(context: ActionContext, action: ReconcileAction) -> ExecutedAction:
         return ExecutedAction(result=action_result, terminal_errors=[EnvelopeError(code="ssh_store_read_failed", message=str(exc))])
     except ValueError as exc:
         return ExecutedAction(result=ActionResult(action_id=action.id, reconciler_id="observe_node", action_kind="observation", target_slugs=target_slugs, success=False, error=str(exc)))
-    return ExecutedAction(result=ActionResult(action_id=action.id, reconciler_id="observe_node", action_kind="observation", target_slugs=target_slugs, success=result.ok, detail={"nodeutils_version": result.nodeutils_version, "hosts": [host.model_dump() for host in result.hosts]}, error=result.error))
+    action_result = ActionResult(
+        action_id=action.id,
+        reconciler_id="observe_node",
+        action_kind="observation",
+        target_slugs=target_slugs,
+        success=result.ok,
+        detail={"nodeutils_version": result.nodeutils_version, "hosts": [host.model_dump() for host in result.hosts]},
+        error=result.error,
+    )
+    # Ordinary drift-driven observation has historically been non-terminal so
+    # independent work can still be assessed. An explicitly requested refresh
+    # is different: the caller asked for fresh evidence, and a failed attempt
+    # must never fall through to a stale-snapshot convergence result.
+    if not result.ok and action.parameters.get("forced_refresh"):
+        return ExecutedAction(
+            result=action_result,
+            terminal_errors=[
+                EnvelopeError(
+                    code="observation_failed",
+                    message=result.error or "nodeutils observation did not complete successfully",
+                )
+            ],
+        )
+    return ExecutedAction(result=action_result)

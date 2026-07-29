@@ -249,7 +249,10 @@ def test_refresh_observation_plans_observe_for_converged_host(tmp_path, monkeypa
     _no_op_deployment_profiles(monkeypatch)
     node = _node()
     target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
-    _sequence(monkeypatch, [_drift([_target_status(target, Status.CONVERGED)], nodes=[node])])
+    converged = _drift([_target_status(target, Status.CONVERGED)], nodes=[node])
+    # The failed collection may have made controller-side changes, so the
+    # executor truthfully refreshes final drift while retaining the failure.
+    _sequence(monkeypatch, [converged, converged])
 
     envelope = run_reconcile(
         cfg,
@@ -306,6 +309,39 @@ def test_refresh_observation_executes_once_then_converges(tmp_path, monkeypatch)
     ]
     assert len(observations) == 1
     assert observations[0].detail["nodeutils_version"] == "a" * 40
+
+
+def test_failed_forced_observation_is_terminal_and_never_claims_convergence(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
+    converged = _drift([_target_status(target, Status.CONVERGED)], nodes=[node])
+    # The failed collection may have made controller-side changes, so the
+    # executor refreshes final drift while retaining the failure evidence.
+    _sequence(monkeypatch, [converged, converged])
+
+    monkeypatch.setattr(
+        observe_module,
+        "run_observation",
+        lambda *args, **kwargs: observe_module.ObservationResult(
+            ok=False,
+            nodeutils_version=None,
+            hosts=[],
+            collection=_fake_ansible_result(),
+            retrieval=_fake_ansible_result(),
+            error="collection failed before ingest",
+        ),
+    )
+
+    envelope = run_reconcile(cfg, host=node.slug, apply_changes=True, refresh_observation=True)
+
+    assert not envelope.ok
+    assert envelope.data.state == "failed"
+    assert envelope.errors[0].code == "observation_failed"
+    assert len(envelope.data.rounds) == 1
+    assert [action.reconciler_id for action in envelope.data.rounds[0].actions] == ["observe_node"]
+    assert envelope.data.rounds[0].actions[0].success is False
 
 
 def test_refresh_observation_requires_host_scope(tmp_path):

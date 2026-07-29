@@ -41,7 +41,10 @@ IPAM_JOB_NAME = "Reconcile Desired IPAM Intent"
 IPAM_SUMMARY_ARTIFACT_NAME = "ipam-reconcile-summary.json"
 IPAM_SUMMARY_SCHEMA_VERSION = "nctl.ipam.reconcile.summary.v1"
 
-_CANDIDATE_FIELD_BY_OBJECT_TYPE = {
+# The only actual-object type that the DesiredNode ledger writer can persist.
+# Keep this shared with planning so an executor-known invalid candidate never
+# becomes an automatic action.
+NODE_LINK_CANDIDATE_FIELD_BY_OBJECT_TYPE = {
     "dcim.device": "realized_device",
 }
 
@@ -113,7 +116,7 @@ def execute_link_actual_node(client: NautobotClient, action: ReconcileAction) ->
         raise LedgerActionError("missing_target_id", "link_actual_node action has no target id")
 
     candidate = action.parameters.get("candidate") or {}
-    field = _CANDIDATE_FIELD_BY_OBJECT_TYPE.get(candidate.get("object_type"))
+    field = NODE_LINK_CANDIDATE_FIELD_BY_OBJECT_TYPE.get(candidate.get("object_type"))
     if field is None:
         raise LedgerActionError(
             "unsupported_candidate_type", f"unsupported candidate object_type {candidate.get('object_type')!r}"

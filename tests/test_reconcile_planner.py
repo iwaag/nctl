@@ -12,19 +12,25 @@ from nctl_core.reconcile.planner import HostScopeError, build_plan, select_scope
 from nctl_core.reconcile import planner as planner_module
 from nctl_core.reconcile.model import Classification, PlanScope
 from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
-from nctl_core.sources.actual import ActualDevice, ActualSnapshot
+from nctl_core.sources.actual import ActualDevice, ActualSnapshot, ActualVirtualMachine
 from nctl_core.sources.desired import DesiredNode, DesiredService, DesiredServicePlacement, DesiredSnapshot
 from nctl_core.sources.snapshot import SourceSnapshot
 
 
-def _node(node_id: str, slug: str, *, realized_device_id: str | None = None) -> DesiredNode:
+def _node(
+    node_id: str,
+    slug: str,
+    *,
+    realized_device_id: str | None = None,
+    accepted_actual_types: list[str] | None = None,
+) -> DesiredNode:
     return DesiredNode(
         id=node_id,
         slug=slug,
         name=slug,
         lifecycle="active",
         node_type="device",
-        accepted_actual_types=["device"],
+        accepted_actual_types=accepted_actual_types or ["device"],
         realized_device_id=realized_device_id,
     )
 
@@ -55,10 +61,10 @@ def _placement(
     )
 
 
-def _snapshot(*, nodes=(), devices=(), services=(), placements=()) -> SourceSnapshot:
+def _snapshot(*, nodes=(), devices=(), virtual_machines=(), services=(), placements=()) -> SourceSnapshot:
     return SourceSnapshot(
         desired=DesiredSnapshot(nodes=list(nodes), services=list(services), placements=list(placements)),
-        actual=ActualSnapshot(devices=list(devices)),
+        actual=ActualSnapshot(devices=list(devices), virtual_machines=list(virtual_machines)),
         fetched_at=datetime.now(timezone.utc),
     )
 
@@ -318,6 +324,21 @@ def test_link_actual_node_falls_back_to_manual_review_without_a_candidate():
     assert plan.actions == []
     [record] = plan.manual_review
     assert record.code == "actual_node_not_linked"
+
+
+def test_link_actual_node_never_plans_a_virtual_machine_candidate():
+    node = _node("n1", "agfixture", accepted_actual_types=["virtual_machine"])
+    vm = ActualVirtualMachine(id="vm-109", name="agfixture")
+    snapshot = _snapshot(nodes=[node], virtual_machines=[vm])
+    diffs = [_node_diff(node, "actual_node_not_linked")]
+
+    plan = _build(snapshot, diffs)
+
+    assert plan.actions == []
+    [record] = plan.manual_review
+    assert record.code == "actual_node_not_linked"
+    assert record.evidence["candidate"] == {"id": "vm-109", "name": "agfixture", "object_type": "virtualization.virtualmachine"}
+    assert "DesiredComputeInstance.realized_vm" in record.reason
 
 
 # --- service_profile / dnsmasq_config --------------------------------------

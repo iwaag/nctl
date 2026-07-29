@@ -355,6 +355,29 @@ def _run_apply(
         # that evidence must survive into `data.rounds` rather than being
         # discarded.
         data.rounds.append(outcome.summary)
+        # A requested refresh is an evidence contract, not a best-effort hint.
+        # Its action may report a normal (non-terminal) collection failure so
+        # ordinary drift-driven observation can preserve its established
+        # behavior, but this explicit first-round request must stop here rather
+        # than allowing stale drift to be called converged in a later round.
+        if refresh_observation and round_index == 0:
+            forced_failure = next(
+                (
+                    action
+                    for action in outcome.summary.actions
+                    if action.reconciler_id == "observe_node" and not action.success
+                ),
+                None,
+            )
+            if forced_failure is not None:
+                state = "failed"
+                errors = [
+                    EnvelopeError(
+                        code="observation_failed",
+                        message=forced_failure.error or "requested nodeutils observation did not complete successfully",
+                    )
+                ]
+                break
         if outcome.terminal_errors:
             state = "failed"
             errors = outcome.terminal_errors
@@ -465,6 +488,21 @@ def _execute_round(
             )
             summary.actions.append(executed.result)
             had_side_effects = had_side_effects or _action_had_side_effects(executed.result)
+            if (
+                action.reconciler_id == "observe_node"
+                and action.parameters.get("forced_refresh")
+                and not executed.result.success
+            ):
+                return RoundOutcome(
+                    summary=summary,
+                    terminal_errors=[
+                        EnvelopeError(
+                            code="observation_failed",
+                            message=executed.result.error or "requested nodeutils observation did not complete successfully",
+                        )
+                    ],
+                    had_side_effects=had_side_effects,
+                )
             if executed.terminal_errors:
                 return RoundOutcome(
                     summary=summary, terminal_errors=executed.terminal_errors, had_side_effects=had_side_effects
@@ -709,6 +747,7 @@ def _with_forced_observation(
                 update={
                     "reason": "Explicit observation refresh requested; " + action.reason,
                     "evidence": {**action.evidence, **evidence},
+                    "parameters": {**action.parameters, **evidence},
                 }
             )
             return plan.model_copy(update={"actions": actions})
@@ -721,6 +760,7 @@ def _with_forced_observation(
         claimed_diff_codes=[],
         reason="Explicit observation refresh requested for this node.",
         evidence=evidence,
+        parameters=evidence,
         mutates=True,
         requires_observation=False,
     )
