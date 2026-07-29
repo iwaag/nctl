@@ -330,9 +330,9 @@ deliberate staging/promotion/demotion, not routine registration.
 
 `NODE` must be an exact desired-node slug. The command resolves it through the same GraphQL read
 path as every other command, no-ops (`changed: false`, no write) if the node is already in the
-requested state, otherwise PATCHes only `{"lifecycle": STATE}` to the intent-catalog `nodes`
-ViewSet, then refetches through GraphQL and fails closed (`lifecycle_confirmation_mismatch`) unless
-the write is confirmed. Text output is `NODE: before -> after` or `NODE: already STATE (no
+requested state, otherwise submits a one-operation desired-state batch that changes only
+`{"lifecycle": STATE}`, then refetches through GraphQL and fails closed
+(`lifecycle_confirmation_mismatch`) unless the write is confirmed. Text output is `NODE: before -> after` or `NODE: already STATE (no
 change)`; `--json` prints the closed `nctl.lifecycle.v1` envelope (`node_id`, `node_slug`,
 `previous_state`, `requested_state`, `current_state`, `changed`). `unknown_node` and
 `invalid_lifecycle` are usage exits (2); a rejected PATCH or confirmation mismatch is a failure exit
@@ -554,8 +554,10 @@ with hostile CLI options or environment variables are outside that supported pat
   (spec: `docs/event-log.md`).
 - **Exit codes**: 0 ok / 1 command failure / 2 usage or config error.
 - **Reads vs writes**: reads go through Nautobot GraphQL (`NautobotClient.graphql()`, a single
-  unified client for both core DCIM/IPAM and `nintent`'s desired-state types); writes stay REST
-  (Nautobot GraphQL is read-only by design, and the intent-catalog ViewSets remain the write path).
+  unified client for both core DCIM/IPAM and `nintent`'s desired-state types); writes stay REST.
+  Nautobot GraphQL is read-only, and every structured desired-state write uses the single
+  `POST /api/plugins/intent-catalog/desired-state/batch/` endpoint rather than an intent-catalog
+  ViewSet.
 
 ### Module admission
 

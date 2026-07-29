@@ -386,9 +386,10 @@ def lifecycle(
 ) -> None:
     """Set a desired node's lifecycle directly (planned/approved/active/deprecated/retired).
 
-    A direct setter, not an approval engine and not part of `reconcile --yes`: it PATCHes only the
-    `lifecycle` field, confirms the write through a GraphQL refetch, and is idempotent (no PATCH is
-    sent if the node is already in the requested state).
+    A direct setter, not an approval engine and not part of `reconcile --yes`: it sends a
+    one-operation batch that changes only the `lifecycle` field, confirms the write through a
+    GraphQL refetch, and is idempotent (no write is sent if the node is already in the requested
+    state).
     """
     cfg = _load_config(config)
     envelope = build_lifecycle(cfg, node, state)

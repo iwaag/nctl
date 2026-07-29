@@ -2,10 +2,10 @@
 
 A direct, idempotent setter for `DesiredNode.lifecycle` -- not an approval engine and not part of
 `reconcile --yes`. Reads follow the project-wide GraphQL convention
-(`nctl_core.sources.desired.fetch_desired_snapshot`); the single write is a partial REST PATCH
-through the existing intent-catalog ViewSet so unrelated node fields are never touched. Every write
-is confirmed by a GraphQL refetch before `changed=True` is reported; a mismatch fails closed rather
-than claiming success (plan.md Decision 2, steps 4-5).
+(`nctl_core.sources.desired.fetch_desired_snapshot`); the single write is a one-operation batch
+submitted to the canonical desired-state endpoint, so unrelated node fields are never touched.
+Every write is confirmed by a GraphQL refetch before `changed=True` is reported; a mismatch fails
+closed rather than claiming success (plan.md Decision 2, steps 4-5).
 
 No entry is added to `drift.registry` or `reconcile.classify.CODE_CLASSIFICATION`: these are
 command-scoped errors, not desired-vs-actual facts (plan.md Decision 3).
@@ -85,7 +85,7 @@ def _resolve_node(client: NautobotClient, node_slug: str):
 
 
 def set_node_lifecycle(client: NautobotClient, node_slug: str, requested_state: str) -> LifecycleData:
-    """Pure operation: resolve, no-op if already matching, else PATCH and confirm.
+    """Resolve, no-op if already matching, else batch-write and confirm.
 
     Raises a `LifecycleError` on any failure; never returns a partial/unconfirmed result.
     """
