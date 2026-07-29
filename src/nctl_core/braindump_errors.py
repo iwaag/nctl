@@ -37,10 +37,6 @@ def input_conflict_error(field_name: str, *, both: bool) -> BraindumpError:
     return error("input_conflict", f"exactly one of literal {field_name} or --file is required ({reason})", {"field": field_name})
 
 
-def no_update_fields_error(braindump_id: str) -> BraindumpError:
-    return error("no_update_fields", "update requires at least one changed field (title, authorship, or body)", {"braindump_id": braindump_id})
-
-
 def input_file_error(path: Path, reason: str) -> BraindumpError:
     return error("input_file_error", f"cannot read {path}: {reason}", {"path": str(path)})
 
@@ -75,10 +71,6 @@ def review_write_rejected_error(status_code: int, detail_text: str) -> Braindump
 
 def review_confirmation_mismatch_error(braindump_id: str) -> BraindumpError:
     return error("review_confirmation_mismatch", f"GraphQL refetch of Braindump {braindump_id!r} did not show the requested review", {"braindump_id": braindump_id})
-
-
-def braindump_delete_rejected_error(status_code: int, detail_text: str) -> BraindumpError:
-    return error("braindump_delete_rejected", f"Braindump delete rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
 
 
 def review_delete_rejected_error(status_code: int, detail_text: str) -> BraindumpError:

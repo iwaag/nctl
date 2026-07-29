@@ -147,7 +147,7 @@ requested_state`). Errors are command-scoped (`invalid_lifecycle`, `unknown_node
 
 ## `nctl.braindump.*.v1`
 
-Seven schemas, one per `nctl braindump` command (see the README's `braindump` section for command
+Five schemas, one per `nctl braindump` command (see the README's `braindump` section for command
 semantics). All share the same nested shapes:
 
 ```text
@@ -168,8 +168,6 @@ hint, never a correctness/alignment verdict).
 | `nctl.braindump.list.v1` | `items: BrainDumpListItem[]`, `count` | GraphQL read only |
 | `nctl.braindump.show.v1` | `braindump: BrainDumpRecord \| null` | full record, including opaque `body`/`summary` |
 | `nctl.braindump.create.v1` | `braindump`, `changed` | `changed` is always `true` — create never guesses an existing identity |
-| `nctl.braindump.update.v1` | `braindump`, `changed` | `changed: false` when the stored representation already matched every requested field (no REST write sent) |
-| `nctl.braindump.delete.v1` | `id`, `title`, `deleted`, `review_deleted` | `review_deleted` reports whether a current review cascaded |
 | `nctl.braindump.review.v1` | `braindump`, `action` (`"created"` \| `"replaced"`) | always performs a write, even for an identical summary, to advance `last_updated` |
 | `nctl.braindump.review_delete.v1` | `braindump`, `deleted`, `review_id` | absent review is a successful no-op: `deleted: false`, `review_id: null` |
 
@@ -203,10 +201,10 @@ Example, `nctl.braindump.review.v1`:
 }
 ```
 
-Every write/delete is confirmed via a fresh GraphQL refetch before its envelope reports success; a
+Every supported write/delete is confirmed via a fresh GraphQL refetch before its envelope reports success; a
 mismatch never fabricates `ok: true` and instead returns a `*_confirmation_mismatch` error. Errors
 are command-scoped: local-input codes (`invalid_braindump_id`, `invalid_authorship`, `invalid_text`,
-`input_conflict`, `no_update_fields`, `input_file_error`, `input_file_invalid_utf8`) and
+`input_conflict`, `input_file_error`, `input_file_invalid_utf8`) and
 `braindump_not_found` exit 2 (usage); REST validation/write, transport, race-recovery, and
 confirmation-mismatch codes exit 1 (failure) with no success claim. None of these codes, or the
 Braindump/Alignment Review data itself, enters `drift.registry`, `reconcile.classify`, or

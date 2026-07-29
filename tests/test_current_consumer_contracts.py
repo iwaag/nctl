@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from nctl_core.braindump import (
     BraindumpCreateData,
-    BraindumpDeleteData,
     BraindumpListData,
     BraindumpReviewData,
     BraindumpReviewDeleteData,
     BraindumpShowData,
-    BraindumpUpdateData,
 )
 from nctl_core.dnsmasq_apply import DnsmasqApplyData
 from nctl_core.dnsmasq_render import DnsmasqRenderData
@@ -78,8 +76,6 @@ CURRENT_DATA_FIELDS = {
     "nctl.braindump.list.v1": (BraindumpListData, {"items", "count"}),
     "nctl.braindump.show.v1": (BraindumpShowData, {"braindump"}),
     "nctl.braindump.create.v1": (BraindumpCreateData, {"braindump", "changed"}),
-    "nctl.braindump.update.v1": (BraindumpUpdateData, {"braindump", "changed"}),
-    "nctl.braindump.delete.v1": (BraindumpDeleteData, {"id", "title", "deleted", "review_deleted"}),
     "nctl.braindump.review.v1": (BraindumpReviewData, {"braindump", "action"}),
     "nctl.braindump.review_delete.v1": (
         BraindumpReviewDeleteData,

@@ -93,10 +93,8 @@ uv run nctl braindump list
 uv run nctl braindump show <braindump-id>
 uv run nctl braindump create --title "Home lab" --authorship user_direct --body "Keep Ollama on agpc."
 uv run nctl braindump create --title "Home lab" --authorship user_direct --file wish.txt
-uv run nctl braindump update <braindump-id> --title "Home lab v2"
 uv run nctl braindump review <braindump-id> --summary "agpc already runs Ollama; no drift."
 uv run nctl braindump review-delete <braindump-id> --yes
-uv run nctl braindump delete <braindump-id> --yes
 ```
 
 `status` checks Nautobot connectivity/auth/intent-catalog presence, nodeutils dump freshness, and

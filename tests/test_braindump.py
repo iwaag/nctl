@@ -20,12 +20,10 @@ import respx
 from nctl_core.braindump import (
     create_braindump,
     create_or_replace_review,
-    delete_braindump,
     delete_review,
     list_braindumps,
     resolve_text_input,
     show_braindump,
-    update_braindump,
     validate_authorship,
     validate_braindump_id,
 )
@@ -283,94 +281,6 @@ def test_create_auth_and_connection_failures_propagate():
             create_braindump(client, title="T", authorship="user_direct", body="B")
 
 
-# -- update --------------------------------------------------------------------------------------
-
-
-def test_update_requires_at_least_one_field(monkeypatch):
-    def fail_show(client, braindump_id):
-        raise AssertionError("must not fetch when no fields are supplied")
-
-    monkeypatch.setattr("nctl_core.braindump.fetch_braindump_show", fail_show)
-
-    with _client() as client:
-        with pytest.raises(BraindumpError) as exc:
-            update_braindump(client, BD_ID)
-
-
-@respx.mock
-def test_update_sends_only_supplied_fields_and_confirms(monkeypatch):
-    _patch_show(monkeypatch, [_read(title="old"), _read(title="new")])
-    patch_route = respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        return_value=httpx.Response(200, json={})
-    )
-
-    with _client() as client:
-        record, changed = update_braindump(client, BD_ID, title="new")
-
-    assert json.loads(patch_route.calls.last.request.content) == {"title": "new"}
-    assert changed is True
-    assert record.title == "new"
-
-
-@respx.mock
-def test_update_no_op_when_already_matching(monkeypatch):
-    _patch_show(monkeypatch, [_read(title="same")])
-    patch_route = respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        return_value=httpx.Response(200, json={})
-    )
-
-    with _client() as client:
-        record, changed = update_braindump(client, BD_ID, title="same")
-
-    assert patch_route.call_count == 0
-    assert changed is False
-    assert record.title == "same"
-
-
-def test_update_unknown_id_raises(monkeypatch):
-    _patch_show(monkeypatch, [None])
-
-    with _client() as client:
-        with pytest.raises(BraindumpError) as exc:
-            update_braindump(client, BD_ID, title="new")
-
-
-@respx.mock
-def test_update_confirmation_mismatch_fails_closed(monkeypatch):
-    _patch_show(monkeypatch, [_read(title="old"), _read(title="unexpected")])
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        return_value=httpx.Response(200, json={})
-    )
-
-    with _client() as client:
-        with pytest.raises(BraindumpError) as exc:
-            update_braindump(client, BD_ID, title="new")
-
-
-@respx.mock
-def test_update_validation_failure_maps_to_validation_error(monkeypatch):
-    _patch_show(monkeypatch, [_read(title="old")])
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        return_value=httpx.Response(400, json={"title": ["invalid"]})
-    )
-
-    with _client() as client:
-        with pytest.raises(BraindumpError) as exc:
-            update_braindump(client, BD_ID, title="new")
-
-
-@respx.mock
-def test_update_connection_failure_propagates(monkeypatch):
-    _patch_show(monkeypatch, [_read(title="old")])
-    respx.patch(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        side_effect=httpx.ConnectError("refused")
-    )
-
-    with _client() as client:
-        with pytest.raises(NautobotConnectionError):
-            update_braindump(client, BD_ID, title="new")
-
-
 # -- review create-or-replace ---------------------------------------------------------------------
 
 REVIEW_ID = "22222222-2222-2222-2222-222222222222"
@@ -546,68 +456,6 @@ def test_review_authorization_and_connection_failures_propagate(monkeypatch):
 
 
 # -- deletes ---------------------------------------------------------------------------------------
-
-
-@respx.mock
-def test_delete_braindump_cascades_review(monkeypatch):
-    _patch_show(monkeypatch, [_read(title="to delete", review=_review()), None])
-    delete_route = respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        return_value=httpx.Response(204)
-    )
-
-    with _client() as client:
-        title, deleted, review_deleted = delete_braindump(client, BD_ID)
-
-    assert delete_route.call_count == 1
-    assert title == "to delete"
-    assert deleted is True
-    assert review_deleted is True
-
-
-@respx.mock
-def test_delete_braindump_without_review(monkeypatch):
-    _patch_show(monkeypatch, [_read(title="to delete", review=None), None])
-    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        return_value=httpx.Response(204)
-    )
-
-    with _client() as client:
-        title, deleted, review_deleted = delete_braindump(client, BD_ID)
-
-    assert deleted is True
-    assert review_deleted is False
-
-
-def test_delete_braindump_unknown_id_raises(monkeypatch):
-    _patch_show(monkeypatch, [None])
-
-    with _client() as client:
-        with pytest.raises(BraindumpError) as exc:
-            delete_braindump(client, BD_ID)
-
-
-@respx.mock
-def test_delete_braindump_rejected_raises(monkeypatch):
-    _patch_show(monkeypatch, [_read()])
-    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        return_value=httpx.Response(500, text="boom")
-    )
-
-    with _client() as client:
-        with pytest.raises(BraindumpError) as exc:
-            delete_braindump(client, BD_ID)
-
-
-@respx.mock
-def test_delete_braindump_confirmation_mismatch_fails_closed(monkeypatch):
-    _patch_show(monkeypatch, [_read(), _read()])
-    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/").mock(
-        return_value=httpx.Response(204)
-    )
-
-    with _client() as client:
-        with pytest.raises(BraindumpError) as exc:
-            delete_braindump(client, BD_ID)
 
 
 @respx.mock

@@ -6,10 +6,9 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from nctl_core.braindump import (
-    BraindumpCreateData, BraindumpDeleteData, BraindumpListData, BraindumpReviewData,
-    BraindumpReviewDeleteData, BraindumpShowData, BraindumpUpdateData, create_braindump,
-    create_or_replace_review, delete_braindump, delete_review, list_braindumps,
-    resolve_text_input, show_braindump, update_braindump,
+    BraindumpCreateData, BraindumpListData, BraindumpReviewData, BraindumpReviewDeleteData,
+    BraindumpShowData, create_braindump, create_or_replace_review, delete_review,
+    list_braindumps, resolve_text_input, show_braindump,
 )
 from nctl_core.braindump_errors import BraindumpError
 from nctl_core.config import Config, ConfigError
@@ -19,8 +18,6 @@ from nctl_core.output import Envelope, EnvelopeError
 LIST_SCHEMA = "nctl.braindump.list.v1"
 SHOW_SCHEMA = "nctl.braindump.show.v1"
 CREATE_SCHEMA = "nctl.braindump.create.v1"
-UPDATE_SCHEMA = "nctl.braindump.update.v1"
-DELETE_SCHEMA = "nctl.braindump.delete.v1"
 REVIEW_SCHEMA = "nctl.braindump.review.v1"
 REVIEW_DELETE_SCHEMA = "nctl.braindump.review_delete.v1"
 T = TypeVar("T")
@@ -65,21 +62,6 @@ def build_braindump_create(cfg: Config, *, title: str, authorship: str, body: st
     return _build(cfg, CREATE_SCHEMA, BraindumpCreateData(), action)
 
 
-def build_braindump_update(cfg: Config, braindump_id: str, *, title: str | None = None, authorship: str | None = None, body: str | None = None, body_file: Path | None = None) -> Envelope[BraindumpUpdateData]:
-    def action(c: NautobotClient) -> BraindumpUpdateData:
-        resolved = resolve_text_input(field_name="body", literal=body, file=body_file) if body is not None or body_file is not None else None
-        record, changed = update_braindump(c, braindump_id, title=title, authorship=authorship, body=resolved)
-        return BraindumpUpdateData(braindump=record, changed=changed)
-    return _build(cfg, UPDATE_SCHEMA, BraindumpUpdateData(), action)
-
-
-def build_braindump_delete(cfg: Config, braindump_id: str) -> Envelope[BraindumpDeleteData]:
-    def action(c: NautobotClient) -> BraindumpDeleteData:
-        title, deleted, review_deleted = delete_braindump(c, braindump_id)
-        return BraindumpDeleteData(id=braindump_id, title=title, deleted=deleted, review_deleted=review_deleted)
-    return _build(cfg, DELETE_SCHEMA, BraindumpDeleteData(), action)
-
-
 def build_braindump_review(cfg: Config, braindump_id: str, *, summary: str | None = None, summary_file: Path | None = None) -> Envelope[BraindumpReviewData]:
     def action(c: NautobotClient) -> BraindumpReviewData:
         record, verb = create_or_replace_review(c, braindump_id, summary=resolve_text_input(field_name="summary", literal=summary, file=summary_file))
@@ -116,12 +98,6 @@ def render_braindump_show_text(e):
 def render_braindump_create_text(e):
     if not e.ok: return _errors(e)
     x=e.data.braindump; return f"created braindump {x.id} ({x.title!r}, {x.authorship}) at {x.last_updated}"
-def render_braindump_update_text(e):
-    if not e.ok: return _errors(e)
-    x=e.data.braindump; return f"updated braindump {x.id} ({x.title!r}) at {x.last_updated}" if e.data.changed else f"braindump {x.id} ({x.title!r}): no change (already up to date)"
-def render_braindump_delete_text(e):
-    if not e.ok: return _errors(e)
-    x=e.data; return f"deleted braindump {x.id} ({x.title!r}): {'review also deleted' if x.review_deleted else 'no review was present'}"
 def render_braindump_review_text(e):
     if not e.ok: return _errors(e)
     x=e.data; return f"{x.action} review for braindump {x.braindump.id} ({x.braindump.title!r}) at {x.braindump.alignment_review.last_updated}"

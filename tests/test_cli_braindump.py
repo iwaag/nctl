@@ -17,12 +17,10 @@ import nctl_core.cli.main as main
 from nctl_core.braindump import (
     AlignmentReviewRecord,
     BraindumpCreateData,
-    BraindumpDeleteData,
     BraindumpListData,
     BraindumpReviewData,
     BraindumpReviewDeleteData,
     BraindumpShowData,
-    BraindumpUpdateData,
     BrainDumpListItem,
     BrainDumpRecord,
 )
@@ -60,6 +58,13 @@ def _error_envelope(schema: str, data, code: str) -> Envelope:
 
 def _setup(monkeypatch):
     monkeypatch.setattr(main, "_load_config", lambda path: object())
+
+
+def test_removed_update_and_delete_are_unknown_commands():
+    for command in ("update", "delete"):
+        result = runner.invoke(main.app, ["braindump", command, BD_ID])
+        assert result.exit_code == 2
+        assert "No such command" in result.output
 
 
 # -- list ------------------------------------------------------------------------------------
@@ -331,155 +336,6 @@ def test_create_validation_failure_is_failure_exit(monkeypatch):
     )
 
     assert result.exit_code == 1
-
-
-# -- update ------------------------------------------------------------------------------------
-
-
-def test_update_passes_only_supplied_fields(monkeypatch):
-    _setup(monkeypatch)
-    captured = {}
-
-    def fake_update(cfg, braindump_id, *, title=None, authorship=None, body=None, body_file=None):
-        captured.update(
-            braindump_id=braindump_id, title=title, authorship=authorship, body=body, body_file=body_file
-        )
-        return Envelope.build(
-            "nctl.braindump.update.v1", BraindumpUpdateData(braindump=_record(), changed=True)
-        )
-
-    monkeypatch.setattr(main, "build_braindump_update", fake_update)
-
-    result = runner.invoke(main.app, ["braindump", "update", BD_ID, "--title", "new"])
-
-    assert result.exit_code == 0
-    assert captured == {
-        "braindump_id": BD_ID, "title": "new", "authorship": None, "body": None, "body_file": None,
-    }
-
-
-def test_update_no_fields_supplied_is_usage_exit(monkeypatch):
-    _setup(monkeypatch)
-    monkeypatch.setattr(
-        main, "build_braindump_update",
-        lambda cfg, braindump_id, **kw: _error_envelope(
-            "nctl.braindump.update.v1", BraindumpUpdateData(), "no_update_fields"
-        ),
-    )
-
-    result = runner.invoke(main.app, ["braindump", "update", BD_ID])
-
-    assert result.exit_code == 2
-
-
-def test_update_no_change_text(monkeypatch):
-    _setup(monkeypatch)
-    monkeypatch.setattr(
-        main, "build_braindump_update",
-        lambda cfg, braindump_id, **kw: Envelope.build(
-            "nctl.braindump.update.v1", BraindumpUpdateData(braindump=_record(), changed=False)
-        ),
-    )
-
-    result = runner.invoke(main.app, ["braindump", "update", BD_ID, "--title", "my title"])
-
-    assert result.exit_code == 0
-    assert "no change" in result.stdout
-
-
-# -- delete ------------------------------------------------------------------------------------
-
-
-def test_delete_with_yes_skips_prompt(monkeypatch):
-    _setup(monkeypatch)
-    called = {}
-
-    def fake_delete(cfg, braindump_id):
-        called["id"] = braindump_id
-        return Envelope.build(
-            "nctl.braindump.delete.v1",
-            BraindumpDeleteData(id=braindump_id, title="t", deleted=True, review_deleted=True),
-        )
-
-    monkeypatch.setattr(main, "build_braindump_delete", fake_delete)
-
-    result = runner.invoke(main.app, ["braindump", "delete", BD_ID, "--yes"])
-
-    assert result.exit_code == 0
-    assert called["id"] == BD_ID
-    assert "review also deleted" in result.stdout
-
-
-def test_delete_declined_prompt_performs_no_write(monkeypatch):
-    _setup(monkeypatch)
-    monkeypatch.setattr(
-        main, "build_braindump_delete", lambda cfg, braindump_id: (_ for _ in ()).throw(
-            AssertionError("must not delete without confirmation")
-        )
-    )
-
-    result = runner.invoke(main.app, ["braindump", "delete", BD_ID], input="n\n")
-
-    assert result.exit_code == 2
-
-
-def test_delete_confirmed_prompt_proceeds(monkeypatch):
-    _setup(monkeypatch)
-    monkeypatch.setattr(
-        main, "build_braindump_delete",
-        lambda cfg, braindump_id: Envelope.build(
-            "nctl.braindump.delete.v1",
-            BraindumpDeleteData(id=braindump_id, title="t", deleted=True, review_deleted=False),
-        ),
-    )
-
-    result = runner.invoke(main.app, ["braindump", "delete", BD_ID], input="y\n")
-
-    assert result.exit_code == 0
-
-
-def test_delete_eof_at_prompt_performs_no_write(monkeypatch):
-    _setup(monkeypatch)
-    monkeypatch.setattr(
-        main, "build_braindump_delete", lambda cfg, braindump_id: (_ for _ in ()).throw(
-            AssertionError("must not delete on EOF")
-        )
-    )
-
-    result = runner.invoke(main.app, ["braindump", "delete", BD_ID], input="")
-
-    assert result.exit_code == 2
-
-
-def test_delete_json_without_yes_is_usage_exit(monkeypatch):
-    _setup(monkeypatch)
-    monkeypatch.setattr(
-        main, "build_braindump_delete", lambda cfg, braindump_id: (_ for _ in ()).throw(
-            AssertionError("must not delete without --yes in --json mode")
-        )
-    )
-
-    result = runner.invoke(main.app, ["braindump", "delete", BD_ID, "--json"])
-
-    assert result.exit_code == 2
-    assert result.stdout == ""
-
-
-def test_delete_json_with_yes_proceeds(monkeypatch):
-    _setup(monkeypatch)
-    monkeypatch.setattr(
-        main, "build_braindump_delete",
-        lambda cfg, braindump_id: Envelope.build(
-            "nctl.braindump.delete.v1",
-            BraindumpDeleteData(id=braindump_id, title="t", deleted=True, review_deleted=False),
-        ),
-    )
-
-    result = runner.invoke(main.app, ["braindump", "delete", BD_ID, "--yes", "--json"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert payload["data"]["deleted"] is True
 
 
 # -- review ------------------------------------------------------------------------------------
