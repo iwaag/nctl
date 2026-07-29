@@ -26,6 +26,7 @@ from nctl_core.braindump import (
     show_braindump,
     validate_authorship,
     validate_braindump_id,
+    supersede_braindumps,
 )
 from nctl_core.braindump_errors import BraindumpError
 from nctl_core.nautobot import (
@@ -49,8 +50,9 @@ def _read(
     *,
     id: str = BD_ID,
     title: str = "title",
-    body: str = "body",
-    authorship: str = "user_direct",
+        body: str = "body",
+        authorship: str = "user_direct",
+        status: str = "active",
     created: datetime = T0,
     last_updated: datetime = T0,
     review: AlignmentReviewRead | None = None,
@@ -60,6 +62,7 @@ def _read(
         title=title,
         body=body,
         authorship=authorship,  # type: ignore[arg-type]
+        status=status,  # type: ignore[arg-type]
         created=created,
         last_updated=last_updated,
         alignment_review=review,
@@ -279,6 +282,51 @@ def test_create_auth_and_connection_failures_propagate():
     with _client() as client:
         with pytest.raises(NautobotAuthError):
             create_braindump(client, title="T", authorship="user_direct", body="B")
+
+
+# -- supersede -------------------------------------------------------------------------------
+
+
+@respx.mock
+def test_supersede_posts_exact_ids_and_confirms_all_statuses(monkeypatch):
+    old_id = BD_ID
+    second_id = "33333333-3333-3333-3333-333333333333"
+    new_id = "44444444-4444-4444-4444-444444444444"
+    _patch_show(
+        monkeypatch,
+        [
+            _read(id=new_id, title="New", body="Replacement", authorship="agent_transcribed", status="active"),
+            _read(id=old_id, status="superseded"),
+            _read(id=second_id, status="superseded"),
+        ],
+    )
+    route = respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/supersede/").mock(
+        return_value=httpx.Response(201, json={"braindump": {"id": new_id}, "superseded_ids": [old_id, second_id]})
+    )
+    with _client() as client:
+        record, superseded_ids, changed = supersede_braindumps(
+            client, old_ids=[old_id, second_id], title="New", authorship="agent_transcribed", body="Replacement"
+        )
+    assert json.loads(route.calls.last.request.content) == {
+        "old_ids": [old_id, second_id], "title": "New", "body": "Replacement", "authorship": "agent_transcribed"
+    }
+    assert record.id == new_id
+    assert superseded_ids == [old_id, second_id]
+    assert changed is True
+
+
+@respx.mock
+def test_supersede_server_rejection_is_reported_without_confirmation_fetch(monkeypatch):
+    def fail_show(client, braindump_id):
+        raise AssertionError("rejected replacement must not be confirmed")
+    monkeypatch.setattr("nctl_core.braindump.fetch_braindump_show", fail_show)
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/supersede/").mock(
+        return_value=httpx.Response(400, json={"old_ids": ["not active"]})
+    )
+    with _client() as client:
+        with pytest.raises(BraindumpError) as exc:
+            supersede_braindumps(client, old_ids=[BD_ID], title="New", authorship="user_direct", body="Replacement")
+    assert exc.value.code == "braindump_supersede_invalid"
 
 
 # -- review create-or-replace ---------------------------------------------------------------------

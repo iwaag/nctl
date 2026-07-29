@@ -354,22 +354,22 @@ this module and the CLI alone, not published to or consumed by any external subs
 
 ### `braindump`
 
-`nctl braindump {list,show,create,update,delete,review,review-delete}` is the deterministic,
+`nctl braindump {list,show,create,supersede,review,review-delete}` is the deterministic,
 typed interface to the exchange diary described in `devdocs/big/braindump/roadmap.md`: a
 **Braindump** is the user's free-form wish, and its at-most-one current **Alignment Review** is the
 AI agent's latest natural-language reply. Neither is executable input, and this command surface has
 no import path into `drift`, `reconcile`, Jobs, nodeutils, or Ansible — reading or
 writing the diary never changes convergence status or triggers actuation.
 
-- `list [--json]` / `show ID [--json]` read through GraphQL only and never write. `list` returns a
+- `list [--include-superseded] [--json]` / `show ID [--json]` read through GraphQL only and never write. `list` returns only active documents by default; `--include-superseded` explicitly includes reference-only history. It returns a
   compact `id`/`title`/`authorship`/timestamps/review-presence/attention projection; `show` returns
   the full record including `body` and, if present, the review's `summary`.
-- `create --title TITLE --authorship AUTHOR (--body TEXT | --file PATH)` and
-  `update ID [--title TITLE] [--authorship AUTHOR] [--body TEXT | --file PATH]` write through REST
+- `create --title TITLE --authorship AUTHOR (--body TEXT | --file PATH)` writes through REST
   and always confirm the result via a fresh GraphQL refetch before reporting success; a mismatch is
   a command-scoped `*_confirmation_mismatch` failure, never a fabricated success. `AUTHOR` is
   exactly `user_direct` or `agent_transcribed` — there is no default, so provenance is never
-  misstated. `update` preserves every omitted field and requires at least one supplied change.
+  misstated.
+- `supersede --old OLD_ID [--old OLD_ID ...] --title TITLE --authorship AUTHOR (--body TEXT | --file PATH)` is the only status transition. It atomically creates the active replacement and marks exactly the selected active old documents `superseded`; any validation failure leaves all old rows active and retains no replacement.
 - `--file PATH` reads the file as `Path.read_text(encoding="utf-8", errors="strict")` — the exact
   bytes are stored, with no trailing-newline stripping, line-ending normalization, BOM removal,
   Markdown rendering, variable interpolation, or shell/prompt interpretation. Prefer `--file` over
@@ -381,8 +381,7 @@ writing the diary never changes convergence status or triggers actuation.
   `review` records a new evaluation. A rare create/create race (two writers, no existing review) is
   recovered automatically by refetching once and replacing the row the other writer created; any
   other rejection is a genuine validation failure and is reported as such.
-- `delete ID [--yes]` deletes a Braindump and, by database cascade, its current review with it.
-  `review-delete ID [--yes]` deletes only the review, returning the Braindump to the unreviewed
+- There is no Braindump delete command. `review-delete ID [--yes]` deletes only the review, returning the Braindump to the unreviewed
   state; deleting an already-unreviewed Braindump's review is an idempotent no-op
   (`deleted: false`), not an error. Both destructive commands prompt for the exact target UUID
   without `--yes` in human mode; `--json` is non-interactive and requires `--yes` or fails as a

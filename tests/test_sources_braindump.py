@@ -29,6 +29,7 @@ def _row(
     title: str = "title",
     body: str = "body",
     authorship: str = "USER_DIRECT",
+    status: str = "ACTIVE",
     created: str = "2026-07-20T00:00:00Z",
     last_updated: str = "2026-07-20T00:00:00Z",
     review: dict | None = None,
@@ -38,6 +39,7 @@ def _row(
         "title": title,
         "body": body,
         "authorship": authorship,
+        "status": status,
         "created": created,
         "last_updated": last_updated,
         "alignment_review": review,
@@ -84,6 +86,7 @@ def test_fetch_list_one_result_with_review():
     record = result[0]
     assert record.id == "bd-1"
     assert record.authorship == "user_direct"
+    assert record.status == "active"
     assert record.alignment_review is not None
     assert record.alignment_review.id == "rev-1"
     assert record.attention == "review_present"
@@ -141,6 +144,7 @@ def test_list_query_requests_expected_fields():
         "title",
         "body",
         "authorship",
+        "status",
         "created",
         "last_updated",
         "alignment_review",

@@ -38,6 +38,7 @@ def _record(**overrides) -> BrainDumpRecord:
         title="my title",
         body="my body",
         authorship="user_direct",
+        status="active",
         created=T0,
         last_updated=T0,
         review_present=False,
@@ -73,12 +74,12 @@ def test_removed_update_and_delete_are_unknown_commands():
 def test_list_prints_text(monkeypatch):
     _setup(monkeypatch)
     item = BrainDumpListItem(
-        id=BD_ID, title="t", authorship="user_direct", created=T0, last_updated=T0,
+        id=BD_ID, title="t", authorship="user_direct", status="active", created=T0, last_updated=T0,
         review_present=False, review_id=None, review_last_updated=None, attention="unreviewed",
     )
     monkeypatch.setattr(
         main, "build_braindump_list",
-        lambda cfg: Envelope.build("nctl.braindump.list.v1", BraindumpListData(items=[item], count=1)),
+        lambda cfg, **kwargs: Envelope.build("nctl.braindump.list.v1", BraindumpListData(items=[item], count=1)),
     )
 
     result = runner.invoke(main.app, ["braindump", "list"])
@@ -92,7 +93,7 @@ def test_list_json(monkeypatch):
     _setup(monkeypatch)
     monkeypatch.setattr(
         main, "build_braindump_list",
-        lambda cfg: Envelope.build("nctl.braindump.list.v1", BraindumpListData(items=[], count=0)),
+        lambda cfg, **kwargs: Envelope.build("nctl.braindump.list.v1", BraindumpListData(items=[], count=0)),
     )
 
     result = runner.invoke(main.app, ["braindump", "list", "--json"])

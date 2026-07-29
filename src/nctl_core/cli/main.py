@@ -21,11 +21,13 @@ from nctl_core.braindump_render import (
     build_braindump_review,
     build_braindump_review_delete,
     build_braindump_show,
+    build_braindump_supersede,
     render_braindump_create_text,
     render_braindump_list_text,
     render_braindump_review_delete_text,
     render_braindump_review_text,
     render_braindump_show_text,
+    render_braindump_supersede_text,
 )
 from nctl_core.config import Config, ConfigError
 from nctl_core.dnsmasq_apply import build_dnsmasq_apply, render_dnsmasq_apply_text
@@ -400,6 +402,7 @@ class AuthorshipChoice(str, Enum):
 
 BRAINDUMP_USAGE_CODES = (
     "invalid_braindump_id",
+    "invalid_supersede_old_ids",
     "invalid_authorship",
     "invalid_text",
     "input_conflict",
@@ -459,13 +462,15 @@ BraindumpSummaryFileOption = Annotated[
     Optional[Path], typer.Option("--file", help="Read the summary from this UTF-8 file instead of --summary.")
 ]
 BraindumpYesOption = Annotated[bool, typer.Option("--yes", help="Confirm the review deletion non-interactively.")]
+BraindumpOldOption = Annotated[list[str], typer.Option("--old", help="Active Braindump UUID to supersede; repeat for each old document.")]
+BraindumpIncludeSupersededOption = Annotated[bool, typer.Option("--include-superseded", help="Include reference-only superseded Braindumps.")]
 
 
 @braindump_app.command("list")
-def braindump_list(config: ConfigOption = None, json_output: BraindumpJsonOption = False) -> None:
+def braindump_list(config: ConfigOption = None, include_superseded: BraindumpIncludeSupersededOption = False, json_output: BraindumpJsonOption = False) -> None:
     """List Braindumps with review presence, timestamps, and the attention hint."""
     cfg = _load_config(config)
-    envelope = build_braindump_list(cfg)
+    envelope = build_braindump_list(cfg, include_superseded=include_superseded)
     emit(envelope, json_output, render_braindump_list_text)
     raise typer.Exit(_braindump_exit_code(envelope))
 
@@ -494,6 +499,25 @@ def braindump_create(
     cfg = _load_config(config)
     envelope = build_braindump_create(cfg, title=title, authorship=authorship.value, body=body, body_file=file)
     emit(envelope, json_output, render_braindump_create_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("supersede")
+def braindump_supersede(
+    old_ids: BraindumpOldOption,
+    title: BraindumpTitleOption,
+    authorship: BraindumpAuthorshipOption,
+    config: ConfigOption = None,
+    body: BraindumpBodyOption = None,
+    file: BraindumpFileOption = None,
+    json_output: BraindumpJsonOption = False,
+) -> None:
+    """Create an active replacement and atomically supersede exactly the selected active rows."""
+    cfg = _load_config(config)
+    envelope = build_braindump_supersede(
+        cfg, old_ids=old_ids, title=title, authorship=authorship.value, body=body, body_file=file
+    )
+    emit(envelope, json_output, render_braindump_supersede_text)
     raise typer.Exit(_braindump_exit_code(envelope))
 
 

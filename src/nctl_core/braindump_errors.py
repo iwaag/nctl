@@ -24,6 +24,10 @@ def invalid_braindump_id_error(value: str) -> BraindumpError:
     return error("invalid_braindump_id", f"not a valid Braindump UUID: {value!r}", {"value": value})
 
 
+def invalid_supersede_old_ids_error(reason: str) -> BraindumpError:
+    return error("invalid_supersede_old_ids", reason)
+
+
 def invalid_authorship_error(value: str, allowed: tuple[str, ...]) -> BraindumpError:
     return error("invalid_authorship", f"invalid authorship {value!r}; must be one of {', '.join(allowed)}", {"value": value, "allowed": list(allowed)})
 
@@ -59,6 +63,18 @@ def braindump_write_rejected_error(status_code: int, detail_text: str) -> Braind
 
 def braindump_confirmation_mismatch_error(braindump_id: str) -> BraindumpError:
     return error("braindump_confirmation_mismatch", f"GraphQL refetch of Braindump {braindump_id!r} did not match the requested write", {"braindump_id": braindump_id})
+
+
+def supersede_validation_failed_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("braindump_supersede_invalid", f"Braindump supersession rejected as invalid: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+
+
+def supersede_write_rejected_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("braindump_supersede_rejected", f"Braindump supersession rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+
+
+def supersede_confirmation_mismatch_error(braindump_id: str) -> BraindumpError:
+    return error("braindump_supersede_confirmation_mismatch", f"GraphQL refetch of replacement Braindump {braindump_id!r} did not confirm supersession", {"braindump_id": braindump_id})
 
 
 def review_validation_failed_error(status_code: int, detail_text: str) -> BraindumpError:

@@ -8,6 +8,8 @@ from nctl_core.braindump_errors import (
     review_delete_rejected_error,
     review_write_error,
     write_error,
+    supersede_validation_failed_error,
+    supersede_write_rejected_error,
 )
 from nctl_core.nautobot import NautobotClient
 
@@ -20,6 +22,16 @@ def create_braindump(client: NautobotClient, payload: dict[str, Any]) -> str:
     if not response.is_success:
         raise write_error(response.status_code, response.text)
     return response.json()["id"]
+
+
+def supersede_braindumps(client: NautobotClient, payload: dict[str, Any]) -> tuple[str, list[str]]:
+    response = client.rest_post(f"{BRAINDUMP_API_BASE}/supersede/", payload)
+    if response.status_code == 400:
+        raise supersede_validation_failed_error(response.status_code, response.text)
+    if not response.is_success:
+        raise supersede_write_rejected_error(response.status_code, response.text)
+    data = response.json()
+    return data["braindump"]["id"], data["superseded_ids"]
 
 
 def create_review(client: NautobotClient, braindump_id: str, summary: str):

@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from nctl_core.braindump_client import (
     create_braindump as post_braindump,
+    supersede_braindumps as post_supersede_braindumps,
     create_review,
     delete_review as delete_review_request,
     update_review,
@@ -29,13 +30,16 @@ from nctl_core.braindump_errors import (
     braindump_confirmation_mismatch_error, braindump_not_found_error,
     delete_confirmation_mismatch_error, input_conflict_error, input_file_error,
     input_file_invalid_utf8_error, invalid_authorship_error, invalid_braindump_id_error,
+    invalid_supersede_old_ids_error,
     invalid_text_error, review_confirmation_mismatch_error,
     review_validation_failed_error,
+    supersede_confirmation_mismatch_error,
 )
 from nctl_core.nautobot import NautobotClient
 from nctl_core.sources.braindump import (
     Attention,
     Authorship,
+    BraindumpStatus,
     BrainDumpRead,
     fetch_braindump_list,
     fetch_braindump_show,
@@ -59,6 +63,7 @@ class BrainDumpRecord(BaseModel):
     title: str
     body: str
     authorship: Authorship
+    status: BraindumpStatus
     created: datetime
     last_updated: datetime
     review_present: bool
@@ -70,6 +75,7 @@ class BrainDumpListItem(BaseModel):
     id: str
     title: str
     authorship: Authorship
+    status: BraindumpStatus
     created: datetime
     last_updated: datetime
     review_present: bool
@@ -89,6 +95,12 @@ class BraindumpShowData(BaseModel):
 
 class BraindumpCreateData(BaseModel):
     braindump: BrainDumpRecord | None = None
+    changed: bool = False
+
+
+class BraindumpSupersedeData(BaseModel):
+    braindump: BrainDumpRecord | None = None
+    superseded_ids: list[str] = []
     changed: bool = False
 
 
@@ -154,8 +166,11 @@ def _require_nonblank(field_name: str, value: str) -> str:
 # -- read operations --------------------------------------------------------------------------
 
 
-def list_braindumps(client: NautobotClient) -> list[BrainDumpListItem]:
-    return [_to_list_item(record) for record in fetch_braindump_list(client)]
+def list_braindumps(client: NautobotClient, *, include_superseded: bool = False) -> list[BrainDumpListItem]:
+    records = fetch_braindump_list(client)
+    if not include_superseded:
+        records = [record for record in records if record.status == "active"]
+    return [_to_list_item(record) for record in records]
 
 
 def show_braindump(client: NautobotClient, braindump_id: str) -> BrainDumpRecord:
@@ -187,6 +202,36 @@ def create_braindump(
         raise braindump_confirmation_mismatch_error(new_id)
 
     return _to_record(confirmed), True
+
+
+def supersede_braindumps(
+    client: NautobotClient, *, old_ids: list[str], title: str, authorship: str, body: str
+) -> tuple[BrainDumpRecord, list[str], bool]:
+    if not old_ids:
+        raise invalid_supersede_old_ids_error("at least one --old Braindump UUID is required")
+    canonical_old_ids = [validate_braindump_id(value) for value in old_ids]
+    if len(set(canonical_old_ids)) != len(canonical_old_ids):
+        raise invalid_supersede_old_ids_error("each --old Braindump UUID must be supplied once")
+    title = _require_nonblank("title", title)
+    body = _require_nonblank("body", body)
+    authorship = validate_authorship(authorship)
+    new_id, superseded_ids = post_supersede_braindumps(
+        client, {"old_ids": canonical_old_ids, "title": title, "body": body, "authorship": authorship}
+    )
+    if superseded_ids != canonical_old_ids:
+        raise supersede_confirmation_mismatch_error(new_id)
+    replacement = fetch_braindump_show(client, new_id)
+    old_records = [fetch_braindump_show(client, old_id) for old_id in canonical_old_ids]
+    if (
+        replacement is None
+        or replacement.title != title
+        or replacement.body != body
+        or replacement.authorship != authorship
+        or replacement.status != "active"
+        or any(record is None or record.status != "superseded" for record in old_records)
+    ):
+        raise supersede_confirmation_mismatch_error(new_id)
+    return _to_record(replacement), canonical_old_ids, True
 
 
 def create_or_replace_review(
@@ -265,6 +310,7 @@ def _to_record(read: BrainDumpRead) -> BrainDumpRecord:
         title=read.title,
         body=read.body,
         authorship=read.authorship,
+        status=read.status,
         created=read.created,
         last_updated=read.last_updated,
         review_present=review is not None,
@@ -288,6 +334,7 @@ def _to_list_item(read: BrainDumpRead) -> BrainDumpListItem:
         id=read.id,
         title=read.title,
         authorship=read.authorship,
+        status=read.status,
         created=read.created,
         last_updated=read.last_updated,
         review_present=review is not None,
