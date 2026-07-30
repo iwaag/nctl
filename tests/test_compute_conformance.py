@@ -42,6 +42,8 @@ def _run(case):
         return contract.effective_single_source_value(**data)
     if rule == "is_actionable_lifecycle":
         return contract.is_actionable_lifecycle(data["value"])
+    if rule == "desired_presence_requires_retired":
+        return contract.desired_presence_requires_retired(data["presence"], data["effective"])
     return getattr(contract, rule)(data["value"])
 
 

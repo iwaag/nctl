@@ -27,6 +27,7 @@ def _lower(value: Any) -> Any:
 PROVIDER_TYPE_CHOICES = ("proxmox",)
 INSTANCE_KIND_CHOICES = ("container", "virtual_machine")
 POWER_STATE_CHOICES = ("running", "stopped")
+DESIRED_PRESENCE_CHOICES = ("present", "absent")
 COMPUTE_LIFECYCLE_CHOICES = ("planned", "approved", "active", "deprecated", "retired")
 SOURCE_CHOICES = ("derived", "override")
 CONFIG_SCHEMA_VERSION_V1 = "v1"
@@ -93,6 +94,16 @@ def validate_power_state(value: Any, *, path: str = "desired_power_state") -> st
     if value not in POWER_STATE_CHOICES:
         raise ComputeContractError(
             "invalid_power_state", f"must be one of {', '.join(POWER_STATE_CHOICES)}", path=path
+        )
+    return value
+
+
+def validate_desired_presence(value: Any, *, path: str = "desired_presence") -> str:
+    if value not in DESIRED_PRESENCE_CHOICES:
+        raise ComputeContractError(
+            "invalid_desired_presence",
+            f"must be one of {', '.join(DESIRED_PRESENCE_CHOICES)}",
+            path=path,
         )
     return value
 
@@ -289,6 +300,12 @@ def effective_lifecycle(node_lifecycle: str, platform_lifecycle: str) -> str:
 def is_actionable_lifecycle(effective: str) -> bool:
     """`active`/`approved` require a complete static-create contract; the rest do not."""
     return effective in ("active", "approved")
+
+
+def desired_presence_requires_retired(presence: str, effective: str) -> bool:
+    """Return whether a desired presence is permitted by its effective lifecycle."""
+
+    return presence != "absent" or effective == "retired"
 
 
 def effective_value(*, instance_value: Any, platform_value: Any) -> dict[str, Any]:

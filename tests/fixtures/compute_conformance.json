@@ -13,6 +13,10 @@
       "running",
       "stopped"
     ],
+    "DESIRED_PRESENCE_CHOICES": [
+      "present",
+      "absent"
+    ],
     "LIFECYCLE_CHOICES": [
       "planned",
       "approved",
@@ -133,6 +137,30 @@
           "code": "invalid_power_state",
           "path": "desired_power_state",
           "str": "invalid_power_state: desired_power_state: must be one of running, stopped"
+        }
+      }
+    },
+    {
+      "id": "presence-ok",
+      "rule": "validate_desired_presence",
+      "input": {
+        "value": "present"
+      },
+      "result": {
+        "ok": "present"
+      }
+    },
+    {
+      "id": "presence-bad",
+      "rule": "validate_desired_presence",
+      "input": {
+        "value": "unknown"
+      },
+      "result": {
+        "error": {
+          "code": "invalid_desired_presence",
+          "path": "desired_presence",
+          "str": "invalid_desired_presence: desired_presence: must be one of present, absent"
         }
       }
     },
@@ -1317,6 +1345,116 @@
       },
       "result": {
         "ok": "retired"
+      }
+    },
+    {
+      "id": "presence-present-planned",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "present",
+        "effective": "planned"
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "presence-present-approved",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "present",
+        "effective": "approved"
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "presence-present-active",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "present",
+        "effective": "active"
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "presence-present-deprecated",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "present",
+        "effective": "deprecated"
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "presence-present-retired",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "present",
+        "effective": "retired"
+      },
+      "result": {
+        "ok": true
+      }
+    },
+    {
+      "id": "presence-absent-planned",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "absent",
+        "effective": "planned"
+      },
+      "result": {
+        "ok": false
+      }
+    },
+    {
+      "id": "presence-absent-approved",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "absent",
+        "effective": "approved"
+      },
+      "result": {
+        "ok": false
+      }
+    },
+    {
+      "id": "presence-absent-active",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "absent",
+        "effective": "active"
+      },
+      "result": {
+        "ok": false
+      }
+    },
+    {
+      "id": "presence-absent-deprecated",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "absent",
+        "effective": "deprecated"
+      },
+      "result": {
+        "ok": false
+      }
+    },
+    {
+      "id": "presence-absent-retired",
+      "rule": "desired_presence_requires_retired",
+      "input": {
+        "presence": "absent",
+        "effective": "retired"
+      },
+      "result": {
+        "ok": true
       }
     }
   ]
