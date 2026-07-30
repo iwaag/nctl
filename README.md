@@ -741,7 +741,7 @@ generic VM lifecycle API.
 
 1. Run `nctl reconcile GUEST --allow-destroy --json` without `--yes` and review the one pinned
    `data.plan.actions` entry with `reconciler_id: destroy_compute_instance`: its target slug,
-   `evidence.vmid`, and `evidence.control_node_slug` must name the expected guest, LXC VMID, and
+   `evidence.vmid`, and `evidence.control_desired_node_slug` must name the expected guest, LXC VMID, and
    exact Proxmox control node. `data.plan_path` names the identical durable plan artifact.
 2. `nctl reconcile GUEST --allow-destroy` remains a dry plan. `nctl reconcile GUEST --yes` refuses
    the action with `destroy_capability_not_enabled`; neither command reaches Proxmox.
