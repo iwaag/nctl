@@ -642,7 +642,11 @@ operations:
     key: {slug: aglxc01}
     values:
       name: aglxc01
-      node_type: container
+      # The DesiredNode represents the guest OS Device. The LXC itself is
+      # represented by DesiredComputeInstance below.
+      node_type: service_host
+      accepted_actual_types:
+        - device
       lifecycle: active
   - op: upsert
     kind: desired_endpoint
