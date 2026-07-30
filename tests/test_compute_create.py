@@ -147,6 +147,8 @@ def test_create_playbook_has_only_create_start_and_local_result_transport():
     from pathlib import Path
     content = Path(playbook).read_text()
     assert "delegate_to: localhost" in content
+    assert "delegate_to: localhost\n      # This is controller-owned evidence" in content
+    assert "become: false" in content
     assert "pct_binary: /usr/sbin/pct" in content
     assert "argv: [\"{{ pct_binary }}\", start" in content
     assert "- \"{{ pct_binary }}\"\n          - create" in content
