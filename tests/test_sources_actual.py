@@ -67,6 +67,7 @@ _EXAMPLE_VM_ROW = {
         "proxmox_observation_state": "complete",
         "proxmox_observation_detail": {"state": "complete", "omitted_error_count": 0, "errors": []},
         "proxmox_lxc_rootfs": {"storage": "local-lvm", "volume": "vm-101-disk-0", "size_gb": 8},
+        "proxmox_presence": "present",
         "proxmox_interface_evidence": {},
         "inventory_raw_json": {"anything": "must not leak"},
     },
@@ -275,6 +276,7 @@ def test_fetch_actual_snapshot_reads_example_proxmox_cluster_and_guest_vmid_101(
     assert vm.proxmox.guest_type == "lxc"
     assert vm.proxmox.vmid == 101
     assert vm.proxmox.node == "example-host"
+    assert vm.proxmox.presence == "present"
     assert vm.proxmox.lxc_rootfs.volume == "vm-101-disk-0"
 
     iface = snapshot.vm_interfaces[0]

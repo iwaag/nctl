@@ -342,6 +342,7 @@ class ProxmoxVirtualMachineFacts(BaseModel):
     observed_at: str | None = None
     observation_state: str | None = None
     observation_detail: ProxmoxObservationDetail | None = None
+    presence: str | None = None
     lxc_rootfs: ProxmoxLxcRootfs | None = None
     interface_evidence: dict[str, ProxmoxInterfaceEvidenceEntry] = {}
 
@@ -400,6 +401,7 @@ _VM_PROXMOX_FIELDS = {
     "observed_at": "proxmox_observed_at",
     "observation_state": "proxmox_observation_state",
     "observation_detail": "proxmox_observation_detail",
+    "presence": "proxmox_presence",
     "lxc_rootfs": "proxmox_lxc_rootfs",
     "interface_evidence": "proxmox_interface_evidence",
 }

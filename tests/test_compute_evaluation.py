@@ -45,6 +45,14 @@ def test_compute_realization_summary_carries_desired_presence():
     summary = next(record for record in records if record.code == "compute_realization_summary" and record.target.id == "instance")
     assert summary.desired["desired_presence"] == "present"
     assert summary.desired["effective_lifecycle"] == "active"
+    assert summary.actual["presence"] is None
+
+
+def test_compute_realization_summary_carries_actual_presence_without_new_semantics():
+    records = list(evaluate_compute(_snapshot(link=True, vm={"proxmox": {"guest_type": "lxc", "vmid": 108, "node": "host", "status": "running", "presence": "absent", "lxc_rootfs": {"storage": "local-lvm", "size_gb": 8}}}), DriftContext(generated_at=NOW)))
+    summary = next(record for record in records if record.code == "compute_realization_summary" and record.target.id == "instance")
+    assert summary.actual["presence"] == "absent"
+    assert "compute_instance_not_linked" not in [record.code for record in records]
 
 
 @pytest.mark.parametrize(

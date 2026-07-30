@@ -137,7 +137,7 @@ def _summary(target, platform, cluster, instance, snapshot, match_basis=None):
             desired["effective_lifecycle"] = (
                 effective_lifecycle(node.lifecycle, platform.lifecycle) if node else None
             )
-    return _diff(target, "compute_realization_summary", Severity.INFO, f"{target.slug}: compute realization summary", desired, {"cluster_id": cluster.id if cluster else None, "virtual_machine_id": instance.id if instance else None, "match_basis": match_basis, "field_dispositions": {"template": "creation_only", "unprivileged": "unobservable"}})
+    return _diff(target, "compute_realization_summary", Severity.INFO, f"{target.slug}: compute realization summary", desired, {"cluster_id": cluster.id if cluster else None, "virtual_machine_id": instance.id if instance else None, "match_basis": match_basis, "presence": instance.proxmox.presence if instance and instance.proxmox else None, "field_dispositions": {"template": "creation_only", "unprivileged": "unobservable"}})
 
 
 def _instance_target(instance, nodes):
