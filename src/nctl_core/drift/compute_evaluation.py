@@ -45,7 +45,10 @@ def evaluate_compute(snapshot: SourceSnapshot, context: DriftContext) -> Iterabl
             for instance in instances:
                 yield _diff(_instance_target(instance, nodes), code, Severity.ERROR, message, desired, actual)
         yield _summary(platform_target, platform=platform, cluster=matched, instance=None, snapshot=snapshot)
-        if failures:
+        # A platform may legitimately have no remaining Desired instances
+        # after a completed prune.  It still gets a summary, but has no
+        # representative realization from which to derive a Cluster.
+        if failures or not instances:
             continue
         assert matched is not None
         for instance in instances:
