@@ -18,6 +18,7 @@ from nctl_core.braindump import (
     AlignmentReviewRecord,
     BraindumpCreateData,
     BraindumpListData,
+    BraindumpPurgeData,
     BraindumpReviewData,
     BraindumpReviewDeleteData,
     BraindumpShowData,
@@ -479,3 +480,44 @@ def test_review_delete_json_without_yes_is_usage_exit(monkeypatch):
 
     assert result.exit_code == 2
     assert result.stdout == ""
+
+
+# -- purge -------------------------------------------------------------------------------------
+
+
+def test_purge_without_yes_prints_server_plan(monkeypatch):
+    _setup(monkeypatch)
+    captured = {}
+
+    def fake_purge(cfg, braindump_id, *, apply=False):
+        captured.update(id=braindump_id, apply=apply)
+        return Envelope.build(
+            "nctl.braindump.purge.v1",
+            BraindumpPurgeData(braindump=_record(status="superseded"), outcome="planned"),
+        )
+
+    monkeypatch.setattr(main, "build_braindump_purge", fake_purge)
+    result = runner.invoke(main.app, ["braindump", "purge", BD_ID])
+
+    assert result.exit_code == 0
+    assert captured == {"id": BD_ID, "apply": False}
+    assert "purge plan" in result.stdout
+
+
+def test_purge_with_yes_executes_exact_target_and_json(monkeypatch):
+    _setup(monkeypatch)
+    captured = {}
+
+    def fake_purge(cfg, braindump_id, *, apply=False):
+        captured.update(id=braindump_id, apply=apply)
+        return Envelope.build(
+            "nctl.braindump.purge.v1",
+            BraindumpPurgeData(braindump=_record(status="superseded"), outcome="purged", alignment_review_present=True),
+        )
+
+    monkeypatch.setattr(main, "build_braindump_purge", fake_purge)
+    result = runner.invoke(main.app, ["braindump", "purge", BD_ID, "--yes", "--json"])
+
+    assert result.exit_code == 0
+    assert captured == {"id": BD_ID, "apply": True}
+    assert json.loads(result.stdout)["data"]["outcome"] == "purged"

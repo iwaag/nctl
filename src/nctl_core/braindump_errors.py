@@ -53,6 +53,18 @@ def braindump_not_found_error(braindump_id: str) -> BraindumpError:
     return error("braindump_not_found", f"no Braindump with id {braindump_id!r}", {"braindump_id": braindump_id})
 
 
+def braindump_purge_ineligible_error(braindump_id: str, detail_text: str) -> BraindumpError:
+    return error(
+        "braindump_purge_ineligible",
+        f"Braindump {braindump_id!r} is not eligible for purge (it must be superseded)",
+        {"braindump_id": braindump_id, "detail": detail_text[:200]},
+    )
+
+
+def braindump_purge_rejected_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("braindump_purge_rejected", f"Braindump purge rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+
+
 def braindump_validation_failed_error(status_code: int, detail_text: str) -> BraindumpError:
     return error("braindump_validation_failed", f"Braindump write rejected as invalid: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
 

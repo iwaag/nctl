@@ -22,6 +22,7 @@ from nctl_core.braindump import (
     create_or_replace_review,
     delete_review,
     list_braindumps,
+    purge_braindump,
     resolve_text_input,
     show_braindump,
     validate_authorship,
@@ -504,6 +505,53 @@ def test_review_authorization_and_connection_failures_propagate(monkeypatch):
 
 
 # -- deletes ---------------------------------------------------------------------------------------
+
+
+@respx.mock
+def test_purge_plan_and_apply_use_only_the_exact_endpoint():
+    url = f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/purge/"
+    plan = respx.post(url).mock(
+        return_value=httpx.Response(200, json={"outcome": "planned", "braindump": _read(status="superseded").model_dump(mode="json"), "alignment_review_present": False})
+    )
+    apply = respx.delete(url).mock(
+        return_value=httpx.Response(200, json={"outcome": "purged", "braindump": _read(status="superseded").model_dump(mode="json"), "alignment_review_present": False})
+    )
+
+    with _client() as client:
+        planned = purge_braindump(client, BD_ID, apply=False)
+        purged = purge_braindump(client, BD_ID, apply=True)
+
+    assert plan.call_count == 1
+    assert apply.call_count == 1
+    assert planned.outcome == "planned"
+    assert purged.outcome == "purged"
+    assert purged.braindump.status == "superseded"
+
+
+@respx.mock
+def test_purge_is_idempotent_when_server_reports_already_purged():
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/purge/").mock(
+        return_value=httpx.Response(200, json={"outcome": "already_purged", "braindump_id": BD_ID})
+    )
+
+    with _client() as client:
+        result = purge_braindump(client, BD_ID, apply=True)
+
+    assert result.outcome == "already_purged"
+    assert result.braindump is None
+
+
+@respx.mock
+def test_purge_active_row_is_rejected():
+    respx.delete(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/purge/").mock(
+        return_value=httpx.Response(409, json={"outcome": "ineligible"})
+    )
+
+    with _client() as client:
+        with pytest.raises(BraindumpError) as exc:
+            purge_braindump(client, BD_ID, apply=True)
+
+    assert exc.value.code == "braindump_purge_ineligible"
 
 
 @respx.mock

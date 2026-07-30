@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from nctl_core.braindump import (
-    BraindumpCreateData, BraindumpListData, BraindumpReviewData, BraindumpReviewDeleteData,
+    BraindumpCreateData, BraindumpListData, BraindumpPurgeData, BraindumpReviewData, BraindumpReviewDeleteData,
     BraindumpShowData, BraindumpSupersedeData, create_braindump, create_or_replace_review, delete_review,
-    list_braindumps, resolve_text_input, show_braindump,
+    list_braindumps, purge_braindump, resolve_text_input, show_braindump,
     supersede_braindumps,
 )
 from nctl_core.braindump_errors import BraindumpError
@@ -22,6 +22,7 @@ CREATE_SCHEMA = "nctl.braindump.create.v1"
 SUPERSEDE_SCHEMA = "nctl.braindump.supersede.v1"
 REVIEW_SCHEMA = "nctl.braindump.review.v1"
 REVIEW_DELETE_SCHEMA = "nctl.braindump.review_delete.v1"
+PURGE_SCHEMA = "nctl.braindump.purge.v1"
 T = TypeVar("T")
 
 
@@ -88,6 +89,13 @@ def build_braindump_review_delete(cfg: Config, braindump_id: str) -> Envelope[Br
     return _build(cfg, REVIEW_DELETE_SCHEMA, BraindumpReviewDeleteData(), action)
 
 
+def build_braindump_purge(cfg: Config, braindump_id: str, *, apply: bool = False) -> Envelope[BraindumpPurgeData]:
+    return _build(
+        cfg, PURGE_SCHEMA, BraindumpPurgeData(),
+        lambda c: purge_braindump(c, braindump_id, apply=apply),
+    )
+
+
 def _errors(envelope: Envelope) -> str:
     return "\n".join(f"error[{error.code}]: {error.message}" for error in envelope.errors)
 
@@ -119,3 +127,10 @@ def render_braindump_review_text(e):
 def render_braindump_review_delete_text(e):
     if not e.ok: return _errors(e)
     x=e.data; bid=x.braindump.id if x.braindump else "?"; return f"deleted review {x.review_id} for braindump {bid}; braindump is now Unreviewed" if x.deleted else f"braindump {bid}: no review present (no change)"
+def render_braindump_purge_text(e):
+    if not e.ok: return _errors(e)
+    x=e.data
+    if x.outcome == "already_purged": return "braindump already purged (no change)"
+    review = "with Alignment Review" if x.alignment_review_present else "without Alignment Review"
+    verb = "purged" if x.outcome == "purged" else "purge plan"
+    return f"{verb}: {x.braindump.id} ({x.braindump.title!r}, {review})"

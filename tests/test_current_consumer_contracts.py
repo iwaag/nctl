@@ -5,6 +5,7 @@ from __future__ import annotations
 from nctl_core.braindump import (
     BraindumpCreateData,
     BraindumpListData,
+    BraindumpPurgeData,
     BraindumpReviewData,
     BraindumpReviewDeleteData,
     BraindumpShowData,
@@ -81,6 +82,7 @@ CURRENT_DATA_FIELDS = {
         BraindumpReviewDeleteData,
         {"braindump", "deleted", "review_id"},
     ),
+    "nctl.braindump.purge.v1": (BraindumpPurgeData, {"braindump", "outcome", "alignment_review_present"}),
 }
 
 

@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from nctl_core.braindump_client import (
     create_braindump as post_braindump,
+    purge_braindump as purge_braindump_request,
     supersede_braindumps as post_supersede_braindumps,
     create_review,
     delete_review as delete_review_request,
@@ -113,6 +114,12 @@ class BraindumpReviewDeleteData(BaseModel):
     braindump: BrainDumpRecord | None = None
     deleted: bool = False
     review_id: str | None = None
+
+
+class BraindumpPurgeData(BaseModel):
+    braindump: BrainDumpRecord | None = None
+    outcome: str = ""
+    alignment_review_present: bool = False
 
 
 # -- input resolution/validation ----------------------------------------------------------------
@@ -298,6 +305,28 @@ def delete_review(client: NautobotClient, braindump_id: str) -> tuple[bool, str 
         raise delete_confirmation_mismatch_error("review", review.id)
 
     return True, review.id
+
+
+def purge_braindump(client: NautobotClient, braindump_id: str, *, apply: bool) -> BraindumpPurgeData:
+    """Plan or execute a dedicated purge of one superseded Braindump."""
+    canonical_id = validate_braindump_id(braindump_id)
+    result = purge_braindump_request(client, canonical_id, apply=apply)
+    if result["outcome"] == "already_purged":
+        return BraindumpPurgeData(outcome="already_purged")
+    review_present = result["alignment_review_present"]
+    record = BrainDumpRecord.model_validate(
+        {
+            **result["braindump"],
+            "review_present": review_present,
+            "attention": "review_present" if review_present else "unreviewed",
+            "alignment_review": None,
+        }
+    )
+    return BraindumpPurgeData(
+        braindump=record,
+        outcome=result["outcome"],
+        alignment_review_present=review_present,
+    )
 
 
 # -- record projection ---------------------------------------------------------------------------

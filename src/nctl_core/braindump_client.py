@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from nctl_core.braindump_errors import (
+    braindump_purge_ineligible_error,
+    braindump_purge_rejected_error,
     review_delete_rejected_error,
     review_write_error,
     write_error,
@@ -53,3 +55,14 @@ def delete_review(client: NautobotClient, review_id: str) -> None:
     response = client.rest_delete(f"{ALIGNMENT_REVIEW_API_BASE}/{review_id}/")
     if not response.is_success:
         raise review_delete_rejected_error(response.status_code, response.text)
+
+
+def purge_braindump(client: NautobotClient, braindump_id: str, *, apply: bool) -> dict[str, Any]:
+    """Ask the dedicated endpoint to plan or execute one exact purge."""
+    url = f"{BRAINDUMP_API_BASE}/{braindump_id}/purge/"
+    response = client.rest_delete(url) if apply else client.rest_post(url, {})
+    if response.status_code == 409:
+        raise braindump_purge_ineligible_error(braindump_id, response.text)
+    if not response.is_success:
+        raise braindump_purge_rejected_error(response.status_code, response.text)
+    return response.json()

@@ -18,12 +18,14 @@ from nctl_core.actual_render import build_actual, render_actual_text
 from nctl_core.braindump_render import (
     build_braindump_create,
     build_braindump_list,
+    build_braindump_purge,
     build_braindump_review,
     build_braindump_review_delete,
     build_braindump_show,
     build_braindump_supersede,
     render_braindump_create_text,
     render_braindump_list_text,
+    render_braindump_purge_text,
     render_braindump_review_delete_text,
     render_braindump_review_text,
     render_braindump_show_text,
@@ -455,6 +457,7 @@ BRAINDUMP_USAGE_CODES = (
     "input_file_error",
     "input_file_invalid_utf8",
     "braindump_not_found",
+    "braindump_purge_ineligible",
 )
 
 
@@ -507,7 +510,7 @@ BraindumpSummaryOption = Annotated[
 BraindumpSummaryFileOption = Annotated[
     Optional[Path], typer.Option("--file", help="Read the summary from this UTF-8 file instead of --summary.")
 ]
-BraindumpYesOption = Annotated[bool, typer.Option("--yes", help="Confirm the review deletion non-interactively.")]
+BraindumpYesOption = Annotated[bool, typer.Option("--yes", help="Execute the requested destructive Braindump action.")]
 BraindumpOldOption = Annotated[list[str], typer.Option("--old", help="Active Braindump UUID to supersede; repeat for each old document.")]
 BraindumpIncludeSupersededOption = Annotated[bool, typer.Option("--include-superseded", help="Include reference-only superseded Braindumps.")]
 
@@ -599,6 +602,20 @@ def braindump_review_delete(
     )
     envelope = build_braindump_review_delete(cfg, braindump_id)
     emit(envelope, json_output, render_braindump_review_delete_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("purge")
+def braindump_purge(
+    braindump_id: BraindumpIdArgument,
+    config: ConfigOption = None,
+    yes: BraindumpYesOption = False,
+    json_output: BraindumpJsonOption = False,
+) -> None:
+    """Show a purge plan, or delete one exact superseded Braindump with --yes."""
+    cfg = _load_config(config)
+    envelope = build_braindump_purge(cfg, braindump_id, apply=yes)
+    emit(envelope, json_output, render_braindump_purge_text)
     raise typer.Exit(_braindump_exit_code(envelope))
 
 

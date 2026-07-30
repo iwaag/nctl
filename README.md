@@ -356,7 +356,7 @@ this module and the CLI alone, not published to or consumed by any external subs
 
 ### `braindump`
 
-`nctl braindump {list,show,create,supersede,review,review-delete}` is the deterministic,
+`nctl braindump {list,show,create,supersede,review,review-delete,purge}` is the deterministic,
 typed interface to the exchange diary described in `devdocs/big/braindump/roadmap.md`: a
 **Braindump** is the user's free-form wish, and its at-most-one current **Alignment Review** is the
 AI agent's latest natural-language reply. Neither is executable input, and this command surface has
@@ -383,12 +383,18 @@ writing the diary never changes convergence status or triggers actuation.
   `review` records a new evaluation. A rare create/create race (two writers, no existing review) is
   recovered automatically by refetching once and replacing the row the other writer created; any
   other rejection is a genuine validation failure and is reported as such.
-- There is no Braindump delete command. `review-delete ID [--yes]` deletes only the review, returning the Braindump to the unreviewed
+- Ordinary Braindump deletion is unavailable. `review-delete ID [--yes]` deletes only the review, returning the Braindump to the unreviewed
   state; deleting an already-unreviewed Braindump's review is an idempotent no-op
-  (`deleted: false`), not an error. Both destructive commands prompt for the exact target UUID
-  without `--yes` in human mode; `--json` is non-interactive and requires `--yes` or fails as a
-  usage error (exit 2) before contacting Nautobot. `--yes` never broadens the target — there is no
-  bulk, title-based, or wildcard delete.
+  (`deleted: false`), not an error. Without `--yes`, `review-delete` prompts for the exact target
+  UUID in human mode; its `--json` mode is non-interactive and requires `--yes` or fails as a usage
+  error (exit 2) before contacting Nautobot. `--yes` never broadens the target — there is no bulk,
+  title-based, or wildcard delete.
+- `purge ID [--yes]` is the narrow exception for a document already marked `superseded`.
+  Without `--yes` it obtains and prints a read-only server-side plan for that exact UUID, including
+  whether its Alignment Review will cascade. With `--yes` it re-checks the UUID and status and
+  deletes the document and its one-to-one review in one transaction. An active document is
+  rejected; a repeated purge is the successful `already_purged` no-op. Purge never affects
+  Desired, Actual, drift, reconcile, operation evidence, or infrastructure.
 - Attention is a non-persisted, three-state hint computed only from the two diary timestamps:
   `unreviewed` (no review row), `needs_attention` (the review is older than its Braindump), or
   `review_present` (a review exists and is not older than its Braindump). `review_present` does
