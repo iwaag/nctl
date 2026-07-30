@@ -263,6 +263,7 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert instance.platform_id == "platform-1"
     assert instance.instance_kind == "container"
     assert instance.desired_power_state == "running"
+    assert instance.desired_presence == "present"
     assert instance.config == {"template": "local:vztmpl/debian-12.tar.zst", "unprivileged": True}
 
     ip_range = snapshot.ip_ranges[0]

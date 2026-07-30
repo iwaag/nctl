@@ -40,6 +40,13 @@ def test_happy_vmid_match_is_unlinked_and_declared_only_fields_do_not_drift():
     assert "template" not in codes and "unprivileged" not in codes
 
 
+def test_compute_realization_summary_carries_desired_presence():
+    records = list(evaluate_compute(_snapshot(link=True), DriftContext(generated_at=NOW)))
+    summary = next(record for record in records if record.code == "compute_realization_summary" and record.target.id == "instance")
+    assert summary.desired["desired_presence"] == "present"
+    assert summary.desired["effective_lifecycle"] == "active"
+
+
 @pytest.mark.parametrize(
     ("cluster", "expected"),
     [

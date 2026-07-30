@@ -165,6 +165,7 @@ DESIRED_QUERY = """
     platform { id slug }
     instance_kind
     desired_power_state
+    desired_presence
     vcpus
     memory_mb
     root_disk_gb

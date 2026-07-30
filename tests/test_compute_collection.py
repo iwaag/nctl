@@ -192,6 +192,28 @@ def test_malformed_compute_rows_are_isolated_from_healthy_snapshot():
 
 
 @respx.mock
+def test_desired_presence_defaults_and_invalid_value_is_row_scoped():
+    node = _healthy_node(node_id="node-1", slug="healthy")
+    platform = _healthy_platform(control_node_id="node-1")
+    valid = _healthy_instance(instance_id="instance-valid", node_id="node-1")
+    invalid = {**_healthy_instance(instance_id="instance-invalid", node_id="node-1"), "desired_presence": "GONE"}
+    snapshot = fetch_desired_snapshot(
+        _mock_graphql(
+            _base_response(
+                desired_nodes=[node],
+                desired_compute_platforms=[platform],
+                desired_compute_instances=[valid, invalid],
+            )
+        )
+    )
+    assert [instance.id for instance in snapshot.compute_instances] == ["instance-valid"]
+    assert snapshot.compute_instances[0].desired_presence == "present"
+    issue = next(issue for issue in snapshot.source_issues if issue.target_id == "instance-invalid")
+    assert issue.code == "invalid_desired_presence"
+    assert issue.scope == "target"
+
+
+@respx.mock
 def test_duplicate_platform_slug_excludes_both_with_global_issue():
     node = _healthy_node()
     platform_a = _healthy_platform(platform_id="platform-a", slug="dup")

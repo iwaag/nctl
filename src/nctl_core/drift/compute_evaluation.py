@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Iterable
 
-from nctl_core.compute.contract import effective_compute_defaults, normalize_mac_address
+from nctl_core.compute.contract import effective_compute_defaults, effective_lifecycle, normalize_mac_address
 from nctl_core.compute.model import DesiredComputeInstance, DesiredComputePlatform
 from .compute_realization import derive_compute_realizations
 from .compute_creation import derive_compute_creations
@@ -125,11 +125,19 @@ def _evaluate_instance(realization, nodes, snapshot, creation=None):
 
 def _summary(target, platform, cluster, instance, snapshot, match_basis=None):
     defaults = {}
+    desired = {"effective_defaults": defaults}
     if instance is not None:
         desired_instance = next((i for i in snapshot.desired.compute_instances if i.id == target.id), None)
         node_endpoints = [e for e in snapshot.desired.endpoints if desired_instance and e.node_id == desired_instance.desired_node_id]
         defaults = effective_compute_defaults(desired_instance, platform, node_endpoints) if desired_instance else {}
-    return _diff(target, "compute_realization_summary", Severity.INFO, f"{target.slug}: compute realization summary", {"effective_defaults": defaults}, {"cluster_id": cluster.id if cluster else None, "virtual_machine_id": instance.id if instance else None, "match_basis": match_basis, "field_dispositions": {"template": "creation_only", "unprivileged": "unobservable"}})
+        desired["effective_defaults"] = defaults
+        if desired_instance:
+            node = next((node for node in snapshot.desired.nodes if node.id == desired_instance.desired_node_id), None)
+            desired["desired_presence"] = desired_instance.desired_presence
+            desired["effective_lifecycle"] = (
+                effective_lifecycle(node.lifecycle, platform.lifecycle) if node else None
+            )
+    return _diff(target, "compute_realization_summary", Severity.INFO, f"{target.slug}: compute realization summary", desired, {"cluster_id": cluster.id if cluster else None, "virtual_machine_id": instance.id if instance else None, "match_basis": match_basis, "field_dispositions": {"template": "creation_only", "unprivileged": "unobservable"}})
 
 
 def _instance_target(instance, nodes):

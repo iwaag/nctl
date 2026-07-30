@@ -16,6 +16,7 @@ from .contract import (
     validate_instance_kind,
     validate_memory_mb,
     validate_platform_config,
+    validate_desired_presence,
     validate_power_state,
     validate_root_disk_gb,
     validate_vcpus,
@@ -63,6 +64,7 @@ def _build_compute_instance(row: dict[str, Any]) -> DesiredComputeInstance:
     return DesiredComputeInstance(
         id=row["id"], desired_node_id=desired_node["id"], platform_id=platform["id"], instance_kind=instance_kind,
         desired_power_state=validate_power_state(_lower(row.get("desired_power_state")) or "running"),
+        desired_presence=validate_desired_presence(_lower(row.get("desired_presence")) or "present"),
         vcpus=validate_vcpus(row.get("vcpus")), memory_mb=validate_memory_mb(row.get("memory_mb")),
         root_disk_gb=validate_root_disk_gb(row.get("root_disk_gb")),
         config=validate_instance_config(row.get("config"), instance_kind=instance_kind),

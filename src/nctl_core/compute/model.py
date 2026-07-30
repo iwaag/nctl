@@ -25,6 +25,7 @@ class DesiredComputeInstance(BaseModel):
     platform_id: str
     instance_kind: str
     desired_power_state: str = "running"
+    desired_presence: str = "present"
     vcpus: int
     memory_mb: int
     root_disk_gb: int
