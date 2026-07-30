@@ -101,5 +101,7 @@ def test_destroy_surface_exposes_only_the_bounded_capability_and_playbook():
     playbook = root.parent / "ansible_agdev/playbooks/proxmox/destroy_lxc.yml"
     content = playbook.read_text()
     assert "delegate_to: localhost" in content
+    assert "delegate_to: localhost\n      # This is controller-owned evidence" in content
+    assert "become: false" in content
     assert "pct_binary: /usr/sbin/pct" in content
     assert "destroy" in content and "--all" not in content and " qm " not in content
