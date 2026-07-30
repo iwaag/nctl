@@ -94,3 +94,28 @@ def test_multi_nic_suppresses_mac_and_bridge_comparison():
     codes = _codes(_snapshot(interfaces=interfaces))
     assert "compute_endpoint_mac_conflict" not in codes
     assert "compute_resource_mismatch" not in codes
+
+
+def test_retirement_presence_semantics_suppress_stale_comparisons():
+    snapshot = _snapshot(link=True, vm={"vcpus": 9, "memory": 9, "proxmox": {"guest_type": "lxc", "vmid": 108, "node": "host", "status": "stopped", "presence": "present", "lxc_rootfs": {"storage": "wrong", "size_gb": 9}}})
+    snapshot.desired.nodes[0] = snapshot.desired.nodes[0].model_copy(update={"lifecycle": "retired"})
+    snapshot.desired.compute_instances[0] = snapshot.desired.compute_instances[0].model_copy(update={"desired_presence": "present"})
+    retained = _codes(snapshot)
+    assert "compute_realization_summary" in retained
+    assert not {"compute_instance_not_linked", "compute_power_state_mismatch", "compute_resource_mismatch"} & set(retained)
+
+    snapshot.desired.compute_instances[0] = snapshot.desired.compute_instances[0].model_copy(update={"desired_presence": "absent"})
+    destroy = _codes(snapshot)
+    assert "compute_instance_destroy_required" in destroy
+    assert not {"compute_instance_not_linked", "compute_power_state_mismatch", "compute_resource_mismatch"} & set(destroy)
+
+    snapshot.actual.virtual_machines[0] = snapshot.actual.virtual_machines[0].model_copy(update={"proxmox": snapshot.actual.virtual_machines[0].proxmox.model_copy(update={"presence": "absent"})})
+    complete = _codes(snapshot)
+    assert "compute_instance_removal_complete" in complete
+    assert not {"compute_instance_missing", "compute_power_state_mismatch", "compute_resource_mismatch", "compute_identity_conflict"} & set(complete)
+
+
+def test_absent_without_retirement_is_visible_but_still_compared_as_present():
+    snapshot = _snapshot(link=True, vm={"proxmox": {"guest_type": "lxc", "vmid": 108, "node": "host", "status": "stopped", "presence": "absent", "lxc_rootfs": {"storage": "local-lvm", "size_gb": 8}}})
+    snapshot.desired.compute_instances[0] = snapshot.desired.compute_instances[0].model_copy(update={"desired_presence": "absent"})
+    assert {"compute_presence_lifecycle_conflict", "compute_power_state_mismatch"} <= set(_codes(snapshot))

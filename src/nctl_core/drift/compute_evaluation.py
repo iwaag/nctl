@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Iterable
 from nctl_core.compute.contract import effective_compute_defaults, effective_lifecycle, normalize_mac_address
 from nctl_core.compute.model import DesiredComputeInstance, DesiredComputePlatform
 from .compute_realization import derive_compute_realizations
+from .compute_disposition import derive_compute_dispositions
 from .compute_creation import derive_compute_creations
 from .context import DriftContext
 from .model import DiffRecord, Severity, Target
@@ -30,6 +31,7 @@ def evaluate_compute(snapshot: SourceSnapshot, context: DriftContext) -> Iterabl
 
     yield from _source_issue_diffs(snapshot, nodes, platforms)
     realizations = derive_compute_realizations(snapshot, generated_at=context.generated_at)
+    dispositions = derive_compute_dispositions(snapshot, generated_at=context.generated_at)
     creations = derive_compute_creations(snapshot, generated_at=context.generated_at)
     for platform in snapshot.desired.compute_platforms:
         platform_target = Target(kind="compute_platform", slug=platform.slug, name=platform.name, id=platform.id)
@@ -47,7 +49,7 @@ def evaluate_compute(snapshot: SourceSnapshot, context: DriftContext) -> Iterabl
             continue
         assert matched is not None
         for instance in instances:
-            yield from _evaluate_instance(realizations[instance.id], nodes, snapshot, creations.get(instance.id))
+            yield from _evaluate_instance(realizations[instance.id], dispositions[instance.id], nodes, snapshot, creations.get(instance.id))
         desired_node_ids = {instance.desired_node_id for instance in instances}
         desired_vmids = {instance.config.get("vmid") for instance in instances}
         for vm in snapshot.actual.virtual_machines:
@@ -78,30 +80,46 @@ def _source_issue_diffs(snapshot: SourceSnapshot, nodes: dict, platforms: dict) 
         yield _diff(target, issue.code, severity, issue.message, issue.evidence, {"scope": issue.scope})
 
 
-def _evaluate_instance(realization, nodes, snapshot, creation=None):
+def _evaluate_instance(realization, disposition, nodes, snapshot, creation=None):
     instance = realization.instance
     platform = realization.platform
     cluster = realization.cluster
     target = _instance_target(instance, nodes)
     node = nodes.get(instance.desired_node_id)
     vm = realization.virtual_machine
+    if disposition.outcome == "presence_conflict":
+        yield _diff(target, "compute_presence_lifecycle_conflict", Severity.WARNING,
+                    f"{target.slug}: desired_presence=absent requires retired effective lifecycle",
+                    {"desired_presence": instance.desired_presence, "effective_lifecycle": effective_lifecycle(node.lifecycle, platform.lifecycle) if node else None}, {})
     if realization.instance_failures:
         for code, message, desired, actual in realization.instance_failures:
             yield _diff(target, code, Severity.ERROR, message, desired, actual)
-        yield _summary(target, platform, cluster, vm, snapshot, match_basis=realization.match_basis)
+        yield _summary(target, platform, cluster, vm, snapshot, match_basis=realization.match_basis, disposition=disposition.outcome)
         if creation:
             for code, message, desired, actual in creation.failures:
                 yield _diff(target, code, Severity.ERROR, message, desired, actual)
         return
     assert vm is not None
     facts = vm.proxmox
-    actual_kind = {"lxc": "container", "qemu": "virtual_machine"}.get(facts.guest_type if facts else None)
-    if actual_kind != instance.instance_kind:
-        yield _diff(target, "compute_identity_conflict", Severity.ERROR, f"{target.slug}: guest kind conflicts", {"dimension": "kind", "instance_kind": instance.instance_kind}, {"guest_type": facts.guest_type if facts else None})
-    if facts and facts.vmid != instance.config.get("vmid"):
-        yield _diff(target, "compute_identity_conflict", Severity.ERROR, f"{target.slug}: VMID conflicts", {"dimension": "vmid", "vmid": instance.config.get("vmid")}, {"vmid": facts.vmid})
-    if facts and facts.node not in (cluster.proxmox.observed_node_names if cluster.proxmox else []):
-        yield _diff(target, "compute_identity_conflict", Severity.ERROR, f"{target.slug}: VM node is outside platform observation", {"dimension": "node"}, {"node": facts.node})
+    if disposition.outcome in {"retained", "destroy_required", "removal_complete"}:
+        if disposition.outcome != "removal_complete":
+            yield from _identity_diffs(target, instance, cluster, facts)
+        if disposition.outcome == "destroy_required":
+            yield _diff(target, "compute_instance_destroy_required", Severity.WARNING,
+                        f"{target.slug}: retired compute instance is explicitly required to be absent",
+                        {"desired_presence": "absent", "effective_lifecycle": "retired"},
+                        {"virtual_machine_id": vm.id, "presence": facts.presence if facts else None,
+                         "vmid": facts.vmid if facts else None})
+        elif disposition.outcome == "removal_complete":
+            yield _diff(target, "compute_instance_removal_complete", Severity.INFO,
+                        f"{target.slug}: retired compute instance is confirmed absent",
+                        {"desired_presence": "absent", "effective_lifecycle": "retired"},
+                        {"virtual_machine_id": vm.id, "presence": facts.presence if facts else None})
+        yield _summary(target, platform, cluster, vm, snapshot,
+                       match_basis=("linked" if realization.instance_link_state == "linked_to_expected" else realization.match_basis),
+                       disposition=disposition.outcome)
+        return
+    yield from _identity_diffs(target, instance, cluster, facts)
     if (facts.status if facts else None) != instance.desired_power_state:
         yield _diff(target, "compute_power_state_mismatch", Severity.WARNING, f"{target.slug}: desired power state differs", {"desired_power_state": instance.desired_power_state}, {"status": facts.status if facts else None})
     for field, actual in (("vcpus", vm.vcpus), ("memory_mb", vm.memory), ("root_disk_gb", (facts.lxc_rootfs.size_gb if facts and facts.lxc_rootfs else vm.disk))):
@@ -120,10 +138,20 @@ def _evaluate_instance(realization, nodes, snapshot, creation=None):
             yield _diff(target, "compute_resource_mismatch", Severity.WARNING, f"{target.slug}: bridge differs", {"bridge": instance.config.get("bridge")}, {"bridge": iface.proxmox.bridge})
     if realization.instance_link_state == "absent":
         yield _diff(target, "compute_instance_not_linked", Severity.WARNING, f"{target.slug}: VM matches but no ledger link is recorded", {}, {"virtual_machine_id": vm.id, "match_basis": realization.match_basis})
-    yield _summary(target, platform, cluster, vm, snapshot, match_basis=("linked" if realization.instance_link_state == "linked_to_expected" else realization.match_basis))
+    yield _summary(target, platform, cluster, vm, snapshot, match_basis=("linked" if realization.instance_link_state == "linked_to_expected" else realization.match_basis), disposition=disposition.outcome)
 
 
-def _summary(target, platform, cluster, instance, snapshot, match_basis=None):
+def _identity_diffs(target, instance, cluster, facts):
+    actual_kind = {"lxc": "container", "qemu": "virtual_machine"}.get(facts.guest_type if facts else None)
+    if actual_kind != instance.instance_kind:
+        yield _diff(target, "compute_identity_conflict", Severity.ERROR, f"{target.slug}: guest kind conflicts", {"dimension": "kind", "instance_kind": instance.instance_kind}, {"guest_type": facts.guest_type if facts else None})
+    if facts and facts.vmid != instance.config.get("vmid"):
+        yield _diff(target, "compute_identity_conflict", Severity.ERROR, f"{target.slug}: VMID conflicts", {"dimension": "vmid", "vmid": instance.config.get("vmid")}, {"vmid": facts.vmid})
+    if facts and facts.node not in (cluster.proxmox.observed_node_names if cluster.proxmox else []):
+        yield _diff(target, "compute_identity_conflict", Severity.ERROR, f"{target.slug}: VM node is outside platform observation", {"dimension": "node"}, {"node": facts.node})
+
+
+def _summary(target, platform, cluster, instance, snapshot, match_basis=None, disposition=None):
     defaults = {}
     desired = {"effective_defaults": defaults}
     if instance is not None:
@@ -137,7 +165,7 @@ def _summary(target, platform, cluster, instance, snapshot, match_basis=None):
             desired["effective_lifecycle"] = (
                 effective_lifecycle(node.lifecycle, platform.lifecycle) if node else None
             )
-    return _diff(target, "compute_realization_summary", Severity.INFO, f"{target.slug}: compute realization summary", desired, {"cluster_id": cluster.id if cluster else None, "virtual_machine_id": instance.id if instance else None, "match_basis": match_basis, "presence": instance.proxmox.presence if instance and instance.proxmox else None, "field_dispositions": {"template": "creation_only", "unprivileged": "unobservable"}})
+    return _diff(target, "compute_realization_summary", Severity.INFO, f"{target.slug}: compute realization summary", desired, {"cluster_id": cluster.id if cluster else None, "virtual_machine_id": instance.id if instance else None, "match_basis": match_basis, "presence": instance.proxmox.presence if instance and instance.proxmox else None, "disposition": disposition, "field_dispositions": {"template": "creation_only", "unprivileged": "unobservable"}})
 
 
 def _instance_target(instance, nodes):
