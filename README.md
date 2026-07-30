@@ -628,6 +628,61 @@ See [`devdocs/big/vm/roadmap.md`](../devdocs/big/vm/roadmap.md) for the detailed
 This is the ordinary, bounded workflow for an approved LXC guest; it is not a generic Proxmox
 lifecycle interface.
 
+### Canonical desired-state batch
+
+Register the Proxmox platform and its control node first. Then use this one batch shape for one
+actionable LXC (replace the example names, addresses, VMID, template, storage, bridge, and
+platform slug with the approved values for the target):
+
+```yaml
+dry_run: true
+operations:
+  - op: upsert
+    kind: desired_node
+    key: {slug: aglxc01}
+    values:
+      name: aglxc01
+      node_type: container
+      lifecycle: active
+  - op: upsert
+    kind: desired_endpoint
+    key: {desired_node: aglxc01, name: primary, endpoint_type: primary}
+    values:
+      ip_policy: static
+      ip_address: 192.168.50.101/24
+      gateway_address: 192.168.50.1
+      mac_address: "02:00:00:00:00:01"
+      mdns_name: aglxc01.local
+  - op: upsert
+    kind: desired_compute_instance
+    key: {desired_node: aglxc01}
+    values:
+      platform: pve-main
+      instance_kind: container
+      desired_power_state: running
+      vcpus: 2
+      memory_mb: 2048
+      root_disk_gb: 16
+      config:
+        vmid: 101
+        template: local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst
+        storage: local-lvm
+        bridge: vmbr0
+        unprivileged: true
+```
+
+Preview the exact batch first, then commit that same file atomically:
+
+```bash
+uv run --project nctl nctl desired apply -f .local/aglxc01.yaml --json
+uv run --project nctl nctl desired apply -f .local/aglxc01.yaml --yes --json
+```
+
+`planned`, `deprecated`, and `retired` intent is not creation-ready, so it does not require this
+complete actionable endpoint contract. Preview reports the batch actions only; final Django model
+validation runs during the atomic apply. On a rejected apply, nctl prints the server transaction
+error and per-operation conflict reasons (or the complete server artifact with `--json`).
+
 1. Record a user-confirmed Braindump wish, then write the exact desired node, one primary endpoint
    (static IPv4 CIDR, same-subnet gateway, and explicit MAC), compute platform, VMID, LXC template, rootfs storage, bridge,
    resources, and desired running state through nintent's canonical writer. A prose wish alone

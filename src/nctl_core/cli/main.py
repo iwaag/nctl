@@ -44,6 +44,7 @@ from nctl_core.hosts_intent_render import (
 from nctl_core.lifecycle import LIFECYCLE_STATES, build_lifecycle, render_lifecycle_text
 from nctl_core.retirement_prune import render_prune_text, run_prune
 from nctl_core.desired_apply import apply_document
+from nctl_core.desired_write import DesiredWriteError
 from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
 from nctl_core.production_render import (
@@ -432,6 +433,29 @@ def desired_apply(
     """Preview a batch document, or atomically commit it with --yes."""
     try:
         artifact = apply_document(_load_config(config), file, commit=yes)
+    except DesiredWriteError as exc:
+        if json_output and exc.artifact:
+            import json
+
+            typer.echo(json.dumps(exc.artifact, sort_keys=True))
+        else:
+            typer.echo(f"error: {exc}", err=True)
+            transaction = exc.artifact.get("transaction") if isinstance(exc.artifact, dict) else None
+            if isinstance(transaction, dict) and transaction.get("error"):
+                typer.echo(f"transaction error: {transaction['error']}", err=True)
+            operations = exc.artifact.get("operations") if isinstance(exc.artifact, dict) else None
+            if isinstance(operations, list):
+                for operation in operations:
+                    if not isinstance(operation, dict) or operation.get("action") != "conflict":
+                        continue
+                    reason = operation.get("reason")
+                    if reason:
+                        typer.echo(
+                            f"operation {operation.get('index', '?')} "
+                            f"{operation.get('kind', 'unknown')}: {reason}",
+                            err=True,
+                        )
+        raise typer.Exit(EXIT_FAILURE) from exc
     except Exception as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(EXIT_FAILURE) from exc
