@@ -194,6 +194,9 @@ _TABLE.update(
 )
 _TABLE.update({"compute_instance_not_linked": CodeClassification(Classification.AUTOMATIC, "link_compute_realization")})
 _TABLE.update({"compute_instance_missing": CodeClassification(Classification.AUTOMATIC, "create_compute_instance")})
+_TABLE.update({"compute_instance_destroy_required": CodeClassification(Classification.AUTOMATIC, "destroy_compute_instance")})
+_TABLE.update({"compute_instance_removal_complete": CodeClassification(Classification.MANUAL_REVIEW)})
+_TABLE.update({"compute_presence_lifecycle_conflict": CodeClassification(Classification.MANUAL_REVIEW)})
 _TABLE.update(
     {code: CodeClassification(Classification.AUTOMATIC, "link_actual_node") for code in _LINK_ACTUAL_NODE_CODES}
 )

@@ -35,6 +35,7 @@ from typing import Union
 from nctl_core.drift.evaluation_snapshot import evaluate_all_nodes
 from nctl_core.drift.compute_realization import derive_compute_realizations
 from nctl_core.drift.compute_creation import derive_compute_creations
+from nctl_core.drift.compute_disposition import derive_compute_dispositions
 from nctl_core.drift.model import DiffRecord, Target
 from nctl_core.sources.snapshot import SourceSnapshot
 
@@ -54,6 +55,9 @@ LINK_COMPUTE_REALIZATION = register_reconciler(
 )
 CREATE_COMPUTE_INSTANCE = register_reconciler(
     Reconciler(id="create_compute_instance", action_kind="compute_create", mutates=True, requires_observation=True)
+)
+DESTROY_COMPUTE_INSTANCE = register_reconciler(
+    Reconciler(id="destroy_compute_instance", action_kind="compute_destroy", mutates=True, requires_observation=True)
 )
 RECONCILE_IPAM = register_reconciler(
     Reconciler(id="reconcile_ipam", action_kind="job", mutates=True, requires_observation=False)
@@ -129,6 +133,9 @@ def plan_link_actual_node(target: Target, snapshot: SourceSnapshot) -> Union[Rec
 def plan_link_compute_realization(target: Target, snapshot: SourceSnapshot, *, generated_at: str) -> Union[ReconcileAction, Fallback]:
     """Pin the two ledger writes from the same typed decision as compute drift."""
     realization = derive_compute_realizations(snapshot, generated_at=generated_at).get(target.id or "")
+    disposition = derive_compute_dispositions(snapshot, generated_at=generated_at).get(target.id or "")
+    if disposition is None or disposition.outcome in {"retained", "destroy_required", "removal_complete"}:
+        return Fallback(Classification.MANUAL_REVIEW, "retired compute disposition forbids a realization link")
     if realization is None or realization.cluster is None or realization.virtual_machine is None:
         return Fallback(Classification.MANUAL_REVIEW, "compute link candidate is missing or not unique")
     if realization.platform_failures or realization.instance_failures:
@@ -180,6 +187,28 @@ def plan_create_compute_instance(target: Target, snapshot: SourceSnapshot, *, ge
         evidence={"platform_slug": creation.platform.slug, "cluster_id": creation.cluster.id, "control_node_slug": creation.control_node.slug, "generated_at": generated_at},
         mutates=CREATE_COMPUTE_INSTANCE.mutates, requires_observation=CREATE_COMPUTE_INSTANCE.requires_observation,
         parameters=creation.parameters,
+    )
+
+
+def plan_destroy_compute_instance(target: Target, snapshot: SourceSnapshot, *, generated_at: str) -> Union[ReconcileAction, Fallback]:
+    """Plan only: Phase 3 deliberately registers no executor for this action."""
+    disposition = derive_compute_dispositions(snapshot, generated_at=generated_at).get(target.id or "")
+    if disposition is None or disposition.outcome != "destroy_required" or not disposition.parameters:
+        return Fallback(
+            Classification.MANUAL_REVIEW,
+            "compute destroy candidate no longer satisfies the pinned retirement gate",
+            {"disposition": disposition.outcome if disposition else None,
+             "gate_failure": disposition.gate_failure if disposition else "missing_compute_instance"},
+        )
+    return ReconcileAction(
+        id=f"destroy_compute_instance:{target.slug}", reconciler_id=DESTROY_COMPUTE_INSTANCE.id,
+        action_kind=DESTROY_COMPUTE_INSTANCE.action_kind, targets=[target],
+        claimed_diff_codes=["compute_instance_destroy_required"],
+        reason="One retired, explicitly absent LXC has a fresh, pinned Proxmox realization.",
+        evidence={"generated_at": generated_at, **disposition.parameters},
+        mutates=DESTROY_COMPUTE_INSTANCE.mutates,
+        requires_observation=DESTROY_COMPUTE_INSTANCE.requires_observation,
+        parameters=disposition.parameters,
     )
 
 

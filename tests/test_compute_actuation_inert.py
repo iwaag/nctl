@@ -8,6 +8,7 @@ from nctl_core.drift.context import DriftContext
 from nctl_core.drift.engine import compute_drift
 from nctl_core.reconcile.model import PlanScope
 from nctl_core.reconcile.planner import build_plan
+from nctl_core.reconcile.actions.dispatch import handler_for
 from nctl_core.sources.actual import ActualCluster, ActualDevice, ActualSnapshot, ActualVirtualMachine
 from nctl_core.compute.model import DesiredComputeInstance, DesiredComputePlatform
 from nctl_core.sources.desired import DesiredNode, DesiredSnapshot
@@ -67,3 +68,33 @@ def test_unique_compute_candidate_produces_one_ledger_action_and_no_proxmox_acti
     assert action.parameters["compute_platform_id"] == "platform-1"
     assert action.parameters["virtual_machine_id"] == "vm-1"
     assert all("proxmox" not in candidate.reconciler_id for candidate in plan.actions)
+
+
+def test_retired_absent_lxc_plans_one_inert_destroy_action_and_no_observation():
+    snapshot = _snapshot_with_valid_compute()
+    snapshot.desired.nodes[0] = snapshot.desired.nodes[0].model_copy(update={"lifecycle": "retired"})
+    snapshot.desired.compute_platforms[0] = snapshot.desired.compute_platforms[0].model_copy(update={"lifecycle": "retired", "realized_cluster_id": "cluster-1"})
+    snapshot.desired.compute_instances[0] = snapshot.desired.compute_instances[0].model_copy(update={"desired_presence": "absent", "realized_vm_id": "vm-1", "config": {"vmid": 101}})
+    snapshot.actual.virtual_machines[0] = snapshot.actual.virtual_machines[0].model_copy(update={"proxmox": snapshot.actual.virtual_machines[0].proxmox.model_copy(update={"presence": "present"})})
+    diffs = [diff for target in compute_drift(snapshot, DriftContext(generated_at=GENERATED_AT)).targets for diff in target.diffs]
+    plan = build_plan(snapshot=snapshot, diffs=diffs, scope=PlanScope(kind="cluster"), drift_generated_at=GENERATED_AT, profile_reconciliation={})
+
+    [action] = plan.actions
+    assert action.reconciler_id == "destroy_compute_instance"
+    assert [(target.kind, target.id) for target in action.targets] == [("compute_instance", "instance-1")]
+    assert action.parameters == {
+        "compute_instance_id": "instance-1", "desired_node_id": "n1", "desired_node_slug": "aghealthy",
+        "compute_platform_id": "platform-1", "compute_platform_slug": "aghub-pve", "cluster_id": "cluster-1",
+        "virtual_machine_id": "vm-1", "guest_type": "lxc", "vmid": 101, "observed_proxmox_node": "aghealthy",
+        "control_desired_node_id": "n1", "control_desired_node_slug": "aghealthy", "host_slugs": ["aghealthy"],
+    }
+    assert handler_for("destroy_compute_instance") is None
+    assert "observe_node" not in [candidate.reconciler_id for candidate in plan.actions]
+
+
+def test_destroy_surface_has_no_executor_option_playbook_or_pct_invocation():
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    sources = "\n".join(path.read_text() for path in root.joinpath("src").rglob("*.py"))
+    assert "--allow-destroy" not in sources
+    assert "pct " not in sources and "pct\\t" not in sources
+    assert handler_for("destroy_compute_instance") is None

@@ -21,7 +21,7 @@ from .classify import CODE_CLASSIFICATION, Classification, classify
 from .fingerprint import compute_drift_fingerprint
 from .model import ManualReviewRecord, PlanScope, ReconcileAction, ReconcilePlan, UnsupportedRecord
 from .profiles import ProfileReconciliation
-from .reconcilers import Fallback, plan_create_compute_instance, plan_link_actual_node, plan_link_compute_realization, plan_observe_node, plan_reconcile_ipam, plan_service_profile
+from .reconcilers import Fallback, plan_create_compute_instance, plan_destroy_compute_instance, plan_link_actual_node, plan_link_compute_realization, plan_observe_node, plan_reconcile_ipam, plan_service_profile
 from .registry import topological_order
 
 
@@ -202,6 +202,13 @@ def build_plan(
         else:
             actions.append(outcome)
 
+    for key, (target, codes, group_diffs) in sorted(automatic_groups.get("destroy_compute_instance", {}).items()):
+        outcome = plan_destroy_compute_instance(target, snapshot, generated_at=drift_generated_at)
+        if isinstance(outcome, Fallback):
+            _apply_fallback(outcome, group_diffs, manual_review, unsupported)
+        else:
+            actions.append(outcome)
+
     # An absent compute guest has no SSH endpoint to observe yet.  Its create
     # action requests the one authoritative post-actuation observation; an
     # initial observe action for the same node would fail before creation and
@@ -209,7 +216,7 @@ def build_plan(
     compute_transition_target_slugs = {
         action.targets[0].slug
         for action in actions
-        if action.reconciler_id in {"create_compute_instance", "link_compute_realization"}
+        if action.reconciler_id in {"create_compute_instance", "destroy_compute_instance", "link_compute_realization"}
         and action.targets and action.targets[0].slug
     }
     if observe_targets:

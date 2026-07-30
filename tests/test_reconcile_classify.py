@@ -57,6 +57,7 @@ _COMPUTE_CODES = {
     "compute_instance_missing", "compute_instance_candidate_ambiguous", "compute_instance_not_linked",
     "compute_realized_instance_missing", "compute_identity_conflict", "compute_power_state_mismatch",
     "compute_resource_mismatch", "compute_endpoint_mac_conflict", "unexplained_compute_guest",
+    "compute_instance_destroy_required", "compute_instance_removal_complete", "compute_presence_lifecycle_conflict",
 }
 
 
