@@ -101,6 +101,7 @@ def run_reconcile(
     *,
     host: str | None = None,
     apply_changes: bool = False,
+    allow_destroy: bool = False,
     refresh_observation: bool = False,
     max_rounds: int | None = None,
     now: Callable[[], datetime] | None = None,
@@ -116,6 +117,7 @@ def run_reconcile(
     data = ReconcileData(
         operation_id=op.operation_id,
         mode="apply" if apply_changes else "plan",
+        allow_destroy=allow_destroy,
         scope=scope,
         event_log_path=str(op.path),
     )
@@ -157,6 +159,7 @@ def run_reconcile(
                     interrupted,
                     ssh_probe,
                     refresh_observation,
+                    allow_destroy,
                 )
     except ReconcileLockError as exc:
         return _finish(op, data, "failed", [EnvelopeError(code="reconcile_lock_contention", message=str(exc))])
@@ -218,6 +221,7 @@ def _run_apply(
     interrupted: "_InterruptFlag",
     ssh_probe: SshProbeRunner | None,
     refresh_observation: bool,
+    allow_destroy: bool,
 ) -> Envelope[ReconcileData]:
     rounds_limit = max_rounds or cfg.reconcile.max_rounds
     previous_fingerprint: str | None = None
@@ -337,8 +341,14 @@ def _run_apply(
 
         op.emit("round_started", f"reconcile round {round_index} started", round=round_index)
         try:
-            outcome = _execute_round(
-                cfg, op, artifacts, round_index, plan, snapshot, now, command_runner, interrupted, ssh_probe
+            round_args = (
+                cfg, op, artifacts, round_index, plan, snapshot, now, command_runner, interrupted, ssh_probe,
+            )
+            # Retain the long-standing direct-call shape for ordinary runs;
+            # only the explicit capability invocation needs the new keyword.
+            outcome = (
+                _execute_round(*round_args, allow_destroy=True)
+                if allow_destroy else _execute_round(*round_args)
             )
         except (ConfigError, NautobotError) as exc:
             # Truly unexpected failures _execute_round itself cannot classify
@@ -448,6 +458,8 @@ def _execute_round(
     command_runner: CommandRunner | None,
     interrupted: "_InterruptFlag",
     ssh_probe: SshProbeRunner,
+    *,
+    allow_destroy: bool = False,
 ) -> RoundOutcome:
     """Execute one round's actions and always return a `RoundOutcome`.
 
@@ -478,6 +490,24 @@ def _execute_round(
         for action in bootstrap_actions:
             if interrupted.is_set():
                 return _interrupted_outcome()
+            if action.reconciler_id == "destroy_compute_instance" and not allow_destroy:
+                message = "destroy capability is not enabled; rerun with `--allow-destroy --yes`"
+                summary.actions.append(
+                    ActionResult(
+                        action_id=action.id,
+                        reconciler_id=action.reconciler_id,
+                        action_kind=action.action_kind,
+                        target_slugs=[target.slug for target in action.targets if target.slug],
+                        success=False,
+                        error=f"destroy_capability_not_enabled: {message}",
+                        mutated=False,
+                    )
+                )
+                return RoundOutcome(
+                    summary=summary,
+                    terminal_errors=[EnvelopeError(code="destroy_capability_not_enabled", message=message)],
+                    had_side_effects=had_side_effects,
+                )
             executed = execute_action(
                 ActionContext(
                     cfg=cfg, operation_log=op, artifacts=artifacts, round_index=round_index,

@@ -46,7 +46,7 @@ from nctl_core.ssh_trust import (
 # Only reconcilers that actually connect to the node over SSH require enrollment;
 # `link_actual_node` (Nautobot metadata patch) and `reconcile_ipam` (Nautobot Job)
 # never do, so ledger-only plans are never blocked by an unrelated unenrolled host.
-SSH_REQUIRING_RECONCILER_IDS = frozenset({"observe_node", "service_profile", "dnsmasq_config"})
+SSH_REQUIRING_RECONCILER_IDS = frozenset({"observe_node", "service_profile", "dnsmasq_config", "destroy_compute_instance"})
 
 STATUS_READY = "ready"
 STATUS_UNENROLLED = "unenrolled"

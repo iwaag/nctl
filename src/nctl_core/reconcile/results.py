@@ -43,6 +43,9 @@ class RoundSummary(BaseModel):
 class ReconcileData(BaseModel):
     operation_id: str
     mode: str
+    # Capability supplied to this operation. This is durable evidence of the
+    # invocation, never a planner field or persisted permission.
+    allow_destroy: bool = False
     scope: PlanScope
     state: str = "failed"
     event_log_path: str

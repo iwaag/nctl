@@ -1520,6 +1520,62 @@ def _direct_round_setup(tmp_path, monkeypatch):
     )
 
 
+def test_destroy_without_capability_is_terminal_and_never_dispatches(tmp_path, monkeypatch):
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    destroy = ReconcileAction(
+        id="destroy-1", reconciler_id="destroy_compute_instance", action_kind="compute_destroy",
+        targets=[Target(kind="compute_instance", slug="agfixture", name="agfixture", id="instance")],
+        claimed_diff_codes=["compute_instance_destroy_required"], reason="test", mutates=True,
+        requires_observation=True, parameters={"host_slugs": [ctx.node.slug]},
+    )
+    plan = ctx.make_plan([destroy])
+    monkeypatch.setattr(
+        executor_module, "execute_action",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("destroy must not dispatch")),
+    )
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+    )
+    assert [(action.reconciler_id, action.success, action.mutated) for action in outcome.summary.actions] == [
+        ("destroy_compute_instance", False, False)
+    ]
+    assert "destroy_capability_not_enabled" in outcome.summary.actions[0].error
+    assert [error.code for error in outcome.terminal_errors] == ["destroy_capability_not_enabled"]
+
+
+def test_destroy_with_capability_dispatches_only_after_explicit_enablement(tmp_path, monkeypatch):
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    destroy = ReconcileAction(
+        id="destroy-1", reconciler_id="destroy_compute_instance", action_kind="compute_destroy",
+        targets=[Target(kind="compute_instance", slug="agfixture", name="agfixture", id="instance")],
+        claimed_diff_codes=["compute_instance_destroy_required"], reason="test", mutates=True,
+        requires_observation=False, parameters={"host_slugs": [ctx.node.slug]},
+    )
+    plan = ctx.make_plan([destroy])
+    seen = []
+    monkeypatch.setattr(
+        executor_module, "execute_action",
+        lambda _context, action: seen.append(action.reconciler_id) or executor_module.ExecutedAction(
+            result=executor_module.ActionResult(
+                action_id=action.id, reconciler_id=action.reconciler_id, action_kind=action.action_kind,
+                target_slugs=["agfixture"], success=True, mutated=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        executor_module, "_regenerate_production_inventory",
+        lambda _cfg: (executor_module.ActionResult(
+            action_id="production", reconciler_id="production_inventory", action_kind="render", success=True
+        ), None),
+    )
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe, allow_destroy=True,
+    )
+    assert seen == ["destroy_compute_instance"]
+    assert outcome.summary.actions[0].success is True
+
 def test_successful_ledger_action_retained_when_observation_store_fails(tmp_path, monkeypatch):
     # Corrected contract 2, second boundary: a ledger action that already
     # succeeded this round must stay in the round's evidence even though a

@@ -89,6 +89,7 @@ CURRENT_DATA_FIELDS = {
 CURRENT_RECONCILE_DATA_FIELDS = {
     "operation_id",
     "mode",
+    "allow_destroy",
     "scope",
     "state",
     "event_log_path",

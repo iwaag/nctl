@@ -339,6 +339,10 @@ RefreshObservationOption = Annotated[
         help="Force one fresh nodeutils collection/ingest for the scoped host, even if drift is converged.",
     ),
 ]
+AllowDestroyOption = Annotated[
+    bool,
+    typer.Option("--allow-destroy", help="Permit planned LXC destruction for this --yes reconcile run."),
+]
 
 
 @app.command()
@@ -346,6 +350,7 @@ def reconcile(
     host: HostArgument = None,
     config: ConfigOption = None,
     yes: ReconcileYesOption = False,
+    allow_destroy: AllowDestroyOption = False,
     refresh_observation: RefreshObservationOption = False,
     max_rounds: MaxRoundsOption = None,
     json_output: ReconcileJsonOption = False,
@@ -361,6 +366,7 @@ def reconcile(
         cfg,
         host=host,
         apply_changes=yes,
+        allow_destroy=allow_destroy,
         refresh_observation=refresh_observation,
         max_rounds=max_rounds,
     )

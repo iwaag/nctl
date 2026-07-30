@@ -70,7 +70,7 @@ def test_unique_compute_candidate_produces_one_ledger_action_and_no_proxmox_acti
     assert all("proxmox" not in candidate.reconciler_id for candidate in plan.actions)
 
 
-def test_retired_absent_lxc_plans_one_inert_destroy_action_and_no_observation():
+def test_retired_absent_lxc_plans_one_capability_gated_destroy_action_and_no_observation():
     snapshot = _snapshot_with_valid_compute()
     snapshot.desired.nodes[0] = snapshot.desired.nodes[0].model_copy(update={"lifecycle": "retired"})
     snapshot.desired.compute_platforms[0] = snapshot.desired.compute_platforms[0].model_copy(update={"lifecycle": "retired", "realized_cluster_id": "cluster-1"})
@@ -88,13 +88,18 @@ def test_retired_absent_lxc_plans_one_inert_destroy_action_and_no_observation():
         "virtual_machine_id": "vm-1", "guest_type": "lxc", "vmid": 101, "observed_proxmox_node": "aghealthy",
         "control_desired_node_id": "n1", "control_desired_node_slug": "aghealthy", "host_slugs": ["aghealthy"],
     }
-    assert handler_for("destroy_compute_instance") is None
+    assert handler_for("destroy_compute_instance") is not None
     assert "observe_node" not in [candidate.reconciler_id for candidate in plan.actions]
 
 
-def test_destroy_surface_has_no_executor_option_playbook_or_pct_invocation():
+def test_destroy_surface_exposes_only_the_bounded_capability_and_playbook():
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
     sources = "\n".join(path.read_text() for path in root.joinpath("src").rglob("*.py"))
-    assert "--allow-destroy" not in sources
-    assert "pct " not in sources and "pct\\t" not in sources
-    assert handler_for("destroy_compute_instance") is None
+    assert "--allow-destroy" in sources
+    assert "destroy_capability_not_enabled" in sources
+    assert handler_for("destroy_compute_instance") is not None
+    playbook = root.parent / "ansible_agdev/playbooks/proxmox/destroy_lxc.yml"
+    content = playbook.read_text()
+    assert "delegate_to: localhost" in content
+    assert "pct_binary: /usr/sbin/pct" in content
+    assert "destroy" in content and "--all" not in content and " qm " not in content
