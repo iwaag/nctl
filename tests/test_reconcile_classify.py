@@ -51,7 +51,10 @@ _DYNAMIC_CODES = {
 
 # Informational summaries are deliberately not reconciliation inputs. Keeping
 # this exemption explicit makes a future actionable compute code fail closed.
-_INFORMATIONAL_UNCLASSIFIED_CODES = {"intent_effect_summary", "compute_realization_summary"}
+_INFORMATIONAL_UNCLASSIFIED_CODES = {
+    "intent_effect_summary", "compute_realization_summary",
+    "compute_instance_removal_complete",
+}
 _COMPUTE_CODES = {
     "compute_platform_missing", "compute_platform_observation_stale", "compute_platform_ambiguous",
     "compute_instance_missing", "compute_instance_candidate_ambiguous", "compute_instance_not_linked",

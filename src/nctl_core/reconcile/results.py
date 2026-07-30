@@ -51,6 +51,10 @@ class ReconcileData(BaseModel):
     event_log_path: str
     artifact_dir: str = ""
     plan_path: str = ""
+    # Plan-mode JSON is an agent/operator review surface.  Keep the complete
+    # typed plan alongside its durable path so a caller need not read logs to
+    # inspect the pinned action and target before granting --yes.
+    plan: dict[str, Any] | None = None
     initial_drift_path: str = ""
     final_drift_path: str = ""
     rounds: list[RoundSummary] = Field(default_factory=list)

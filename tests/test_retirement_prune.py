@@ -39,4 +39,22 @@ def test_actual_first_partial_progress_retries_only_desired_cleanup():
     eligibility, node, instance, payload = _resolve(snapshot, DriftResult(), "agfixture")
     assert eligibility["result"] == "actual_already_pruned"
     assert payload is None
+    assert eligibility["absent_actual_roots"] == ["virtual_machine", "device"]
+    assert eligibility["remaining_actual_roots"] == []
+    assert eligibility["actual_deletion_requested"] is False
     assert [operation["kind"] for operation in _desired_operations(snapshot, node, instance)] == ["desired_endpoint", "desired_compute_instance", "desired_node"]
+
+
+def test_partial_actual_cleanup_reports_exact_roots_and_never_requests_delete():
+    base = _snapshot()
+    for actual, absent, remaining in (
+        (ActualSnapshot(devices=base.actual.devices), ["virtual_machine"], ["device"]),
+        (ActualSnapshot(virtual_machines=base.actual.virtual_machines), ["device"], ["virtual_machine"]),
+    ):
+        snapshot = base.model_copy(update={"actual": actual})
+        eligibility, _node, _instance, payload = _resolve(snapshot, DriftResult(), "agfixture")
+        assert eligibility["result"] == "actual_already_pruned"
+        assert eligibility["absent_actual_roots"] == absent
+        assert eligibility["remaining_actual_roots"] == remaining
+        assert eligibility["actual_deletion_requested"] is False
+        assert payload is None

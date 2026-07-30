@@ -97,6 +97,7 @@ CURRENT_RECONCILE_DATA_FIELDS = {
     "event_log_path",
     "artifact_dir",
     "plan_path",
+    "plan",
     "initial_drift_path",
     "final_drift_path",
     "rounds",

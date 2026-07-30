@@ -101,7 +101,17 @@ def _resolve(snapshot, drift, host: str) -> tuple[dict[str, Any], Any, Any, dict
         # A failed run can have completed Actual deletion before its Desired
         # batch.  That is a safe, narrow retry state: only the same tombstones
         # may remain, and no new Actual search is permitted.
-        return {"result": "actual_already_pruned", "reason": "Actual roots are already gone; only Desired cleanup remains", "desired_node_id": node.id, "compute_instance_id": instance.id}, node, instance, None
+        absent_roots = [name for name, value in (("virtual_machine", vm), ("device", device)) if value is None]
+        remaining_roots = [name for name, value in (("virtual_machine", vm), ("device", device)) if value is not None]
+        return {
+            "result": "actual_already_pruned",
+            "reason": "Actual cleanup is skipped because one or more Actual roots are already absent; only Desired cleanup remains",
+            "desired_node_id": node.id,
+            "compute_instance_id": instance.id,
+            "absent_actual_roots": absent_roots,
+            "remaining_actual_roots": remaining_roots,
+            "actual_deletion_requested": False,
+        }, node, instance, None
     if vm.proxmox is None or vm.proxmox.presence != "absent" or vm.proxmox.guest_type != "lxc":
         return {"result": "ineligible", "reason": "linked Proxmox LXC is not confirmed absent"}, None, None, None
     cluster = next((item for item in snapshot.actual.clusters if item.id == vm.cluster_id), None)

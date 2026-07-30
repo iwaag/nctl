@@ -187,6 +187,7 @@ def _run_plan_only(
         plan = _with_forced_observation(plan, snapshot, scope)
 
     data.plan_path = str(artifacts.write_json("plan.json", plan.model_dump(mode="json")))
+    data.plan = plan.model_dump(mode="json")
     op.emit(
         "plan_created",
         "reconcile plan created",

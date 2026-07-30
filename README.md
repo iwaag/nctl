@@ -224,7 +224,9 @@ drift/event artifacts only when it stops short of `converged`.
   automatic maintenance action is `already_converged`/`converged`; an unchanged drift fingerprint
   between rounds is `non_converged` (`no_progress`); exhausting `--max-rounds` without converging
   is also `non_converged` (`max_rounds_reached`); any manual/unsupported plan finding stops the run
-  **before any mutation** (`manual_intervention_required`); a controller-local lock held by another
+  **before any mutation** (`manual_intervention_required`). Informational completion evidence such
+  as `compute_instance_removal_complete` remains visible in drift and artifacts but does not block a
+  successful terminal state; a controller-local lock held by another
   reconcile fails immediately (`reconcile_lock_contention`) before the first drift fetch. Exit 0
   only for `already_converged`/`converged`; every other apply-mode state exits 1.
 - **Scope**: an independent target's failure never blocks other independent targets in the same
@@ -238,11 +240,11 @@ drift/event artifacts only when it stops short of `converged`.
 
 The `nctl.reconcile.v2` envelope's `data` carries `operation_id`, `mode`, `scope`, terminal `state`
 (`planned | already_converged | converged | manual_intervention_required | non_converged | failed`),
-`event_log_path`, `artifact_dir`, `plan_path`, initial/final drift paths, per-round action results
+`event_log_path`, `artifact_dir`, `plan_path`, plan-mode `plan`, initial/final drift paths, per-round action results
 (`rounds`), `manual_review`/`unsupported` records (target + diff code + evidence), scope/global
-status summaries, and `ssh_preflight` (below). The plan itself
-(`<events.log_dir>/<operation_id>/plan.json`, schema `nctl.reconcile.plan.v1`) is both embedded in
-plan-mode output and persisted standalone; it never contains a Nautobot token, raw report content,
+status summaries, and `ssh_preflight` (below). In plan mode, `data.plan` is the complete
+`nctl.reconcile.plan.v1` object as well as being persisted at `data.plan_path`; agents can inspect
+`data.plan.actions` directly without opening logs. It never contains a Nautobot token, raw report content,
 or arbitrary shell text — actions carry typed parameters and claimed diff codes, not prose. Neither
 `plan.json` nor `result.json` are deleted on failure: a non-`converged` run leaves its full operation
 directory (`round-NN/drift-*.json`, `round-NN/ansible/*.std{out,err}`, `round-NN/jobs/*.json`,
@@ -718,9 +720,29 @@ the exact target, submit one canonical desired-state batch that sets the owning 
 `retired` and that `DesiredComputeInstance.desired_presence` to `absent`. Do not treat an omitted
 Desired row, an unmanaged guest, or a missing observation as deletion intent.
 
-1. Run `nctl reconcile GUEST --json` without `--yes` and review the one pinned
-   `destroy_compute_instance` action: it must name the expected LXC VMID and its exact Proxmox
-   control node.
+For an existing guest, the smallest canonical document is:
+
+```yaml
+operations:
+  - op: upsert
+    kind: desired_node
+    key: {slug: GUEST}
+    values: {lifecycle: retired}
+  - op: upsert
+    kind: desired_compute_instance
+    key: {desired_node: GUEST}
+    values: {desired_presence: absent}
+```
+
+Preview it with `nctl desired apply -f RETIREMENT.yaml`; after review, use the
+same document with `--yes`. These partial upserts preserve every omitted field
+on the existing node and compute instance. This is a retirement update, not a
+generic VM lifecycle API.
+
+1. Run `nctl reconcile GUEST --allow-destroy --json` without `--yes` and review the one pinned
+   `data.plan.actions` entry with `reconciler_id: destroy_compute_instance`: its target slug,
+   `evidence.vmid`, and `evidence.control_node_slug` must name the expected guest, LXC VMID, and
+   exact Proxmox control node. `data.plan_path` names the identical durable plan artifact.
 2. `nctl reconcile GUEST --allow-destroy` remains a dry plan. `nctl reconcile GUEST --yes` refuses
    the action with `destroy_capability_not_enabled`; neither command reaches Proxmox.
 3. Only after reviewing the same target, run `nctl reconcile GUEST --allow-destroy --yes`. The
@@ -731,9 +753,14 @@ Desired row, an unmanaged guest, or a missing observation as deletion intent.
    destruction succeeded but that observation fails, retain the operation evidence and refresh
    observation; do not submit a second destroy blindly.
 
-This removes only the planned LXC. After this converged state has been reviewed, `nctl prune
+This removes only the planned LXC. `compute_instance_removal_complete` in fresh drift is successful
+removal evidence, so this reconcile ends `converged` with `ok: true`; unresolved or ambiguous
+removal evidence remains non-successful. After this converged state has been reviewed, `nctl prune
 GUEST` shows the separate exact-host ledger cleanup and `nctl prune GUEST --yes` removes its
-collected Actual dependents followed by the Desired tombstones. Prune does not contact Proxmox or
+collected Actual dependents followed by the Desired tombstones. If a prior interrupted prune already
+removed either the retained VM or Device root, prune reports exactly which Actual roots are absent
+and which remain, requests no Actual deletion, and retries only Desired cleanup; this also covers a
+guest that never obtained a Device-level observation. Prune does not contact Proxmox or
 Ansible, retains Braindumps and prior operation evidence, and does not support QEMU, wildcard
 targets, schedules, or general provider disposal.
 

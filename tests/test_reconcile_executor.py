@@ -22,7 +22,7 @@ from nctl_core.reconcile import ssh_preflight as ssh_preflight_module
 from nctl_core.reconcile.executor import run_reconcile
 from nctl_core.reconcile.ledger import IpamReconcileResult, LedgerActionError, LinkActualNodeResult
 from nctl_core.reconcile.lock import acquire_reconcile_lock
-from nctl_core.reconcile.model import ReconcileAction
+from nctl_core.reconcile.model import PlanScope, ReconcileAction, ReconcilePlan
 from nctl_core.sources.actual import ActualDevice, ActualIPAddress, ActualSnapshot
 from nctl_core.sources.desired import (
     DesiredEndpoint,
@@ -241,7 +241,68 @@ def test_plan_mode_never_mutates_and_reports_planned(tmp_path, monkeypatch):
     assert envelope.ok
     assert called["n"] == 0
     assert envelope.data.plan_path
+    assert envelope.data.plan is not None
     assert (tmp_path / "events" / envelope.data.operation_id / "plan.json").is_file()
+
+
+def test_destroy_reobservation_with_removal_completion_converges(tmp_path, monkeypatch):
+    """A successful destroy is terminally successful once fresh drift confirms absence."""
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node("agfixture")
+    target = Target(kind="compute_instance", slug=node.slug, name=node.name, id="instance-1")
+    destroy_diff = DiffRecord(
+        target=target,
+        code="compute_instance_destroy_required",
+        severity=Severity.WARNING,
+        message="destroy required",
+    )
+    complete_diff = DiffRecord(
+        target=target,
+        code="compute_instance_removal_complete",
+        severity=Severity.INFO,
+        message="removal complete",
+    )
+    _sequence(monkeypatch, [
+        _drift([_target_status(target, Status.DRIFTING, [destroy_diff])], nodes=[node]),
+        _drift([_target_status(target, Status.CONVERGED, [complete_diff])], nodes=[node]),
+    ])
+    destroy_plan = ReconcilePlan(
+        scope=PlanScope(kind="host", host_slug=node.slug), drift_fingerprint="before",
+        generated_at=datetime.now(timezone.utc),
+        actions=[ReconcileAction(
+            id="destroy_compute_instance:agfixture", reconciler_id="destroy_compute_instance",
+            action_kind="compute_destroy", targets=[target],
+            claimed_diff_codes=["compute_instance_destroy_required"], reason="test", mutates=True,
+            requires_observation=True, parameters={"host_slugs": [node.slug]},
+        )],
+    )
+    complete_plan = ReconcilePlan(
+        scope=PlanScope(kind="host", host_slug=node.slug), drift_fingerprint="after",
+        generated_at=datetime.now(timezone.utc),
+    )
+    plans = iter([destroy_plan, complete_plan])
+    monkeypatch.setattr(executor_module, "_build_plan_or_error", lambda *_args, **_kwargs: (next(plans), None))
+    monkeypatch.setattr(
+        executor_module,
+        "_execute_round",
+        lambda *_args, **_kwargs: executor_module.RoundOutcome(
+            summary=executor_module.RoundSummary(
+                round=0, drift_fingerprint="before", actions=[executor_module.ActionResult(
+                    action_id="destroy_compute_instance:agfixture", reconciler_id="destroy_compute_instance",
+                    action_kind="compute_destroy", target_slugs=[node.slug], success=True, mutated=True,
+                )],
+            ),
+            had_side_effects=True,
+        ),
+    )
+
+    envelope = run_reconcile(cfg, host=node.slug, apply_changes=True, allow_destroy=True)
+
+    assert envelope.ok
+    assert envelope.data.state == "converged"
+    assert envelope.data.rounds[0].actions[0].reconciler_id == "destroy_compute_instance"
+    assert envelope.data.final_drift_path
 
 
 def test_refresh_observation_plans_observe_for_converged_host(tmp_path, monkeypatch):
@@ -264,6 +325,7 @@ def test_refresh_observation_plans_observe_for_converged_host(tmp_path, monkeypa
     assert envelope.ok
     assert envelope.data.state == "planned"
     plan = json.loads(Path(envelope.data.plan_path).read_text())
+    assert envelope.data.plan == plan
     assert [action["reconciler_id"] for action in plan["actions"]] == ["observe_node"]
     assert plan["actions"][0]["targets"][0]["slug"] == node.slug
     assert plan["actions"][0]["evidence"] == {"forced_refresh": True}
