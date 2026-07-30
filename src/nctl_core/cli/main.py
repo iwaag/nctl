@@ -294,7 +294,7 @@ def ops_show(
 
 
 ApplyJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.apply.dnsmasq.v2 envelope as JSON.")]
-YesOption = Annotated[bool, typer.Option("--yes", help="Apply changes instead of running the default check+diff dry-run.")]
+YesOption = Annotated[bool, typer.Option("--yes", help="Execute the planned changes instead of stopping at the default plan.")]
 ApplyInventoryOption = Annotated[
     Optional[Path],
     typer.Option(
