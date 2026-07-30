@@ -84,6 +84,8 @@ uv run nctl apply dnsmasq --yes
 uv run nctl reconcile
 uv run nctl reconcile agstudio
 uv run nctl reconcile agstudio --yes
+uv run nctl reconcile RETIRED_GUEST --allow-destroy
+uv run nctl reconcile RETIRED_GUEST --allow-destroy --yes
 uv run nctl reconcile --yes --max-rounds 1 --json
 uv run nctl ops list
 uv run nctl ops list --limit 5 --json
@@ -643,6 +645,30 @@ lifecycle interface.
    complete normal node observation and enrollment afterward.
    Until then it is intentionally excluded from production inventory. A repeat dry plan must not
    create, start, or link it again.
+
+### Retiring one Proxmox LXC
+
+Braindump text and its supersession status are never reconciliation input. After the user confirms
+the exact target, submit one canonical desired-state batch that sets the owning `DesiredNode` to
+`retired` and that `DesiredComputeInstance.desired_presence` to `absent`. Do not treat an omitted
+Desired row, an unmanaged guest, or a missing observation as deletion intent.
+
+1. Run `nctl reconcile GUEST --json` without `--yes` and review the one pinned
+   `destroy_compute_instance` action: it must name the expected LXC VMID and its exact Proxmox
+   control node.
+2. `nctl reconcile GUEST --allow-destroy` remains a dry plan. `nctl reconcile GUEST --yes` refuses
+   the action with `destroy_capability_not_enabled`; neither command reaches Proxmox.
+3. Only after reviewing the same target, run `nctl reconcile GUEST --allow-destroy --yes`. The
+   handler re-derives the disposition before mutation and invokes only the bounded
+   `ansible_agdev/playbooks/proxmox/destroy_lxc.yml` adapter for that VMID and control node.
+4. Reconcile performs its normal control-node observation and Nautobot ingest. It completes only
+   when fresh drift observes the retained VirtualMachine with `proxmox_presence=absent`. If
+   destruction succeeded but that observation fails, retain the operation evidence and refresh
+   observation; do not submit a second destroy blindly.
+
+This removes only the planned LXC. It does not delete Braindumps, Desired rows, VirtualMachine
+rows, or Device rows, and it does not support QEMU, wildcard targets, schedules, or general
+provider disposal.
 
 ## Adding a reconciler
 

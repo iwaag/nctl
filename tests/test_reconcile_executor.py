@@ -1576,6 +1576,53 @@ def test_destroy_with_capability_dispatches_only_after_explicit_enablement(tmp_p
     assert seen == ["destroy_compute_instance"]
     assert outcome.summary.actions[0].success is True
 
+
+def test_destroy_then_incomplete_observation_never_claims_convergence(tmp_path, monkeypatch):
+    """The negative-intent loop retains the destroy when its fresh proof fails."""
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    destroy = ReconcileAction(
+        id="destroy-1", reconciler_id="destroy_compute_instance", action_kind="compute_destroy",
+        targets=[Target(kind="compute_instance", slug="agfixture", name="agfixture", id="instance")],
+        claimed_diff_codes=["compute_instance_destroy_required"], reason="test", mutates=True,
+        requires_observation=True, parameters={"host_slugs": [ctx.node.slug]},
+    )
+    monkeypatch.setattr(
+        executor_module, "_regenerate_production_inventory",
+        lambda _cfg: (executor_module.ActionResult(
+            action_id="production", reconciler_id="production_inventory", action_kind="render", success=True
+        ), None),
+    )
+
+    def execute(_context, action):
+        if action.reconciler_id == "destroy_compute_instance":
+            return executor_module.ExecutedAction(result=executor_module.ActionResult(
+                action_id=action.id, reconciler_id=action.reconciler_id, action_kind=action.action_kind,
+                target_slugs=["agfixture"], success=True, mutated=True,
+            ))
+        assert action.reconciler_id == "observe_node"
+        return executor_module.ExecutedAction(
+            result=executor_module.ActionResult(
+                action_id=action.id, reconciler_id=action.reconciler_id, action_kind=action.action_kind,
+                target_slugs=[ctx.node.slug], success=False, mutated=False, error="incomplete observation",
+            ),
+            terminal_errors=[executor_module.EnvelopeError(
+                code="observation_failed", message="incomplete observation"
+            )],
+        )
+
+    monkeypatch.setattr(executor_module, "execute_action", execute)
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, ctx.make_plan([destroy]), ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe, allow_destroy=True,
+    )
+    assert [item.reconciler_id for item in outcome.summary.actions] == [
+        "destroy_compute_instance", "production_inventory", "observe_node"
+    ]
+    assert outcome.summary.actions[0].success and outcome.summary.actions[0].mutated
+    assert outcome.summary.actions[-1].success is False
+    assert outcome.had_side_effects is True
+    assert [error.code for error in outcome.terminal_errors] == ["observation_failed"]
+
 def test_successful_ledger_action_retained_when_observation_store_fails(tmp_path, monkeypatch):
     # Corrected contract 2, second boundary: a ledger action that already
     # succeeded this round must stay in the round's evidence even though a
