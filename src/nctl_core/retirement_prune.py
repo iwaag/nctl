@@ -97,33 +97,20 @@ def _resolve(snapshot, drift, host: str) -> tuple[dict[str, Any], Any, Any, dict
     vm_id, device_id = instance.realized_vm_id, node.realized_device_id
     vm = next((item for item in snapshot.actual.virtual_machines if item.id == vm_id), None)
     device = next((item for item in snapshot.actual.devices if item.id == device_id), None)
-    if not vm or not device:
-        # A failed run can have completed Actual deletion before its Desired
-        # batch.  That is a safe, narrow retry state: only the same tombstones
-        # may remain, and no new Actual search is permitted.
-        absent_roots = [name for name, value in (("virtual_machine", vm), ("device", device)) if value is None]
-        remaining_roots = [name for name, value in (("virtual_machine", vm), ("device", device)) if value is not None]
-        return {
-            "result": "actual_already_pruned",
-            "reason": "Actual cleanup is skipped because one or more Actual roots are already absent; only Desired cleanup remains",
-            "desired_node_id": node.id,
-            "compute_instance_id": instance.id,
-            "absent_actual_roots": absent_roots,
-            "remaining_actual_roots": remaining_roots,
-            "actual_deletion_requested": False,
-        }, node, instance, None
-    if vm.proxmox is None or vm.proxmox.presence != "absent" or vm.proxmox.guest_type != "lxc":
+    if vm and (vm.proxmox is None or vm.proxmox.presence != "absent" or vm.proxmox.guest_type != "lxc"):
         return {"result": "ineligible", "reason": "linked Proxmox LXC is not confirmed absent"}, None, None, None
-    cluster = next((item for item in snapshot.actual.clusters if item.id == vm.cluster_id), None)
-    if not cluster or not cluster.proxmox or cluster.proxmox.observation_state != "complete":
+    cluster = next((item for item in snapshot.actual.clusters if vm and item.id == vm.cluster_id), None)
+    if vm and (not cluster or not cluster.proxmox or cluster.proxmox.observation_state != "complete"):
         return {"result": "ineligible", "reason": "Proxmox observation is not complete"}, None, None, None
     status = next((item for item in drift.targets if item.target.kind == "compute_instance" and item.target.id == instance.id), None)
     codes = {item.code for item in status.diffs} if status else set()
-    if "compute_instance_removal_complete" not in codes or "compute_instance_destroy_required" in codes:
+    if vm and ("compute_instance_removal_complete" not in codes or "compute_instance_destroy_required" in codes):
         return {"result": "ineligible", "reason": "drift does not confirm completed removal", "drift_codes": sorted(codes)}, None, None, None
+    roots = {"device_id": device.id if device else None, "virtual_machine_id": vm.id if vm else None}
     eligibility = {"result": "eligible", "desired_node_id": node.id, "compute_instance_id": instance.id,
-                   "device_id": device.id, "virtual_machine_id": vm.id, "drift_codes": sorted(codes)}
-    return eligibility, node, instance, {"desired_node_id": node.id, "device_id": device.id, "virtual_machine_id": vm.id}
+                   "actual_roots": roots, "drift_codes": sorted(codes)}
+    payload = {"desired_node_id": node.id, **roots} if any(roots.values()) else None
+    return eligibility, node, instance, payload
 
 
 def run_prune(cfg: Config, host: str, *, apply_changes: bool = False, operation_id: str | None = None) -> Envelope[PruneData]:
@@ -145,7 +132,7 @@ def run_prune(cfg: Config, host: str, *, apply_changes: bool = False, operation_
     if eligibility["result"] == "already_pruned":
         data.state = "noop"
         return _finish(op, data, [])
-    if eligibility["result"] not in {"eligible", "actual_already_pruned"}:
+    if eligibility["result"] != "eligible":
         return _finish(op, data, [_error("prune_ineligible", eligibility["reason"], eligibility=eligibility)])
     data.desired_operations = _desired_operations(snapshot, node, instance)
     try:

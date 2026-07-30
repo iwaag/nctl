@@ -34,27 +34,28 @@ def test_missing_desired_node_is_a_repeatable_noop():
     assert eligibility["result"] == "already_pruned"
 
 
-def test_actual_first_partial_progress_retries_only_desired_cleanup():
+def test_no_surviving_actual_roots_retries_desired_cleanup():
     snapshot = _snapshot().model_copy(update={"actual": ActualSnapshot()})
     eligibility, node, instance, payload = _resolve(snapshot, DriftResult(), "agfixture")
-    assert eligibility["result"] == "actual_already_pruned"
+    assert eligibility["result"] == "eligible"
     assert payload is None
-    assert eligibility["absent_actual_roots"] == ["virtual_machine", "device"]
-    assert eligibility["remaining_actual_roots"] == []
-    assert eligibility["actual_deletion_requested"] is False
+    assert eligibility["actual_roots"] == {"device_id": None, "virtual_machine_id": None}
     assert [operation["kind"] for operation in _desired_operations(snapshot, node, instance)] == ["desired_endpoint", "desired_compute_instance", "desired_node"]
 
 
-def test_partial_actual_cleanup_reports_exact_roots_and_never_requests_delete():
+def test_partial_actual_cleanup_plans_the_surviving_root():
     base = _snapshot()
     for actual, absent, remaining in (
-        (ActualSnapshot(devices=base.actual.devices), ["virtual_machine"], ["device"]),
-        (ActualSnapshot(virtual_machines=base.actual.virtual_machines), ["device"], ["virtual_machine"]),
+        (ActualSnapshot(devices=base.actual.devices, clusters=base.actual.clusters), ["virtual_machine"], ["device"]),
+        (ActualSnapshot(virtual_machines=base.actual.virtual_machines, clusters=base.actual.clusters), ["device"], ["virtual_machine"]),
     ):
         snapshot = base.model_copy(update={"actual": actual})
-        eligibility, _node, _instance, payload = _resolve(snapshot, DriftResult(), "agfixture")
-        assert eligibility["result"] == "actual_already_pruned"
-        assert eligibility["absent_actual_roots"] == absent
-        assert eligibility["remaining_actual_roots"] == remaining
-        assert eligibility["actual_deletion_requested"] is False
-        assert payload is None
+        drift = DriftResult()
+        if actual.virtual_machines:
+            instance = snapshot.desired.compute_instances[0]
+            drift = DriftResult(targets=[TargetStatus(target=Target(kind="compute_instance", id=instance.id, slug="agfixture"), status=Status.CONVERGED, diffs=[DiffRecord(target=Target(kind="compute_instance", id=instance.id), code="compute_instance_removal_complete", severity=Severity.INFO, message="done")])])
+        eligibility, _node, _instance, payload = _resolve(snapshot, drift, "agfixture")
+        assert eligibility["result"] == "eligible"
+        assert [name for name, value in eligibility["actual_roots"].items() if value is None] == [f"{name}_id" for name in absent]
+        assert [name for name, value in eligibility["actual_roots"].items() if value is not None] == [f"{name}_id" for name in remaining]
+        assert payload == {"desired_node_id": "node-1", **eligibility["actual_roots"]}

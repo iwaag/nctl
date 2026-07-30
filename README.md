@@ -756,11 +756,11 @@ generic VM lifecycle API.
 This removes only the planned LXC. `compute_instance_removal_complete` in fresh drift is successful
 removal evidence, so this reconcile ends `converged` with `ok: true`; unresolved or ambiguous
 removal evidence remains non-successful. After this converged state has been reviewed, `nctl prune
-GUEST` shows the separate exact-host ledger cleanup and `nctl prune GUEST --yes` removes its
-collected Actual dependents followed by the Desired tombstones. If a prior interrupted prune already
-removed either the retained VM or Device root, prune reports exactly which Actual roots are absent
-and which remain, requests no Actual deletion, and retries only Desired cleanup; this also covers a
-guest that never obtained a Device-level observation. Prune does not contact Proxmox or
+GUEST` shows the separate exact-host ledger cleanup and `nctl prune GUEST --yes` deletes every
+surviving linked Actual root before the Desired tombstones. The linked VirtualMachine and Device are
+independent roots: a guest without an initial nodeutils observation has no Device, so its retained
+VirtualMachine is still planned and deleted by itself. A retry similarly plans only roots still
+present; it never drops Desired tombstones while a known linked Actual root remains. Prune does not contact Proxmox or
 Ansible, retains Braindumps and prior operation evidence, and does not support QEMU, wildcard
 targets, schedules, or general provider disposal.
 
