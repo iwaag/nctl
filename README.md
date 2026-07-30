@@ -666,9 +666,11 @@ Desired row, an unmanaged guest, or a missing observation as deletion intent.
    destruction succeeded but that observation fails, retain the operation evidence and refresh
    observation; do not submit a second destroy blindly.
 
-This removes only the planned LXC. It does not delete Braindumps, Desired rows, VirtualMachine
-rows, or Device rows, and it does not support QEMU, wildcard targets, schedules, or general
-provider disposal.
+This removes only the planned LXC. After this converged state has been reviewed, `nctl prune
+GUEST` shows the separate exact-host ledger cleanup and `nctl prune GUEST --yes` removes its
+collected Actual dependents followed by the Desired tombstones. Prune does not contact Proxmox or
+Ansible, retains Braindumps and prior operation evidence, and does not support QEMU, wildcard
+targets, schedules, or general provider disposal.
 
 ## Adding a reconciler
 

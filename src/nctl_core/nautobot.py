@@ -77,8 +77,8 @@ class NautobotClient:
         self._raise_for_auth(response)
         return response
 
-    def rest_delete(self, path: str) -> httpx.Response:
-        response = self._request("delete", path)
+    def rest_delete(self, path: str, payload: dict[str, Any] | None = None) -> httpx.Response:
+        response = self._request("delete", path, json=payload)
         self._raise_for_auth(response)
         return response
 

@@ -17,6 +17,7 @@ RETAINED_COMMANDS = {
     "actual",
     "drift",
     "reconcile",
+    "prune",
     "lifecycle",
     "desired",
     "render",

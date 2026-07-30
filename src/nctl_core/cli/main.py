@@ -40,6 +40,7 @@ from nctl_core.hosts_intent_render import (
     write_hosts_intent_artifacts,
 )
 from nctl_core.lifecycle import LIFECYCLE_STATES, build_lifecycle, render_lifecycle_text
+from nctl_core.retirement_prune import render_prune_text, run_prune
 from nctl_core.desired_apply import apply_document
 from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
@@ -373,6 +374,20 @@ def reconcile(
     emit(envelope, json_output, render_reconcile_text)
     if any(error.code in ("unknown_host", "refresh_observation_requires_host") for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+@app.command()
+def prune(
+    host: Annotated[str, typer.Argument(help="Exact retired DesiredNode slug to prune after completed LXC removal.")],
+    config: ConfigOption = None,
+    yes: YesOption = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the nctl.prune.v1 envelope as JSON.")] = False,
+) -> None:
+    """Delete one fully-retired LXC's retained Actual then Desired ledger records."""
+    cfg = _load_config(config)
+    envelope = run_prune(cfg, host, apply_changes=yes)
+    emit(envelope, json_output, render_prune_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
