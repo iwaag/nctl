@@ -254,7 +254,7 @@ def test_observation_collects_caches_and_ingests_all_hosts(tmp_path: Path) -> No
     assert all(row.ingest_outcome == "updated" for row in result.hosts)
     assert (tmp_path / "dumps/node-a.json").is_file()
     assert (artifacts.root / "reports/node-b.json").is_file()
-    assert jobs.data["dry_run"] is False
+    assert "dry_run" not in jobs.data
     assert jobs.data["max_report_bytes"] == 4096
     assert commands.calls[0][0] == "ansible-playbook"
     assert commands.calls[0][1:5] == [

@@ -150,12 +150,13 @@ def _good_probe(key_blob: str = KEY_BLOB) -> SshProbeRunner:
     )
 
 
-def test_dry_run_renders_artifact_invokes_check_diff_and_emits_events(tmp_path, monkeypatch):
+def test_plan_renders_artifact_resolves_targets_and_never_invokes_external_tools(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
-    _write_managed_entry(cfg)
+    cfg.ansible.resolved_inventory(cfg.source_path.parent).write_text(
+        "all:\n  children:\n    dnsmasq_server:\n      hosts:\n        agdnsmasq: {}\n"
+    )
     calls = []
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
-    monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
 
     def fake_run(args, cwd, timeout):
         calls.append((args, cwd))
@@ -166,23 +167,25 @@ def test_dry_run_renders_artifact_invokes_check_diff_and_emits_events(tmp_path, 
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, probe=SshProbeRunner(
+        keyscan=lambda *_: (_ for _ in ()).throw(AssertionError("plan must not scan SSH keys")),
+        effective_config=lambda *_: (_ for _ in ()).throw(AssertionError("plan must not resolve SSH config")),
+        keygen_find=lambda *_: (_ for _ in ()).throw(AssertionError("plan must not inspect known_hosts")),
+    ))
 
     assert envelope.ok is True
-    assert envelope.data.mode == "dry-run"
+    assert envelope.data.mode == "plan"
     assert envelope.data.target_hosts == ["agdnsmasq"]
-    assert envelope.data.setup.exit_code == 0
-    assert envelope.data.ansible.exit_code == 0
-    assert envelope.data.ansible.recap["agdnsmasq"]["changed"] == 1
-    assert calls[1][0][-2:] == ["--check", "--diff"]
-    assert calls[2][0][-2:] == ["--check", "--diff"]
+    assert envelope.data.setup is None
+    assert envelope.data.ansible is None
+    assert calls == []
     artifact = cfg.events.resolved_log_dir() / envelope.data.operation_id / "artifacts/dnsmasq-records.conf"
     assert artifact.is_file()
     # fix_sshkey3 Step 3: the deployed conf bytes never embed operation_id.
     assert envelope.data.operation_id not in artifact.read_text()
     assert envelope.data.content_sha256 == dnsmasq_content_sha256(artifact.read_text())
     events = [json.loads(line)["event"] for line in (cfg.events.resolved_log_dir() / f"{envelope.data.operation_id}.jsonl").read_text().splitlines()]
-    assert events == ["started", "rendered", "setup_dry_run_completed", "dry_run_completed", "finished"]
+    assert events == ["started", "rendered", "planned", "finished"]
 
 
 def test_yes_runs_real_apply_without_check_flags(tmp_path, monkeypatch):
@@ -224,7 +227,7 @@ def test_yes_runs_real_apply_without_check_flags(tmp_path, monkeypatch):
 def test_blocked_render_stops_before_any_write_or_ansible_call(tmp_path, monkeypatch):
     """VM p3 Step 6 defense in depth: a blocked render must stop `nctl apply
     dnsmasq` before the artifact is written, SSH preflight runs, or Ansible
-    is invoked at all -- in both dry-run and apply mode."""
+    is invoked at all -- in both plan and apply mode."""
     cfg = _config(tmp_path)
     _write_managed_entry(cfg)
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _blocked_render(operation_id))
@@ -294,7 +297,10 @@ def test_ansible_failure_is_returned_with_exit_code_and_recap(tmp_path, monkeypa
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
     monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
 
+    calls = []
+
     def fake_run(args, cwd, timeout):
+        calls.append(args)
         if args[0] == "ansible-inventory":
             return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload(cfg)), "")
         if "setup_dnsmasq.yml" in args[3]:
@@ -308,10 +314,10 @@ def test_ansible_failure_is_returned_with_exit_code_and_recap(tmp_path, monkeypa
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
-    assert envelope.errors[0].code == "ansible_dry_run_failed"
+    assert envelope.errors[0].code == "ansible_apply_failed"
     assert envelope.data.setup.exit_code == 0
     assert envelope.data.ansible.exit_code == 2
     assert envelope.data.ansible.recap["agdnsmasq"]["unreachable"] == 1
@@ -335,7 +341,7 @@ def test_inventory_override_replaces_configured_inventory(tmp_path, monkeypatch)
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, inventory=override_inventory, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, inventory=override_inventory, probe=_good_probe())
 
     assert envelope.ok is True
     assert envelope.data.inventory_path == str(override_inventory)
@@ -370,7 +376,7 @@ def test_inventory_override_relative_path_resolves_against_cwd_not_playbook_dir(
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, inventory=relative_inventory, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, inventory=relative_inventory, probe=_good_probe())
 
     assert envelope.ok is True
     assert envelope.data.inventory_path == str(override_inventory.resolve())
@@ -405,7 +411,7 @@ def test_inventory_override_rejects_host_without_ssh_trust_vars(tmp_path, monkey
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, inventory=override_inventory)
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, inventory=override_inventory)
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "dnsmasq_inventory_untrusted_host"
@@ -428,7 +434,7 @@ def test_default_configured_inventory_is_also_subject_to_the_trust_gate(tmp_path
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg)
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True)
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "dnsmasq_inventory_untrusted_host"
@@ -448,7 +454,7 @@ def test_default_configured_inventory_with_a_valid_contract_and_matching_key_pro
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is True
 
@@ -471,7 +477,7 @@ def test_unenrolled_host_is_rejected_and_invokes_no_ansible_playbook(tmp_path, m
     calls = []
     monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "ssh_host_key_unenrolled"
@@ -487,7 +493,7 @@ def test_mismatched_offered_key_is_rejected_and_invokes_no_ansible_playbook(tmp_
     calls = []
     monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe(OTHER_KEY_BLOB))  # host now offers a different key
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe(OTHER_KEY_BLOB))  # host now offers a different key
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "ssh_host_key_mismatch"
@@ -515,7 +521,7 @@ def test_unreachable_route_is_rejected(tmp_path, monkeypatch):
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "ssh_host_key_unreachable"
@@ -548,7 +554,7 @@ def test_integer_ansible_port_is_scanned_at_that_port_not_22(tmp_path, monkeypat
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=probe)
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=probe)
 
     assert envelope.ok is True
     assert scanned_ports == [2222]
@@ -580,7 +586,7 @@ def test_string_ansible_port_is_rejected_before_keyscan(tmp_path, monkeypatch):
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=probe)
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=probe)
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "dnsmasq_inventory_untrusted_host"
@@ -598,7 +604,7 @@ def test_corrupt_managed_store_returns_structured_error_and_invokes_no_ansible(t
     calls = []
     monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "ssh_store_read_failed"
@@ -618,7 +624,7 @@ def test_malformed_store_line_returns_structured_error_and_invokes_no_ansible(tm
     calls = []
     monkeypatch.setattr("nctl_core.ansible._run_command", _fake_run_inventory_only(cfg, calls))
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "ssh_store_read_failed"
@@ -656,7 +662,7 @@ def test_production_style_host_vars_resolve_route_via_connection_path(tmp_path, 
 
     probe = SshProbeRunner(keyscan=keyscan, effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
 
-    envelope = build_dnsmasq_apply(cfg, probe=probe)
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=probe)
 
     assert envelope.ok is True, envelope.errors
     assert scanned == ["agdnsmasq.local"]
@@ -703,7 +709,7 @@ def test_unrendered_jinja_ansible_host_falls_back_to_connection_path_chain(tmp_p
 
     probe = SshProbeRunner(keyscan=keyscan, effective_config=lambda h, p: subprocess.CompletedProcess([], 0, "", ""), keygen_find=lambda p, h: subprocess.CompletedProcess([], 0, "", ""))
 
-    envelope = build_dnsmasq_apply(cfg, probe=probe)
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=probe)
 
     assert envelope.ok is True, envelope.errors
     assert scanned == ["192.168.0.2"]  # local_ip wins over mdns_hostname, never the raw "{{...}}" string
@@ -727,7 +733,7 @@ def test_non_empty_alias_differing_from_uuid_derived_value_is_rejected(tmp_path,
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "dnsmasq_inventory_untrusted_host"
@@ -756,7 +762,7 @@ def test_policy_weakening_ansible_ssh_common_args_is_rejected(tmp_path, monkeypa
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "dnsmasq_inventory_untrusted_host"
@@ -780,33 +786,40 @@ def test_missing_ansible_ssh_common_args_is_rejected(tmp_path, monkeypatch):
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
     assert envelope.errors[0].code == "dnsmasq_inventory_untrusted_host"
     assert "ansible_ssh_common_args_mismatch" in envelope.errors[0].message
 
 
-def test_dry_run_performs_the_same_preflight_and_never_mutates_trust(tmp_path, monkeypatch):
+def test_plan_does_not_perform_preflight_or_inspect_the_trust_store(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
-    _write_managed_entry(cfg)
-    known_hosts_path = cfg.resolved_ssh_known_hosts_file()
-    before = known_hosts_path.read_text()
+    cfg.ansible.resolved_inventory(cfg.source_path.parent).write_text(
+        "all:\n  children:\n    dnsmasq_server:\n      hosts:\n        agdnsmasq: {}\n"
+    )
     monkeypatch.setattr("nctl_core.dnsmasq_apply.build_dnsmasq_render", lambda cfg, operation_id=None: _render(operation_id))
     monkeypatch.setattr("nctl_core.dnsmasq_apply.shutil.which", lambda name: f"/usr/bin/{name}")
 
+    calls = []
+
     def fake_run(args, cwd, timeout):
+        calls.append(args)
         if args[0] == "ansible-inventory":
             return subprocess.CompletedProcess(args, 0, json.dumps(_inventory_payload(cfg)), "")
         return subprocess.CompletedProcess(args, 0, "agdnsmasq : ok=1 changed=0 unreachable=0 failed=0\n", "")
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, apply_changes=False, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, probe=SshProbeRunner(
+        keyscan=lambda *_: (_ for _ in ()).throw(AssertionError("plan must not scan SSH keys")),
+        effective_config=lambda *_: (_ for _ in ()).throw(AssertionError("plan must not resolve SSH config")),
+        keygen_find=lambda *_: (_ for _ in ()).throw(AssertionError("plan must not inspect known_hosts")),
+    ))
 
     assert envelope.ok is True
-    assert envelope.data.ssh_preflight[0]["status"] == "ready"
-    assert known_hosts_path.read_text() == before
+    assert envelope.data.ssh_preflight == []
+    assert calls == []
 
 
 def test_ssh_preflight_summary_is_populated_on_success(tmp_path, monkeypatch):
@@ -822,7 +835,7 @@ def test_ssh_preflight_summary_is_populated_on_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is True
     assert envelope.data.ssh_preflight == [
@@ -850,10 +863,10 @@ def test_setup_failure_aborts_before_records_deploy(tmp_path, monkeypatch):
 
     monkeypatch.setattr("nctl_core.ansible._run_command", fake_run)
 
-    envelope = build_dnsmasq_apply(cfg, probe=_good_probe())
+    envelope = build_dnsmasq_apply(cfg, apply_changes=True, probe=_good_probe())
 
     assert envelope.ok is False
-    assert envelope.errors[0].code == "ansible_setup_dry_run_failed"
+    assert envelope.errors[0].code == "ansible_setup_failed"
     assert envelope.data.setup.exit_code == 1
     assert envelope.data.ansible is None
     assert len(calls) == 2, "the records deploy playbook must not run after a setup failure"
@@ -1014,4 +1027,3 @@ def test_direct_apply_with_no_host_limit_still_targets_the_full_inventory_group(
     assert envelope.data.target_hosts == ["agdnsmasq", "agdnsmasq2"]
     assert "--limit" not in calls[1]
     assert "--limit" not in calls[2]
-

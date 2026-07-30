@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import yaml
 from pydantic import BaseModel, Field
 
 from nctl_core.ansible import (
@@ -62,7 +63,7 @@ def build_dnsmasq_apply(
     probe: SshProbeRunner | None = None,
     host_limit: list[str] | None = None,
 ) -> Envelope[DnsmasqApplyData]:
-    """Render an artifact, validate the SSH trust contract, and invoke the deploy playbook.
+    """Render a dnsmasq plan, or validate trust and invoke the deploy playbook.
 
     ``inventory``, if given, overrides ``cfg.ansible.resolved_inventory(...)`` for this run only
     -- the bootstrap-time escape hatch (`nctl apply dnsmasq --inventory PATH`) for actuating
@@ -70,12 +71,12 @@ def build_dnsmasq_apply(
     `reconcile` never passes this; it always actuates against the production inventory it
     regenerates itself.
 
-    ``probe`` is the injected `ssh-keyscan`/`ssh -G`/`ssh-keygen -F` boundary (fix_sshkey2 Step 4);
-    tests must always supply a fake so this never touches the real network or the developer's own
-    known_hosts files. Every target host -- the configured default inventory as much as an
-    explicit ``--inventory`` -- goes through the same closed trust-contract validation and
-    offered-key preflight before any Ansible process starts, in both dry-run and apply mode
-    (dry-run performs the identical read-only preflight and never mutates trust).
+    Without ``apply_changes``, this is a pure plan: it renders the artifact and resolves the
+    target group from the YAML inventory, but never invokes SSH or Ansible. ``probe`` is the
+    injected `ssh-keyscan`/`ssh -G`/`ssh-keygen -F` boundary used only by apply; tests must
+    always supply a fake so apply never touches the real network or the developer's own
+    known_hosts files. Every apply target goes through the closed trust-contract validation and
+    offered-key preflight before Ansible starts.
 
     ``host_limit`` (fix_sshkey4 Step 3) is reconcile-only: when given, it replaces the full
     `TARGET_GROUP` membership as the exact set scanned, deployed, and observed -- rejected if
@@ -84,7 +85,7 @@ def build_dnsmasq_apply(
     """
     probe = probe or default_ssh_probe_runner()
     op = OperationLog.start("apply dnsmasq", cfg.events.resolved_log_dir())
-    mode = "apply" if apply_changes else "dry-run"
+    mode = "apply" if apply_changes else "plan"
     data = DnsmasqApplyData(
         operation_id=op.operation_id,
         mode=mode,
@@ -129,11 +130,13 @@ def build_dnsmasq_apply(
         else cfg.ansible.resolved_inventory(cfg.source_path.parent)
     )
 
-    validation_error = _validate_paths(cfg, data, resolved_inventory)
+    validation_error = _validate_paths(cfg, data, resolved_inventory, require_apply_tools=apply_changes)
     if validation_error is not None:
         return _failure(op, data, [validation_error], validation_error.message)
 
-    inventory_result, inventory_error = _load_inventory(cfg, resolved_inventory)
+    inventory_result, inventory_error = (
+        _load_inventory(cfg, resolved_inventory) if apply_changes else _load_plan_inventory(resolved_inventory)
+    )
     if inventory_error is not None:
         return _failure(op, data, [inventory_error], inventory_error.message)
 
@@ -174,6 +177,11 @@ def build_dnsmasq_apply(
         target_hosts = sorted(host_limit)
 
     data.target_hosts = target_hosts
+
+    if not apply_changes:
+        op.emit("planned", "dnsmasq render and target plan completed", target_hosts=target_hosts)
+        op.finish(ok=True)
+        return Envelope.build(APPLY_DNSMASQ_SCHEMA, data, [])
 
     # fix_sshkey4 Step 3 (corrected contract 3): the deployed destination is
     # sourced once from validated reconciliation metadata, never a playbook
@@ -244,16 +252,12 @@ def build_dnsmasq_apply(
     ]
     if host_limit is not None:
         setup_args.extend(["--limit", ",".join(target_hosts)])
-    if not apply_changes:
-        setup_args.extend(["--check", "--diff"])
-
-    if apply_changes:
-        op.emit("setup_started", "dnsmasq daemon setup started", target_hosts=target_hosts)
+    op.emit("setup_started", "dnsmasq daemon setup started", target_hosts=target_hosts)
 
     setup_result = runner.run(setup_args, mode=mode, artifact_stem="ansible/dnsmasq-setup")
     data.setup = setup_result
     if setup_result.exit_code != 0:
-        code = "ansible_setup_failed" if mode == "apply" else "ansible_setup_dry_run_failed"
+        code = "ansible_setup_failed"
         message = (
             f"ansible-playbook daemon setup {mode} timed out after "
             f"{cfg.reconcile.ansible_timeout_seconds} seconds"
@@ -271,15 +275,7 @@ def build_dnsmasq_apply(
         )
         return _failure(op, data, [error], error.message)
 
-    if apply_changes:
-        op.emit("setup_completed", "dnsmasq daemon setup completed", exit_code=setup_result.exit_code, recap=setup_result.recap)
-    else:
-        op.emit(
-            "setup_dry_run_completed",
-            "dnsmasq daemon setup dry-run completed",
-            exit_code=setup_result.exit_code,
-            recap=setup_result.recap,
-        )
+    op.emit("setup_completed", "dnsmasq daemon setup completed", exit_code=setup_result.exit_code, recap=setup_result.recap)
 
     playbook_path = playbook_dir / DEPLOY_PLAYBOOK
     # fix_sshkey4 Step 3: source and destination travel together as one
@@ -300,16 +296,12 @@ def build_dnsmasq_apply(
     ]
     if host_limit is not None:
         args.extend(["--limit", ",".join(target_hosts)])
-    if not apply_changes:
-        args.extend(["--check", "--diff"])
-
-    if apply_changes:
-        op.emit("apply_started", "dnsmasq apply started", target_hosts=target_hosts)
+    op.emit("apply_started", "dnsmasq apply started", target_hosts=target_hosts)
 
     result = runner.run(args, mode=mode, artifact_stem="ansible/dnsmasq")
     data.ansible = result
     if result.exit_code != 0:
-        code = "ansible_apply_failed" if mode == "apply" else "ansible_dry_run_failed"
+        code = "ansible_apply_failed"
         message = (
             f"ansible-playbook {mode} timed out after {cfg.reconcile.ansible_timeout_seconds} seconds"
             if result.timed_out
@@ -322,10 +314,7 @@ def build_dnsmasq_apply(
         )
         return _failure(op, data, [error], error.message)
 
-    if apply_changes:
-        op.emit("apply_completed", "dnsmasq apply completed", exit_code=result.exit_code, recap=result.recap)
-    else:
-        op.emit("dry_run_completed", "dnsmasq dry-run completed", exit_code=result.exit_code, recap=result.recap)
+    op.emit("apply_completed", "dnsmasq apply completed", exit_code=result.exit_code, recap=result.recap)
     op.finish(ok=True)
     return Envelope.build(APPLY_DNSMASQ_SCHEMA, data, [])
 
@@ -360,7 +349,9 @@ def render_dnsmasq_apply_text(envelope: Envelope[DnsmasqApplyData]) -> str:
     return "\n".join(lines)
 
 
-def _validate_paths(cfg: Config, data: DnsmasqApplyData, inventory: Path) -> EnvelopeError | None:
+def _validate_paths(
+    cfg: Config, data: DnsmasqApplyData, inventory: Path, *, require_apply_tools: bool
+) -> EnvelopeError | None:
     playbook_dir = cfg.ansible.resolved_playbook_dir(cfg.source_path.parent)
     data.inventory_path = str(inventory)
 
@@ -383,7 +374,7 @@ def _validate_paths(cfg: Config, data: DnsmasqApplyData, inventory: Path) -> Env
                 "with `nctl render production --out <inventory-directory>`"
             ),
         )
-    if shutil.which("ansible-inventory") is None or shutil.which("ansible-playbook") is None:
+    if require_apply_tools and (shutil.which("ansible-inventory") is None or shutil.which("ansible-playbook") is None):
         return EnvelopeError(
             code="ansible_executable_missing",
             message="ansible-inventory and ansible-playbook must both be available on PATH",
@@ -406,6 +397,37 @@ def _load_inventory(cfg: Config, inventory: Path) -> tuple[dict[str, Any], Envel
         else "ansible_inventory_failed"
     )
     return {}, EnvelopeError(code=code, message=error)
+
+
+def _load_plan_inventory(inventory: Path) -> tuple[dict[str, Any], EnvelopeError | None]:
+    """Read the generated YAML inventory without invoking ``ansible-inventory``.
+
+    The plan intentionally supports nctl's generated YAML inventory format only; dynamic
+    inventories belong to the apply boundary because resolving them can execute arbitrary code.
+    """
+    try:
+        payload = yaml.safe_load(inventory.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return {}, EnvelopeError(code="ansible_inventory_invalid", message=f"invalid YAML inventory: {exc}")
+    if not isinstance(payload, dict) or not isinstance(payload.get("all"), dict):
+        return {}, EnvelopeError(
+            code="ansible_inventory_invalid",
+            message="dnsmasq plan requires an nctl-generated YAML inventory with an 'all' mapping",
+        )
+
+    groups: dict[str, dict[str, Any]] = {}
+
+    def collect(name: str, value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        groups[name] = value
+        children = value.get("children", {})
+        if isinstance(children, dict):
+            for child_name, child_value in children.items():
+                collect(str(child_name), child_value)
+
+    collect("all", payload["all"])
+    return groups, None
 
 
 def _inventory_host_vars(payload: dict[str, Any], hostname: str) -> dict[str, Any]:

@@ -12,17 +12,17 @@ runner = CliRunner()
 def _envelope(ok=True):
     data = DnsmasqApplyData(
         operation_id="01JTESTULID000000000000000",
-        mode="dry-run",
+        mode="plan",
         artifact_path="/tmp/artifact.conf",
         event_log_path="/tmp/events.jsonl",
         inventory_path="/tmp/inventory.yml",
         target_hosts=["agdnsmasq"],
     )
-    errors = [] if ok else [EnvelopeError(code="ansible_dry_run_failed", message="boom")]
+    errors = [] if ok else [EnvelopeError(code="ansible_apply_failed", message="boom")]
     return Envelope.build("nctl.apply.dnsmasq.v2", data, errors)
 
 
-def test_apply_dnsmasq_defaults_to_dry_run(monkeypatch):
+def test_apply_dnsmasq_defaults_to_plan(monkeypatch):
     seen = []
     monkeypatch.setattr(main, "_load_config", lambda path: object())
     monkeypatch.setattr(main, "build_dnsmasq_apply", lambda cfg, apply_changes=False, inventory=None: seen.append(apply_changes) or _envelope())
@@ -64,7 +64,7 @@ def test_apply_dnsmasq_failure_exits_one(monkeypatch):
     result = runner.invoke(main.app, ["apply", "dnsmasq", "--json"])
 
     assert result.exit_code == 1
-    assert json.loads(result.stdout)["errors"][0]["code"] == "ansible_dry_run_failed"
+    assert json.loads(result.stdout)["errors"][0]["code"] == "ansible_apply_failed"
 
 
 def test_apply_dnsmasq_inventory_option_is_passed_through(monkeypatch, tmp_path):

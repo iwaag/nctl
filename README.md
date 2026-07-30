@@ -141,12 +141,12 @@ observation, and `converged` when only warning/info diffs or no diffs remain. Ea
 stable `code`, `severity`, small `desired`/`actual` evidence values, contributing `sources`, and a
 human-readable `message`.
 
-`apply dnsmasq` renders into an operation-specific artifact, then runs the daemon-install playbook
-(`playbooks/bootstrap/setup_dnsmasq.yml`) followed by the deploy-only Ansible playbook, both in
-`--check --diff` mode by default (a setup failure aborts before the records deploy runs). Review
-that output, then use `--yes` for the real apply. The configured inventory must resolve at least
-one host in `dnsmasq_server`; an existing inventory file with an empty or missing group is rejected
-instead of succeeding as a no-op. Direct `apply dnsmasq` always targets the whole `dnsmasq_server`
+`apply dnsmasq` without `--yes` is a pure plan: it renders an operation-specific artifact and
+resolves the `dnsmasq_server` target group from the generated YAML inventory. It does not invoke
+SSH, `ansible-inventory`, or Ansible check mode. Review that plan, then use `--yes` for SSH
+preflight, daemon setup, and deployment. The configured inventory must resolve at least one host
+in `dnsmasq_server`; an existing inventory file with an empty or missing group is rejected instead
+of succeeding as a no-op. Direct `apply dnsmasq` always targets the whole `dnsmasq_server`
 group; a `reconcile`-driven `dnsmasq_config` action instead scans, deploys, and re-observes only its
 exact planned host set (`fix_sshkey4` Step 3), so a host-scoped reconcile can never actuate a
 sibling placement it never scanned. The deployed destination path is resolved exactly once from
@@ -533,7 +533,7 @@ instead of a structured nctl error code. A hand-written or otherwise-sourced inv
 these variables is outside the supported operational path: `nctl apply dnsmasq` rejects one
 (`dnsmasq_inventory_untrusted_host`) rather than silently falling back to endpoint-keyed
 verification -- for the normally configured inventory exactly as much as an explicit `--inventory`
-override, and in dry-run exactly as much as `--yes` (fix_sshkey2 Step 4; before that fix, only
+override when `--yes` is requested (fix_sshkey2 Step 4; before that fix, only
 `--inventory` was checked, and only for alias/node-ID presence). Passing the variable check is not
 enough on its own either: `apply dnsmasq` also re-scans the route resolved from the inventory's own
 host vars and requires the currently offered key to match a managed entry before Ansible starts,

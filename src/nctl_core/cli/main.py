@@ -315,7 +315,7 @@ def apply_dnsmasq(
     json_output: ApplyJsonOption = False,
     inventory: ApplyInventoryOption = None,
 ) -> None:
-    """Render and deploy dnsmasq configuration; dry-run with diff unless --yes is set."""
+    """Render a dnsmasq target plan, or deploy it with --yes."""
     cfg = _load_config(config)
     envelope = build_dnsmasq_apply(cfg, apply_changes=yes, inventory=inventory)
     emit(envelope, json_output, render_dnsmasq_apply_text)

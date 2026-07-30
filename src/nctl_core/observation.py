@@ -60,7 +60,6 @@ class IngestSummaryRow(BaseModel):
 
 class IngestSummary(BaseModel):
     schema_version: str
-    dry_run: bool
     results: list[IngestSummaryRow]
 
 
@@ -281,7 +280,6 @@ def run_observation(
                 {
                     "report_batch": json.dumps({"reports": reports}, sort_keys=True),
                     "policy_file": str(cfg.reconcile.ingest_policy_file),
-                    "dry_run": False,
                     "max_report_age_hours": cfg.reconcile.max_report_age_hours,
                     "max_report_bytes": cfg.reconcile.max_report_bytes,
                 },
@@ -367,8 +365,6 @@ def _load_ingest_summary(path: Path, expected_sources: set[str]) -> IngestSummar
         raise ValueError(f"invalid ingest summary artifact: {exc}") from exc
     if summary.schema_version != INGEST_SUMMARY_SCHEMA:
         raise ValueError(f"unsupported ingest summary schema: {summary.schema_version!r}")
-    if summary.dry_run:
-        raise ValueError("ingest summary unexpectedly reports dry_run=true")
     sources = [row.source for row in summary.results]
     if len(sources) != len(set(sources)) or set(sources) != expected_sources:
         raise ValueError(
