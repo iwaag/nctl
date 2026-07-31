@@ -99,12 +99,6 @@ def render_probe_hints(
         hints[service_names[service_id]]["endpoint"] = (
             f"{str(endpoint.protocol).lower()}://{str(address).split('/', 1)[0]}:{endpoint.port}"
         )
-        # The provider host may not resolve its own cluster DNS name. The
-        # endpoint remains the client-facing identity; this is a local-only
-        # observation fallback for the placement's own collector.
-        hints[service_names[service_id]]["local_endpoint"] = (
-            f"{str(endpoint.protocol).lower()}://127.0.0.1:{endpoint.port}"
-        )
     if profile_reconciliation:
         for service_id, (profile_name, _endpoint_id) in active_by_service.items():
             entry = profile_reconciliation.get(profile_name)
