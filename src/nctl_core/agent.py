@@ -60,6 +60,7 @@ class AgentTaskData(BaseModel):
     node_slug: str = ""
     session_id: str = ""
     model: str | None = None
+    runtime_version: str = ""
     duration_seconds: float = 0.0
     outcome: str = ""
     reply: str = ""
@@ -241,20 +242,20 @@ def build_agent_sessions(cfg: Config, host: str) -> Envelope[AgentSessionsData]:
         target = resolve_agent_target(cfg, host)
         with open_tunnel(cfg, target) as local_port:
             _probe_health(local_port, cfg.agent.connect_timeout_seconds)
-            with OpenCodeClient(f"http://127.0.0.1:{local_port}", timeout_seconds=cfg.agent.request_timeout_seconds) as api:
+            with OpenCodeClient(f"http://127.0.0.1:{local_port}", timeout_seconds=cfg.agent.connect_timeout_seconds) as api:
                 data.sessions = [_session_data(item) for item in api.list_sessions(str(target.workdir))]
         return Envelope.build(AGENT_SESSIONS_SCHEMA, data)
     except AgentApiError as exc:
-        error = _api_error(exc)
-    except AgentError as error:
-        pass
-    return Envelope.build(AGENT_SESSIONS_SCHEMA, data, [EnvelopeError(code=error.code, message=str(error), detail=error.detail)])
+        failure = _api_error(exc)
+    except AgentError as exc:
+        failure = exc
+    return Envelope.build(AGENT_SESSIONS_SCHEMA, data, [EnvelopeError(code=failure.code, message=str(failure), detail=failure.detail)])
 
 
 def _build_agent_task(cfg: Config, host: str, prompt: str, session_id: str | None) -> Envelope[AgentTaskData]:
     name, schema = ("agent send", AGENT_SEND_SCHEMA) if session_id else ("agent run", AGENT_RUN_SCHEMA)
     op = OperationLog.start(name, cfg.events.resolved_log_dir())
-    data = AgentTaskData(operation_id=op.operation_id, node_slug=host, session_id=session_id or "")
+    data = AgentTaskData(operation_id=op.operation_id, node_slug=host, session_id=session_id or "", model=cfg.agent.default_model, runtime_version=cfg.agent.runtime_version)
     started = time.monotonic()
     try:
         target = resolve_agent_target(cfg, host)
@@ -268,7 +269,7 @@ def _build_agent_task(cfg: Config, host: str, prompt: str, session_id: str | Non
                     if isinstance(model, dict):
                         data.model = "/".join(str(model.get(key, "")) for key in ("providerID", "modelID")).strip("/") or None
                 op.emit("session_ready", "session ready", host=host, session_id=data.session_id)
-                response = api.send_message(data.session_id, str(target.workdir), prompt)
+                response = api.send_and_wait(data.session_id, str(target.workdir), prompt, cfg.agent.request_timeout_seconds)
         data.reply = reply_text(response)
         data.duration_seconds = round(time.monotonic() - started, 3)
         data.outcome = "completed"
@@ -276,16 +277,16 @@ def _build_agent_task(cfg: Config, host: str, prompt: str, session_id: str | Non
         op.finish(True)
         return Envelope.build(schema, data)
     except AgentApiError as exc:
-        error = _api_error(exc)
-    except AgentError as error:
-        pass
+        failure = _api_error(exc)
+    except AgentError as exc:
+        failure = exc
     data.duration_seconds = round(time.monotonic() - started, 3)
-    data.outcome = "timed_out" if error.code == "agent_timeout" else "failed"
-    if not data.session_id and isinstance(error.detail.get("session_id"), str):
-        data.session_id = error.detail["session_id"]
-    op.emit("failed", str(error), level="error", code=error.code, host=host, session_id=data.session_id, prompt_length=len(prompt), duration_seconds=data.duration_seconds)
+    data.outcome = "timed_out" if failure.code == "agent_timeout" else "failed"
+    if not data.session_id and isinstance(failure.detail.get("session_id"), str):
+        data.session_id = failure.detail["session_id"]
+    op.emit("failed", str(failure), level="error", code=failure.code, host=host, session_id=data.session_id, prompt_length=len(prompt), duration_seconds=data.duration_seconds)
     op.finish(False)
-    return Envelope.build(schema, data, [EnvelopeError(code=error.code, message=str(error), detail=error.detail)])
+    return Envelope.build(schema, data, [EnvelopeError(code=failure.code, message=str(failure), detail=failure.detail)])
 
 
 def build_agent_run(cfg: Config, host: str, prompt: str) -> Envelope[AgentTaskData]:
@@ -304,7 +305,7 @@ def build_agent_abort(cfg: Config, host: str, session_id: str) -> Envelope[Agent
         target = resolve_agent_target(cfg, host)
         with open_tunnel(cfg, target) as local_port:
             _probe_health(local_port, cfg.agent.connect_timeout_seconds)
-            with OpenCodeClient(f"http://127.0.0.1:{local_port}", timeout_seconds=cfg.agent.request_timeout_seconds) as api:
+            with OpenCodeClient(f"http://127.0.0.1:{local_port}", timeout_seconds=cfg.agent.connect_timeout_seconds) as api:
                 data.accepted = api.interrupt(session_id)
         data.duration_seconds = round(time.monotonic() - started, 3)
         data.outcome = "interrupted"
@@ -312,11 +313,11 @@ def build_agent_abort(cfg: Config, host: str, session_id: str) -> Envelope[Agent
         op.finish(True)
         return Envelope.build(AGENT_ABORT_SCHEMA, data)
     except AgentApiError as exc:
-        error = _api_error(exc)
-    except AgentError as error:
-        pass
+        failure = _api_error(exc)
+    except AgentError as exc:
+        failure = exc
     data.duration_seconds = round(time.monotonic() - started, 3)
     data.outcome = "failed"
-    op.emit("failed", str(error), level="error", code=error.code, host=host, session_id=session_id, duration_seconds=data.duration_seconds)
+    op.emit("failed", str(failure), level="error", code=failure.code, host=host, session_id=session_id, duration_seconds=data.duration_seconds)
     op.finish(False)
-    return Envelope.build(AGENT_ABORT_SCHEMA, data, [EnvelopeError(code=error.code, message=str(error), detail=error.detail)])
+    return Envelope.build(AGENT_ABORT_SCHEMA, data, [EnvelopeError(code=failure.code, message=str(failure), detail=failure.detail)])

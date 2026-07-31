@@ -118,11 +118,21 @@ def test_run_timeout_keeps_created_session_and_uses_common_target_path(tmp_path,
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def create_session(self): return {"id": "ses_created"}
-        def send_message(self, *args): raise AgentApiError("agent_timeout", "timed out", {"session_id": "ses_created"})
+        def send_and_wait(self, *args): raise AgentApiError("agent_timeout", "timed out", {"session_id": "ses_created"})
 
     monkeypatch.setattr(agent, "OpenCodeClient", FakeApi)
     envelope = agent.build_agent_run(cfg, "agpc", "inspect")
     assert envelope.ok is False
     assert envelope.data.session_id == "ses_created"
+    assert envelope.data.runtime_version == "1.18.10"
+    assert envelope.data.model == "ollama/qwen3.6:35b-a3b-coding-nvfp4"
     assert envelope.data.outcome == "timed_out"
     assert envelope.errors[0].code == "agent_timeout"
+
+
+def test_new_operations_keep_unknown_host_structured(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    monkeypatch.setattr(agent, "resolve_agent_target", lambda cfg, host: (_ for _ in ()).throw(agent.AgentError("unknown_host", "missing", {"host": host})))
+    assert agent.build_agent_sessions(cfg, "missing").errors[0].code == "unknown_host"
+    assert agent.build_agent_run(cfg, "missing", "inspect").errors[0].code == "unknown_host"
+    assert agent.build_agent_abort(cfg, "missing", "ses_missing").errors[0].code == "unknown_host"

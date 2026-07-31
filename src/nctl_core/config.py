@@ -158,6 +158,8 @@ class AgentConfig(StrictModel):
     workdir_by_slug: dict[str, Path] = Field(default_factory=dict)
     connect_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     request_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
+    runtime_version: str = "1.18.10"
+    default_model: str = "ollama/qwen3.6:35b-a3b-coding-nvfp4"
 
     @field_validator("ssh_user")
     @classmethod
