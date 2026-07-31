@@ -155,7 +155,6 @@ class AgentConfig(StrictModel):
     identity_file: Path = Path("~/.ssh/ansible_key")
     macos_workdir: Path = Path("/Users/eiji/agent-work")
     linux_workdir: Path = Path("/home/eiji/agent-work")
-    workdir_by_slug: dict[str, Path] = Field(default_factory=dict)
     connect_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     request_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
     runtime_version: str = "1.18.10"

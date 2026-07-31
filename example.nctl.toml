@@ -57,7 +57,5 @@ connect_timeout_seconds = 15
 request_timeout_seconds = 300
 runtime_version = "1.18.10"
 default_model = "ollama/qwen3.6:35b-a3b-coding-nvfp4"
-# Use exact DesiredNode slugs where desired state does not declare host OS.
-[agent.workdir_by_slug]
-# agstudio = "/Users/eiji/agent-work"
-# agpc = "/home/eiji/agent-work"
+# The workdir is selected from nodeutils' observed Linux/Darwin OS.  Before
+# the first observation, declared_host_os is the bootstrap fallback.

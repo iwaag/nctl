@@ -19,6 +19,7 @@ from nctl_core.events import OperationLog
 from nctl_core.hosts_intent import select_mdns_endpoint
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
+from nctl_core.sources.actual import ActualSnapshot, fetch_actual_snapshot
 from nctl_core.sources.desired import DesiredNode, DesiredSnapshot, fetch_desired_snapshot
 from nctl_core.ssh_enroll import SshStoreReadError, _resolve_node, load_managed_ssh_store
 from nctl_core.ssh_trust import derive_host_key_alias
@@ -89,7 +90,19 @@ class AgentTarget:
     workdir: Path
 
 
-def _target_from_snapshot(cfg: Config, snapshot: DesiredSnapshot, host: str) -> AgentTarget:
+def _workdir_from_os(cfg: Config, os_name: str | None) -> Path | None:
+    """Map nodeutils/declared OS vocabulary to the OS-wide workspace setting."""
+    normalized = os_name.strip().lower() if os_name else ""
+    if normalized in {"darwin", "macos"}:
+        return cfg.agent.macos_workdir
+    if normalized == "linux":
+        return cfg.agent.linux_workdir
+    return None
+
+
+def _target_from_snapshot(
+    cfg: Config, snapshot: DesiredSnapshot, actual: ActualSnapshot, host: str
+) -> AgentTarget:
     node, error = _resolve_node(snapshot, host)
     if error is not None or node is None:
         raise AgentError("unknown_host", f"no DesiredNode with slug {host!r}", {"host": host})
@@ -99,15 +112,16 @@ def _target_from_snapshot(cfg: Config, snapshot: DesiredSnapshot, host: str) -> 
     override = next((item for item in snapshot.operational_overrides if item.node_id == node.id), None)
     ssh_port = override.ansible_port if override and override.ansible_port else 22
     declared_os = override.declared_host_os if override else None
-    configured_workdir = cfg.agent.workdir_by_slug.get(host)
-    if configured_workdir is not None:
-        workdir = configured_workdir
-    elif declared_os in {"macos", "darwin"}:
-        workdir = cfg.agent.macos_workdir
-    elif declared_os == "linux":
-        workdir = cfg.agent.linux_workdir
-    else:
-        raise AgentError("agent_workdir_unresolved", f"DesiredNode {host!r} needs [agent].workdir_by_slug or a declared_host_os")
+    devices_by_id = {device.id: device for device in actual.devices}
+    device = devices_by_id.get(node.realized_device_id or "")
+    observed_os = device.actual_facts().observed_system if device is not None else None
+    workdir = _workdir_from_os(cfg, observed_os) or _workdir_from_os(cfg, declared_os)
+    if workdir is None:
+        raise AgentError(
+            "agent_workdir_unresolved",
+            f"DesiredNode {host!r} needs a Linux/Darwin nodeutils observation or declared_host_os",
+            {"host": host, "observed_system": observed_os, "declared_host_os": declared_os},
+        )
     alias = derive_host_key_alias(node.id)
     try:
         store = load_managed_ssh_store(cfg.resolved_ssh_known_hosts_file())
@@ -129,7 +143,9 @@ def resolve_agent_target(cfg: Config, host: str) -> AgentTarget:
         raise AgentError("nautobot_token_error", str(exc)) from exc
     client = NautobotClient(cfg.nautobot.url, token)
     try:
-        return _target_from_snapshot(cfg, fetch_desired_snapshot(client), host)
+        desired = fetch_desired_snapshot(client)
+        actual = fetch_actual_snapshot(client)
+        return _target_from_snapshot(cfg, desired, actual, host)
     except NautobotError as exc:
         raise AgentError("desired_snapshot_failed", str(exc)) from exc
     finally:
