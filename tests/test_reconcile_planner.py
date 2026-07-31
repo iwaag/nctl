@@ -363,6 +363,34 @@ def test_service_profile_playbook_action():
     assert action.requires_observation is True
 
 
+def test_node_agent_profile_plans_only_the_scoped_placement_host():
+    agstudio = _node("n1", "agstudio")
+    agpc = _node("n2", "agpc")
+    svc = _service("s1", "node-agent")
+    placements = [
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="node_agent"),
+        _placement("p2", service_id="s1", node_id="n2", deployment_profile="node_agent"),
+    ]
+    snapshot = _snapshot(nodes=[agstudio, agpc], services=[svc], placements=placements)
+    reconciliation = {
+        "node_agent": ProfileReconciliation(
+            action=ProfileAction(kind="playbook", playbook="playbooks/agent/setup_opencode.yml")
+        )
+    }
+
+    plan = _build(
+        snapshot,
+        [_service_diff(svc, "service_not_running")],
+        PlanScope(kind="host", host_slug="agpc"),
+        reconciliation,
+    )
+
+    [action] = plan.actions
+    assert action.reconciler_id == "service_profile"
+    assert action.parameters["playbook"] == "playbooks/agent/setup_opencode.yml"
+    assert action.parameters["host_slugs"] == ["agpc"]
+
+
 def test_service_profile_dnsmasq_config_action():
     node = _node("n1", "agdnsmasq")
     svc = _service("s1", "dnsmasq")

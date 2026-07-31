@@ -18,6 +18,7 @@ _REPO_PROFILE_NAMES = {
     "manual_toolchain",
     "nomad_client",
     "nomad_server",
+    "node_agent",
     "prometheus",
     "prometheus_node_exporter",
 }
@@ -50,6 +51,7 @@ def test_real_repo_file_validates(tmp_path):
         "linux": "playbooks/nomad/setup_nomad_client.yml",
         "macos": "playbooks/nomad/setup_nomad_client_macos.yml",
     }
+    assert entries["node_agent"].action.playbook == "playbooks/agent/setup_opencode.yml"
 
 
 def test_profile_absent_from_reconciliation_is_simply_not_present(tmp_path):
