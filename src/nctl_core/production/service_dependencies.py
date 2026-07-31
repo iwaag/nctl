@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 from typing import Any, Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 from .derivation import EndpointCandidate
 from .model import BindingInput, NodeInput, PlacementInput
@@ -205,6 +206,59 @@ def _endpoint_url(endpoint: EndpointCandidate) -> str | None:
 
 def _error(code: str, message: str, evidence: dict[str, Any]) -> ServiceDependencyResolution:
     return ServiceDependencyResolution({}, [], code, message, evidence)
+
+
+def resolve_all_bindings(nodes: Iterable[NodeInput]) -> dict[str, dict[str, ServiceDependencyResolution]]:
+    """Resolve every binding on every active placement independently.
+
+    Unlike `resolve_service_dependencies` (inventory-rendering-oriented: it
+    stops at the first per-node binding error, since one bad binding already
+    blocks that node's compose), this keeps every binding's own resolution
+    so drift's binding-state evaluation (service_relation Phase 3) can show
+    every binding's own health rather than only the first error per node.
+    Keyed by consumer `placement_id` -> `binding_name`.
+    """
+
+    all_nodes = tuple(nodes)
+    endpoints = {endpoint.id: (node, endpoint) for node in all_nodes for endpoint in node.endpoints}
+    active_by_service: dict[str, list[tuple[NodeInput, PlacementInput]]] = {}
+    for node in all_nodes:
+        for placement in node.placements:
+            if placement.desired_state == "active" and placement.service_id:
+                active_by_service.setdefault(placement.service_id, []).append((node, placement))
+
+    result: dict[str, dict[str, ServiceDependencyResolution]] = {}
+    for consumer in all_nodes:
+        for placement in consumer.placements:
+            if placement.desired_state != "active":
+                continue
+            for binding in placement.bindings:
+                resolved = _resolve_binding(consumer, placement, binding, active_by_service, endpoints)
+                result.setdefault(placement.id, {})[binding.binding_name] = resolved
+    return result
+
+
+def normalize_endpoint_url(value: str) -> str:
+    """Normalize a binding endpoint URL for desired/observed comparison (service_relation Phase 3).
+
+    Applied identically to both the resolved desired URL and the observed
+    `configured_endpoint` at evaluation time (roadmap: "endpoint
+    normalization must be identical on the desired and observed sides").
+    Lowercases scheme and host, strips a trailing path slash, and brackets an
+    IPv6 host -- nothing cleverer. `urlsplit().hostname` always returns an
+    IPv6 host without its brackets, so re-bracketing is unconditional here
+    (never double-bracketed).
+    """
+    text = (value or "").strip()
+    if not text:
+        return text
+    parsed = urlsplit(text)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    host = f"[{hostname}]" if hostname and ":" in hostname else hostname
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    path = parsed.path.rstrip("/")
+    return urlunsplit((scheme, netloc, path, parsed.query, parsed.fragment))
 
 
 def reverse_service_bindings(nodes: Iterable[NodeInput]) -> dict[str, list[dict[str, str]]]:

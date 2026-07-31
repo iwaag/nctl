@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from .binding_evaluation import BindingCheck, evaluate_binding_state
+
 RUNNING_STATES = frozenset({"running", "active"})
 _OBSERVED_SYSTEM_MAP = {"Linux": "linux", "Darwin": "macos"}
 _MANAGED_FILE_UNREADABLE_STATUSES = frozenset({"unreadable", "too_large"})
@@ -113,6 +115,7 @@ def evaluate_active_placement(
     now: datetime,
     stale_after_hours: int,
     content_spec: ContentSpec | None = None,
+    binding_checks: dict[str, BindingCheck] | None = None,
 ) -> dict[str, Any]:
     device_id = placement.get("realized_device_id")
     policy = placement.get("actual_state_policy")
@@ -163,7 +166,45 @@ def evaluate_active_placement(
 
     if content_spec is not None:
         _evaluate_content_drift(report, entry, content_spec)
+    if binding_checks:
+        _evaluate_bindings(report, entry, binding_checks, now=now, stale_after_hours=stale_after_hours)
     return report
+
+
+def _evaluate_bindings(
+    report: dict[str, Any],
+    entry: dict[str, Any] | None,
+    binding_checks: dict[str, BindingCheck],
+    *,
+    now: datetime,
+    stale_after_hours: int,
+) -> None:
+    """Append `binding_*` gaps to `report` -- one more independent actual-state
+    dimension alongside process state and managed-file content (service_relation
+    Phase 3). Only bindings whose desired resolution succeeded this round are
+    checked; a resolver error is not duplicated here (it already surfaces as
+    node-local production-composition drift)."""
+
+    observed_bindings = entry.get("bindings") if isinstance(entry, dict) else None
+    bindings_report: dict[str, Any] = {}
+    for binding_name in sorted(binding_checks):
+        check = binding_checks[binding_name]
+        observed = observed_bindings.get(binding_name) if isinstance(observed_bindings, dict) else None
+        observed = observed if isinstance(observed, dict) else {}
+        evaluation = evaluate_binding_state(
+            binding_name=binding_name,
+            check=check,
+            configuration_status=observed.get("configuration_status"),
+            configured_endpoint=observed.get("configured_endpoint"),
+            reachability_status=observed.get("reachability_status"),
+            checked_at=observed.get("checked_at"),
+            now=now,
+            stale_after_hours=stale_after_hours,
+        )
+        bindings_report[binding_name] = {"state": evaluation.state, **evaluation.evidence}
+        if evaluation.gap_code:
+            report["gaps"].append({"code": evaluation.gap_code, **evaluation.evidence})
+    report["bindings"] = bindings_report
 
 
 def evaluate_placement_drift(
@@ -175,11 +216,13 @@ def evaluate_placement_drift(
     now: datetime,
     stale_after_hours: int,
     content_spec_by_service_id: dict[str, ContentSpec] | None = None,
+    binding_checks_by_placement_id: dict[str, dict[str, BindingCheck]] | None = None,
 ) -> dict[str, Any]:
     placements_by_service: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for placement in placements:
         placements_by_service[str(placement.get("service_id"))].append(placement)
     content_spec_by_service_id = content_spec_by_service_id or {}
+    binding_checks_by_placement_id = binding_checks_by_placement_id or {}
     report = {}
     for service in sorted(services, key=lambda item: str(item.get("id"))):
         service_id = str(service.get("id"))
@@ -188,7 +231,8 @@ def evaluate_placement_drift(
         rows = sorted(placements_by_service.get(service_id, []), key=lambda item: (str(item.get("instance_name")), str(item.get("placement_id"))))
         placement_reports = [
             evaluate_active_placement(
-                row, observed_key, devices, now=now, stale_after_hours=stale_after_hours, content_spec=content_spec
+                row, observed_key, devices, now=now, stale_after_hours=stale_after_hours, content_spec=content_spec,
+                binding_checks=binding_checks_by_placement_id.get(str(row.get("placement_id"))),
             )
             for row in rows
         ]

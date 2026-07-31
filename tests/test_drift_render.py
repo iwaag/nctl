@@ -441,3 +441,131 @@ def test_ambiguous_binding_provider_surfaces_as_node_local_drift(tmp_path):
     agok = next(t for t in envelope.data.targets if t.target.slug == "agok")
     agok_codes = {d.code for d in agok.diffs}
     assert "binding_provider_ambiguous" in agok_codes
+
+
+@respx.mock
+def test_misbound_binding_surfaces_in_service_drift(tmp_path):
+    """End-to-end (service_relation P3): a resolved binding whose observed
+    configured endpoint disagrees with the resolved desired endpoint shows
+    `binding_misbound` on the consumer's service drift."""
+
+    from datetime import datetime, timezone
+
+    fresh = datetime.now(timezone.utc).isoformat()
+    actual = {
+        "data": {
+            "devices": [{
+                "id": "dev-1", "name": "agok.local", "serial": None, "platform": None,
+                "_custom_field_data": {
+                    "host_system": "Linux", "primary_ip_address": "192.0.2.10",
+                    "primary_mac_address": "aa:bb:cc:dd:ee:ff", "network_interface": "eth0",
+                    "last_seen": fresh, "inventory_source": "nodeutils",
+                    "service_inventory_updated_at": fresh,
+                    "observed_services": {
+                        "node-agent": {
+                            "state": "active", "source": "systemd", "checked_at": fresh,
+                            "bindings": {
+                                "llm_provider": {
+                                    "configuration_status": "present",
+                                    "configured_endpoint": "http://wrong-host.example.test:11434/v1",
+                                    "reachability_status": "reachable",
+                                    "http_status": 200,
+                                    "checked_at": fresh,
+                                },
+                            },
+                        },
+                    },
+                },
+            }],
+            "virtual_machines": [],
+            "interfaces": [],
+            "ip_addresses": [],
+        }
+    }
+    desired = {
+        "data": {
+            "desired_nodes": [
+                {
+                    "id": "node-1", "slug": "agok", "name": "agok", "lifecycle": "ACTIVE",
+                    "node_type": "DEVICE", "role": None, "accepted_actual_types": ["DEVICE"],
+                    "expected_spec": {}, "realized_device": {"id": "dev-1"},
+                },
+                {
+                    "id": "node-2", "slug": "agstudio", "name": "agstudio", "lifecycle": "ACTIVE",
+                    "node_type": "DEVICE", "role": None, "accepted_actual_types": ["DEVICE"],
+                    "expected_spec": {}, "realized_device": None,
+                },
+            ],
+            "desired_endpoints": [
+                {
+                    "id": "ep-agok", "name": "primary", "endpoint_type": "PRIMARY",
+                    "ip_address": "192.0.2.10/32", "gateway_address": None, "ip_policy": "STATIC",
+                    "dns_name": "agok.example.test", "mdns_name": None, "vpn_dns_name": None,
+                    "mac_address": "aa:bb:cc:dd:ee:ff", "protocol": None, "port": None,
+                    "generate_dnsmasq": False, "dnsmasq_record_type": "HOST_RECORD",
+                    "realized_ip_address": None,
+                    "desired_node": {"id": "node-1", "slug": "agok"},
+                },
+                {
+                    "id": "ep-ollama", "name": "ollama", "endpoint_type": "SERVICE",
+                    "ip_address": None, "gateway_address": None, "ip_policy": None,
+                    "dns_name": "agstudio.example.test", "mdns_name": None, "vpn_dns_name": None,
+                    "mac_address": None, "protocol": "http", "port": 11434,
+                    "generate_dnsmasq": False, "dnsmasq_record_type": None,
+                    "realized_ip_address": None,
+                    "desired_node": {"id": "node-2", "slug": "agstudio"},
+                },
+            ],
+            "desired_ip_ranges": [],
+            "desired_node_operational_overrides": [],
+            "desired_service_placements": [
+                {
+                    "id": "agent-placement", "desired_service": {"id": "svc-agent"},
+                    "desired_node": {"id": "node-1"}, "desired_endpoint": None,
+                    "instance_name": "node-agent", "desired_state": "ACTIVE",
+                    "deployment_profile": "node_agent", "config_schema_version": "1", "config": {},
+                },
+                {
+                    "id": "ollama-1", "desired_service": {"id": "svc-ollama"},
+                    "desired_node": {"id": "node-2"}, "desired_endpoint": {"id": "ep-ollama"},
+                    "instance_name": "ollama-1", "desired_state": "ACTIVE",
+                    "deployment_profile": "ollama", "config_schema_version": "1", "config": {},
+                },
+            ],
+            "desired_services": [
+                {"id": "svc-agent", "slug": "node-agent", "name": "node-agent", "lifecycle": "ACTIVE"},
+                {"id": "svc-ollama", "slug": "ollama", "name": "ollama", "lifecycle": "ACTIVE"},
+            ],
+            "desired_service_bindings": [
+                {
+                    "id": "binding-1", "binding_name": "llm_provider",
+                    "consumer_placement": {"id": "agent-placement"},
+                    "provider_service": {"id": "svc-ollama", "slug": "ollama"},
+                }
+            ],
+        }
+    }
+    _mock_graphql(desired, actual)
+    cfg = make_config(tmp_path)
+    (tmp_path / "ansible_agdev" / "vars" / "deployment_profiles.yml").write_text(
+        "deployment_profiles:\n"
+        "  node_agent: {group: node_agents, config_schema_version: '1', variables: {}}\n"
+        "  ollama: {group: ollama_servers, config_schema_version: '1', variables: {}}\n"
+        "deployment_profile_reconciliation:\n"
+        "  node_agent:\n"
+        "    action:\n"
+        "      kind: playbook\n"
+        "      playbook: playbooks/agent/setup_opencode.yml\n"
+        "      bindings:\n"
+        "        llm_provider:\n"
+        "          config_file: ~/.config/opencode/opencode.json\n"
+        "          json_path: provider.ollama.options.baseURL\n"
+        "  ollama:\n"
+        "    observe_only: true\n"
+    )
+
+    envelope = build_drift(cfg)
+
+    node_agent_service = next(t for t in envelope.data.targets if t.target.slug == "node-agent")
+    codes = {d.code for d in node_agent_service.diffs}
+    assert "binding_misbound" in codes

@@ -242,3 +242,79 @@ def test_reverse_service_bindings_ignores_inactive_consumer_placements():
     )
 
     assert reverse_service_bindings([consumer, provider]) == {}
+
+
+# --- resolve_all_bindings (service_relation Phase 3) --------------------------
+
+
+def test_resolve_all_bindings_keys_by_placement_and_binding_name():
+    from nctl_core.production.service_dependencies import resolve_all_bindings
+
+    provider = _ollama_provider()
+    consumer = _agent_consumer([_binding("b1", "llm_provider", "ollama")])
+
+    resolved = resolve_all_bindings([consumer, provider])
+
+    assert resolved["agent"]["llm_provider"].error_code is None
+    assert resolved["agent"]["llm_provider"].variables == {
+        "nintent_opencode_ollama_url": "http://agstudio.local:11434/v1"
+    }
+
+
+def test_resolve_all_bindings_does_not_stop_at_the_first_per_node_error():
+    from nctl_core.production.service_dependencies import resolve_all_bindings
+
+    consumer = _agent_consumer([
+        _binding("b1", "llm_provider", "ollama"),  # provider missing -> error
+        _binding("b2", "second_provider", "second-service"),  # undeclared name -> error
+    ])
+
+    resolved = resolve_all_bindings([consumer])["agent"]
+
+    assert resolved["llm_provider"].error_code == "binding_provider_missing"
+    assert resolved["second_provider"].error_code == "binding_name_undeclared"
+
+
+def test_resolve_all_bindings_empty_for_no_bindings():
+    from nctl_core.production.service_dependencies import resolve_all_bindings
+
+    consumer = _node("plain", "agplain", placements=[_placement("agent", "node-agent", profile="node_agent")])
+
+    assert resolve_all_bindings([consumer]) == {}
+
+
+# --- normalize_endpoint_url (service_relation Phase 3) ------------------------
+
+
+def test_normalize_endpoint_url_lowercases_scheme_and_host():
+    from nctl_core.production.service_dependencies import normalize_endpoint_url
+
+    assert normalize_endpoint_url("HTTP://AgStudio.Home.Arpa:11434/v1") == "http://agstudio.home.arpa:11434/v1"
+
+
+def test_normalize_endpoint_url_strips_trailing_slash():
+    from nctl_core.production.service_dependencies import normalize_endpoint_url
+
+    assert normalize_endpoint_url("http://agstudio.home.arpa:11434/v1/") == "http://agstudio.home.arpa:11434/v1"
+
+
+def test_normalize_endpoint_url_brackets_bare_ipv6_host():
+    from nctl_core.production.service_dependencies import normalize_endpoint_url
+
+    assert normalize_endpoint_url("http://[fe80::1]:11434/v1") == "http://[fe80::1]:11434/v1"
+
+
+def test_normalize_endpoint_url_of_empty_string_is_empty():
+    from nctl_core.production.service_dependencies import normalize_endpoint_url
+
+    assert normalize_endpoint_url("") == ""
+    assert normalize_endpoint_url("   ") == ""
+
+
+def test_normalize_endpoint_url_is_identical_for_desired_and_observed_forms():
+    from nctl_core.production.service_dependencies import normalize_endpoint_url
+
+    desired = "http://agstudio.home.arpa:11434/v1"
+    observed = "HTTP://AgStudio.Home.Arpa:11434/v1/"
+
+    assert normalize_endpoint_url(desired) == normalize_endpoint_url(observed)

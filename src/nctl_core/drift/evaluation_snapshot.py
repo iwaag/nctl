@@ -23,9 +23,12 @@ from datetime import datetime, timezone
 from nctl_core.sources.actual import ActualInterface
 from nctl_core.production.adapter import build_production_node_inputs
 from nctl_core.production.derivation import DerivationFailure, resolve_operational_values
+from nctl_core.production.model import NodeInput
+from nctl_core.production.service_dependencies import resolve_all_bindings
 from nctl_core.reconcile.profiles import ProfileReconciliation
 from nctl_core.sources.snapshot import SourceSnapshot
 
+from .binding_evaluation import BindingCheck
 from .endpoint_evaluation import evaluate_endpoint_intent
 from .evaluation import EvaluationResult
 from .node_evaluation import evaluate_node_intent
@@ -96,7 +99,8 @@ def evaluate_all_services(
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
     effective_by_node = {}
     operation_generated_at = generated_at or snapshot.fetched_at.isoformat()
-    for node_input in build_production_node_inputs(snapshot):
+    node_inputs = list(build_production_node_inputs(snapshot))
+    for node_input in node_inputs:
         try:
             effective_by_node[node_input.id] = resolve_operational_values(
                 node_id=node_input.id,
@@ -137,14 +141,34 @@ def evaluate_all_services(
         for device in snapshot.actual.devices
     }
     content_spec_by_service_id = _content_spec_by_service_id(snapshot, placement_rows, profile_reconciliation)
-    placement_report = evaluate_placement_drift(
-        [{"id": service.id, "name": service.name} for service in snapshot.desired.services],
-        placement_rows,
-        device_facts,
-        {device.id: node.id for node in snapshot.desired.nodes for device in [devices_by_id.get(node.realized_device_id or "")] if device},
-        now=_parse_now(generated_at),
-        stale_after_hours=stale_after_hours,
+    services_summary = [{"id": service.id, "name": service.name} for service in snapshot.desired.services]
+    device_node_map = {
+        device.id: node.id for node in snapshot.desired.nodes for device in [devices_by_id.get(node.realized_device_id or "")] if device
+    }
+    now = _parse_now(generated_at)
+
+    # A consumer binding's `binding_provider_not_converged` gap (idea-A §6)
+    # needs its provider service's own convergence status, which this same
+    # function computes -- so process/content drift is evaluated once first
+    # (no binding checks yet) purely to learn each service's own status,
+    # then again with binding checks now that provider statuses are known.
+    provisional_report = evaluate_placement_drift(
+        services_summary, placement_rows, device_facts, device_node_map,
+        now=now, stale_after_hours=stale_after_hours,
         content_spec_by_service_id=content_spec_by_service_id,
+    )
+    provider_converged_by_service_id = {
+        service_id: entry["status"] == "satisfied" for service_id, entry in provisional_report.items()
+    }
+    binding_checks_by_placement_id = _binding_checks_by_placement_id(
+        node_inputs, profile_reconciliation, provider_converged_by_service_id
+    )
+
+    placement_report = evaluate_placement_drift(
+        services_summary, placement_rows, device_facts, device_node_map,
+        now=now, stale_after_hours=stale_after_hours,
+        content_spec_by_service_id=content_spec_by_service_id,
+        binding_checks_by_placement_id=binding_checks_by_placement_id,
     )
 
     results = {}
@@ -285,6 +309,37 @@ def _content_spec_by_service_id(
             expected_path=spec.path,
             digest_algo=spec.digest,
         )
+    return result
+
+
+def _binding_checks_by_placement_id(
+    node_inputs: list[NodeInput],
+    profile_reconciliation: dict[str, ProfileReconciliation] | None,
+    provider_converged_by_service_id: dict[str, bool],
+) -> dict[str, dict[str, BindingCheck]]:
+    """One `BindingCheck` per (consumer placement, binding) whose desired
+    resolution succeeded this round (service_relation Phase 3). A binding
+    whose resolution errored (ambiguous provider, cycle, ...) is skipped --
+    it already surfaces as node-local production-composition drift via
+    `production/composer.py`'s `LocalCompositionError` path, and duplicating
+    it here would double-report the same underlying problem.
+    """
+    if not profile_reconciliation:
+        return {}
+    placement_service_id = {
+        placement.id: placement.service_id for node in node_inputs for placement in node.placements
+    }
+    result: dict[str, dict[str, BindingCheck]] = {}
+    for placement_id, by_binding in resolve_all_bindings(node_inputs).items():
+        for binding_name, resolution in by_binding.items():
+            if resolution.error_code is not None or not resolution.variables:
+                continue
+            provider_placement_id = resolution.provenance[0]["provider_placement_id"]
+            provider_service_id = placement_service_id.get(provider_placement_id)
+            result.setdefault(placement_id, {})[binding_name] = BindingCheck(
+                desired_url=next(iter(resolution.variables.values())),
+                provider_converged=bool(provider_converged_by_service_id.get(provider_service_id, False)),
+            )
     return result
 
 

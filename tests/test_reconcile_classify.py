@@ -47,6 +47,14 @@ _DYNAMIC_CODES = {
     "ipam_reconcile_observation_missing",
     "ipam_reconcile_observation_mismatch",
     "ipam_reconcile_observation_ambiguous",
+    # service_relation Phase 3: `_evaluate_bindings` appends
+    # `{"code": evaluation.gap_code, ...}` from `BindingEvaluation.gap_code`,
+    # a variable, not a literal.
+    "binding_unknown",
+    "binding_unbound",
+    "binding_misbound",
+    "binding_unreachable",
+    "binding_provider_not_converged",
 }
 
 # Informational summaries are deliberately not reconciliation inputs. Keeping
@@ -171,3 +179,26 @@ def test_manual_review_table_from_plan_md_step5(code):
     result = classify(code, target_kind="node")
     assert result.classification == Classification.MANUAL_REVIEW
     assert result.reconciler_id is None
+
+
+@pytest.mark.parametrize("code", ["binding_unbound", "binding_misbound"])
+def test_binding_repair_codes_route_to_service_profile(code):
+    # service_relation Phase 3: rerunning the consumer's own profile action
+    # rewrites its config slot from resolved desired state.
+    result = classify(code, target_kind="service")
+    assert result.classification == Classification.AUTOMATIC
+    assert result.reconciler_id == "service_profile"
+
+
+@pytest.mark.parametrize("code", ["binding_unreachable", "binding_provider_not_converged"])
+def test_binding_provider_side_codes_are_manual_review(code):
+    # The consumer's own playbook cannot fix a dead or non-converged provider.
+    result = classify(code, target_kind="service")
+    assert result.classification == Classification.MANUAL_REVIEW
+    assert result.reconciler_id is None
+
+
+def test_binding_unknown_routes_to_observe_node():
+    result = classify("binding_unknown", target_kind="service")
+    assert result.classification == Classification.OBSERVATION
+    assert result.reconciler_id == "observe_node"

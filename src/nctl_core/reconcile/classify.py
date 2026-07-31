@@ -57,6 +57,10 @@ _OBSERVATION_CODES = frozenset(
         # passes observed_facts={}, never None) but kept classified rather
         # than silently unreachable, matching this table's fail-closed intent.
         "service_observed_facts_unknown",
+        # service_relation Phase 3: no binding evidence, evidence unreadable,
+        # or stale -- a fresh observation may resolve or refine this before
+        # any actuation is considered.
+        "binding_unknown",
     }
 )
 
@@ -90,6 +94,11 @@ _SERVICE_PROFILE_CODES = frozenset(
         "service_config_missing",
         "service_config_unreadable",
         "service_config_mismatch",
+        # service_relation Phase 3: rerunning the consumer's own profile
+        # action (e.g. setup_opencode.yml) rewrites its config slot from
+        # resolved desired state -- the actual repair for both codes.
+        "binding_unbound",
+        "binding_misbound",
     }
 )
 
@@ -184,6 +193,10 @@ _MANUAL_REVIEW_CODES = frozenset(
         "binding_endpoint_missing",
         "binding_endpoint_invalid",
         "binding_endpoint_unusable",
+        # service_relation Phase 3: the consumer's own playbook cannot fix a
+        # dead or non-converged provider -- provider-side or manual review.
+        "binding_unreachable",
+        "binding_provider_not_converged",
         "vmid_out_of_range",
     }
 )
