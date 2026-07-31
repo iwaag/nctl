@@ -23,6 +23,11 @@ against the live dev Nautobot instance, 2026-07-15) because the ported
 JSONField/ForeignKey fields on the nintent models, not derived, so adding them
 here is a schema-completeness fix rather than new domain logic.
 
+service_relation Phase 2 addition: `desired_service_bindings` (empirically
+checked against the live scratch Nautobot, 2026-08-01) carries the
+`DesiredServiceBinding` rows that replaced the `llm_provider_service` config
+key; the resolver in `production/service_dependencies.py` is their consumer.
+
 Compute roots are decoded here as transport data. Their pure row models,
 fixture-bound validation, collection assembly, and source-issue policy live
 in `nctl_core.compute`. Decode-time malformed-MAC tolerance stays here so an
@@ -136,6 +141,12 @@ DESIRED_QUERY = """
     name
     lifecycle
   }
+  desired_service_bindings {
+    id
+    binding_name
+    consumer_placement { id }
+    provider_service { id slug }
+  }
   desired_compute_platforms {
     id
     name
@@ -248,6 +259,19 @@ class DesiredService(BaseModel):
     slug: str
     name: str
     lifecycle: str
+
+
+class DesiredServiceBinding(BaseModel):
+    """One service-to-service binding row (idea-A §3.1); identity is
+    `(consumer_placement, binding_name)`, enforced by nintent at write time."""
+
+    id: str
+    binding_name: str
+    consumer_placement_id: str
+    provider_service_id: str
+    provider_service_slug: str
+
+
 class DesiredSnapshot(BaseModel):
     nodes: list[DesiredNode] = []
     endpoints: list[DesiredEndpoint] = []
@@ -255,6 +279,7 @@ class DesiredSnapshot(BaseModel):
     operational_overrides: list[DesiredNodeOperationalOverride] = []
     placements: list[DesiredServicePlacement] = []
     services: list[DesiredService] = []
+    service_bindings: list[DesiredServiceBinding] = []
     compute_platforms: list[DesiredComputePlatform] = []
     compute_instances: list[DesiredComputeInstance] = []
     source_issues: list[DesiredSourceIssue] = []
@@ -280,6 +305,7 @@ def fetch_desired_snapshot(client: NautobotClient) -> DesiredSnapshot:
         ],
         placements=[_build_placement(row) for row in data["desired_service_placements"]],
         services=[_build_service(row) for row in data["desired_services"]],
+        service_bindings=[_build_service_binding(row) for row in data["desired_service_bindings"]],
         compute_platforms=compute_platforms,
         compute_instances=compute_instances,
         source_issues=source_issues,
@@ -388,6 +414,17 @@ def _build_service(row: dict[str, Any]) -> DesiredService:
         slug=row["slug"],
         name=row["name"],
         lifecycle=_lower(row["lifecycle"]),
+    )
+
+
+def _build_service_binding(row: dict[str, Any]) -> DesiredServiceBinding:
+    provider = row["provider_service"]
+    return DesiredServiceBinding(
+        id=row["id"],
+        binding_name=row["binding_name"],
+        consumer_placement_id=row["consumer_placement"]["id"],
+        provider_service_id=provider["id"],
+        provider_service_slug=provider["slug"],
     )
 
 

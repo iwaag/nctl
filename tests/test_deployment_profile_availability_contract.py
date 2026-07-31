@@ -22,6 +22,7 @@ EMPTY_DESIRED_RESPONSE = {
         "desired_node_operational_overrides": [],
         "desired_service_placements": [],
         "desired_services": [],
+        "desired_service_bindings": [],
     }
 }
 

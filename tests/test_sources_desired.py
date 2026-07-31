@@ -40,6 +40,7 @@ def _base_response(**overrides) -> dict:
         "desired_node_operational_overrides": [],
         "desired_service_placements": [],
         "desired_services": [],
+        "desired_service_bindings": [],
         "desired_compute_platforms": [],
         "desired_compute_instances": [],
     }
@@ -206,6 +207,14 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "lifecycle": "ACTIVE",
                         }
                     ],
+                    "desired_service_bindings": [
+                        {
+                            "id": "binding-1",
+                            "binding_name": "llm_provider",
+                            "consumer_placement": {"id": "placement-1"},
+                            "provider_service": {"id": "service-1", "slug": "dnsmasq-service"},
+                        }
+                    ],
                     "desired_compute_platforms": [_healthy_platform()],
                     "desired_compute_instances": [_healthy_instance()],
                 }
@@ -266,6 +275,12 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     service = snapshot.services[0]
     assert service.lifecycle == "active"
 
+    binding = snapshot.service_bindings[0]
+    assert binding.binding_name == "llm_provider"
+    assert binding.consumer_placement_id == "placement-1"
+    assert binding.provider_service_id == "service-1"
+    assert binding.provider_service_slug == "dnsmasq-service"
+
 def test_query_requests_all_desired_collections():
     for field in (
         "desired_nodes",
@@ -274,6 +289,7 @@ def test_query_requests_all_desired_collections():
         "desired_node_operational_overrides",
         "desired_service_placements",
         "desired_services",
+        "desired_service_bindings",
         "desired_compute_platforms",
         "desired_compute_instances",
     ):

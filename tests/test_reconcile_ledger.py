@@ -85,6 +85,7 @@ def _graphql_desired_node_response(realized_device_id: str | None = None, realiz
             "desired_node_operational_overrides": [],
             "desired_service_placements": [],
             "desired_services": [],
+            "desired_service_bindings": [],
             "desired_compute_platforms": [],
             "desired_compute_instances": [],
         }
@@ -184,7 +185,7 @@ def test_link_actual_node_post_patch_missing_node_preserves_mutation_evidence():
         "data": {
             "desired_nodes": [], "desired_endpoints": [], "desired_ip_ranges": [],
             "desired_node_operational_overrides": [], "desired_service_placements": [],
-            "desired_services": [], "desired_compute_platforms": [],
+            "desired_services": [], "desired_service_bindings": [], "desired_compute_platforms": [],
             "desired_compute_instances": [],
         }
     }
@@ -261,7 +262,7 @@ def test_link_actual_node_reports_node_fetch_failed_when_node_is_absent_from_sna
         return_value=httpx.Response(
             200, json={"data": {"desired_nodes": [], "desired_endpoints": [], "desired_ip_ranges": [],
                                  "desired_node_operational_overrides": [], "desired_service_placements": [],
-                                 "desired_services": [], "desired_compute_platforms": [],
+                                 "desired_services": [], "desired_service_bindings": [], "desired_compute_platforms": [],
                                  "desired_compute_instances": []}}
         )
     )

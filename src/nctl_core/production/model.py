@@ -11,6 +11,16 @@ from .derivation import EffectiveOperationalValues, EndpointCandidate, Operation
 
 
 @dataclass(frozen=True)
+class BindingInput:
+    """One `DesiredServiceBinding` row attached to its consumer placement."""
+
+    id: str
+    binding_name: str
+    provider_service_id: str
+    provider_service_slug: str
+
+
+@dataclass(frozen=True)
 class PlacementInput:
     id: str
     instance_name: str
@@ -21,6 +31,7 @@ class PlacementInput:
     service_id: str = ""
     service_slug: str = ""
     endpoint_id: str | None = None
+    bindings: tuple[BindingInput, ...] = ()
 
 
 @dataclass(frozen=True)

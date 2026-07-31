@@ -16,12 +16,13 @@ from nctl_core.sources.desired import (
     DesiredNode,
     DesiredNodeOperationalOverride,
     DesiredService,
+    DesiredServiceBinding,
     DesiredServicePlacement,
 )
 from nctl_core.sources.snapshot import SourceSnapshot
 from nctl_core.compute.manual_initial_access import awaiting_manual_initial_access
 
-from .model import NodeInput, PlacementInput, RealizedState
+from .model import BindingInput, NodeInput, PlacementInput, RealizedState
 from .derivation import EndpointCandidate, OperationalOverride
 
 
@@ -35,11 +36,14 @@ def build_production_node_inputs(snapshot: SourceSnapshot) -> list[NodeInput]:
         placements_by_node[placement.node_id].append(placement)
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
     services_by_id = {service.id: service for service in snapshot.desired.services}
+    bindings_by_placement: dict[str, list[DesiredServiceBinding]] = defaultdict(list)
+    for binding in snapshot.desired.service_bindings:
+        bindings_by_placement[binding.consumer_placement_id].append(binding)
 
     node_inputs = []
     for node in sorted(snapshot.desired.nodes, key=lambda n: n.slug):
         placements = tuple(
-            _placement_input(placement, services_by_id)
+            _placement_input(placement, services_by_id, bindings_by_placement)
             for placement in sorted(placements_by_node.get(node.id, ()), key=lambda p: p.instance_name)
         )
         node_inputs.append(
@@ -94,7 +98,9 @@ def _operational_override(item: DesiredNodeOperationalOverride | None) -> Operat
 
 
 def _placement_input(
-    placement: DesiredServicePlacement, services_by_id: dict[str, DesiredService]
+    placement: DesiredServicePlacement,
+    services_by_id: dict[str, DesiredService],
+    bindings_by_placement: dict[str, list[DesiredServiceBinding]],
 ) -> PlacementInput:
     service = services_by_id.get(placement.service_id)
     return PlacementInput(
@@ -107,6 +113,17 @@ def _placement_input(
         service_id=placement.service_id,
         service_slug=service.slug if service is not None else "",
         endpoint_id=placement.endpoint_id,
+        bindings=tuple(
+            BindingInput(
+                id=binding.id,
+                binding_name=binding.binding_name,
+                provider_service_id=binding.provider_service_id,
+                provider_service_slug=binding.provider_service_slug,
+            )
+            for binding in sorted(
+                bindings_by_placement.get(placement.id, ()), key=lambda item: (item.binding_name, item.id)
+            )
+        ),
     )
 
 

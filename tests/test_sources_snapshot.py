@@ -20,6 +20,7 @@ DESIRED_DATA = {
     "desired_node_operational_overrides": [],
     "desired_service_placements": [],
     "desired_services": [],
+    "desired_service_bindings": [],
 }
 ACTUAL_DATA = {
     "devices": [],

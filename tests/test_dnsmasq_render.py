@@ -22,6 +22,7 @@ EMPTY_DESIRED_RESPONSE = {
         "desired_node_operational_overrides": [],
         "desired_service_placements": [],
         "desired_services": [],
+        "desired_service_bindings": [],
     }
 }
 
@@ -72,6 +73,7 @@ ONE_ENDPOINT_DESIRED_RESPONSE = {
         "desired_node_operational_overrides": [],
         "desired_service_placements": [],
         "desired_services": [],
+        "desired_service_bindings": [],
     }
 }
 
@@ -115,6 +117,7 @@ DESIRED_MAC_NO_ACTUAL_EVIDENCE_RESPONSE = {
         "desired_node_operational_overrides": [],
         "desired_service_placements": [],
         "desired_services": [],
+        "desired_service_bindings": [],
     }
 }
 
@@ -159,6 +162,7 @@ def _desired_mac_mismatch_response(*, desired_mac: str, actual_mac: str) -> dict
             "desired_node_operational_overrides": [],
             "desired_service_placements": [],
             "desired_services": [],
+            "desired_service_bindings": [],
         }
     }
 
