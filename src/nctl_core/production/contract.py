@@ -71,6 +71,7 @@ _BASE_HOST_VARIABLES = {
     "nintent_active_placement_ids",
     "nctl_ssh_host_key_alias",
     "ansible_ssh_common_args",
+    "nintent_opencode_ollama_url",
 }
 _REPORT_V3_KEYS = {
     "schema_version",
@@ -133,9 +134,10 @@ _PLACEMENT_EFFECT_KEYS = {"placement_id", "instance_name", "effect", "reason"}
 _PRODUCTION_STATE_SECTION_KEYS = {"state", "reasons", "placement_effects"}
 _NODE_RECORD_TOP_KEYS = {"desired", "actual"}
 _NODE_RECORD_DESIRED_KEYS = {"node", "endpoints", "placements", "operational_override"}
-_NODE_RECORD_ACTUAL_KEYS = {"operational_values", "operational_finding", "local_findings", "production"}
+_NODE_RECORD_ACTUAL_KEYS = {"operational_values", "operational_finding", "local_findings", "production", "service_dependencies"}
 _LOCAL_FINDING_KEYS = {"code", "severity", "message", "stage", "evidence"}
 _LOCAL_FINDING_SEVERITIES = {"error"}
+_SERVICE_DEPENDENCY_KEYS = {"consumer_placement_id", "service_slug", "provider_placement_id", "endpoint_id"}
 
 
 class ContractError(ValueError):
@@ -510,6 +512,15 @@ def _validate_node_record(node: Any, path: str) -> None:
         _require_exact_keys(local_finding, _LOCAL_FINDING_KEYS, finding_path)
         if local_finding["severity"] not in _LOCAL_FINDING_SEVERITIES:
             raise ContractError("invalid_report_schema", "invalid local finding severity", path=f"{finding_path}.severity")
+
+    dependencies = actual["service_dependencies"]
+    if not isinstance(dependencies, list):
+        raise ContractError("invalid_report_schema", "service_dependencies must be an array", path=f"{path}.actual.service_dependencies")
+    for index, dependency in enumerate(dependencies):
+        dependency_path = f"{path}.actual.service_dependencies[{index}]"
+        if not isinstance(dependency, dict):
+            raise ContractError("invalid_report_schema", "service dependency must be an object", path=dependency_path)
+        _require_exact_keys(dependency, _SERVICE_DEPENDENCY_KEYS, dependency_path)
 
     production = actual["production"]
     if not isinstance(production, dict):

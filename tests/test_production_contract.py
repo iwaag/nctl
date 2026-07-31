@@ -249,6 +249,7 @@ def _v3_node_record(*, state: str, effect: str = "applied", reason: str | None =
             },
             "operational_finding": None,
             "local_findings": [],
+            "service_dependencies": [],
             "production": {
                 "state": state,
                 "reasons": [],

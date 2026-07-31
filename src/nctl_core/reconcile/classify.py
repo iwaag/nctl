@@ -174,6 +174,13 @@ _MANUAL_REVIEW_CODES = frozenset(
         "missing_desired_node",
         "missing_platform",
         "unknown_config_key",
+        # A node-agent cannot choose a provider endpoint from desired state.
+        "ambiguous_llm_provider_dependency",
+        "llm_provider_missing",
+        "llm_provider_ambiguous",
+        "llm_provider_endpoint_missing",
+        "llm_provider_endpoint_invalid",
+        "llm_provider_endpoint_unusable",
         "vmid_out_of_range",
     }
 )

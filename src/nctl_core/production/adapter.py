@@ -73,6 +73,8 @@ def _endpoint_candidate(endpoint: DesiredEndpoint) -> EndpointCandidate:
         ip_address=endpoint.ip_address,
         dns_name=endpoint.dns_name,
         mdns_name=endpoint.mdns_name,
+        protocol=endpoint.protocol,
+        port=endpoint.port,
     )
 
 

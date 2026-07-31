@@ -37,6 +37,7 @@ def build_node_report_record(node: NodeInput, outcome: NodeOutcome) -> dict[str,
             "local_findings": ([{"code": outcome.local_error.code, "severity": "error",
                 "message": outcome.local_error.message, "stage": outcome.local_error.stage,
                 "evidence": outcome.local_error.evidence}] if outcome.local_error is not None else []),
+            "service_dependencies": outcome.service_dependencies,
             "production": {"state": outcome.state, "reasons": outcome.reasons,
                 "placement_effects": placement_effects}},
     }

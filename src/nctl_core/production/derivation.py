@@ -43,6 +43,8 @@ class EndpointCandidate:
     ip_address: str | None = None
     dns_name: str | None = None
     mdns_name: str | None = None
+    protocol: str | None = None
+    port: int | None = None
 
     def usable_local(self) -> bool:
         return self.endpoint_type != "vpn" and bool(

@@ -80,16 +80,27 @@ def render_probe_hints(
     """
 
     service_names = {service.id: service.name for service in snapshot.services}
-    active_by_service: dict[str, str] = {
-        placement.service_id: placement.deployment_profile
+    active_by_service: dict[str, tuple[str, str | None]] = {
+        placement.service_id: (placement.deployment_profile, placement.endpoint_id)
         for placement in snapshot.placements
         if placement.node_id == node_id
         and placement.desired_state == "active"
         and placement.service_id in service_names
     }
+    endpoints_by_id = {endpoint.id: endpoint for endpoint in snapshot.endpoints}
     hints: dict[str, dict[str, Any]] = {service_names[sid]: {} for sid in active_by_service}
+    for service_id, (_profile_name, endpoint_id) in active_by_service.items():
+        endpoint = endpoints_by_id.get(endpoint_id or "")
+        if endpoint is None:
+            continue
+        address = endpoint.dns_name or endpoint.mdns_name or endpoint.ip_address
+        if not address or not endpoint.protocol or not endpoint.port:
+            continue
+        hints[service_names[service_id]]["endpoint"] = (
+            f"{str(endpoint.protocol).lower()}://{str(address).split('/', 1)[0]}:{endpoint.port}"
+        )
     if profile_reconciliation:
-        for service_id, profile_name in active_by_service.items():
+        for service_id, (profile_name, _endpoint_id) in active_by_service.items():
             entry = profile_reconciliation.get(profile_name)
             if entry is None or entry.action is None or not entry.action.managed_files:
                 continue

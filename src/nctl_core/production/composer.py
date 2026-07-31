@@ -51,6 +51,7 @@ from .derivation import (
     OperationalOverride,
     resolve_operational_values,
 )
+from .service_dependencies import ServiceDependencyResolution, resolve_service_dependencies
 
 # Production-eligible desired node types.  Containers never enter the production
 # inventory; the actual-backed/declared distinction is made by the operational
@@ -91,12 +92,22 @@ PLACEMENT_LOCAL_CODES = frozenset(
         "invalid_profile_value_type",
     }
 )
+SERVICE_DEPENDENCY_LOCAL_CODES = frozenset(
+    {
+        "ambiguous_llm_provider_dependency",
+        "llm_provider_missing",
+        "llm_provider_ambiguous",
+        "llm_provider_endpoint_missing",
+        "llm_provider_endpoint_invalid",
+        "llm_provider_endpoint_unusable",
+    }
+)
 MERGE_LOCAL_CODES = frozenset({"conflicting_host_variable"})
 
 # The full Group C set: every ContractError code caught and localized inside
 # the eligible-node loop. An unexpected ContractError code escaping a
 # per-node helper is re-raised, not silently downgraded (Decision 2).
-LOCAL_COMPOSITION_CODES = NODE_LOCAL_CODES | PLACEMENT_LOCAL_CODES | MERGE_LOCAL_CODES
+LOCAL_COMPOSITION_CODES = NODE_LOCAL_CODES | PLACEMENT_LOCAL_CODES | MERGE_LOCAL_CODES | SERVICE_DEPENDENCY_LOCAL_CODES
 
 # The unapplied-intent code (Step 1.3): recorded active intent that cannot
 # enter production because its node's lifecycle is out of scope. Not a
@@ -229,6 +240,7 @@ def compose_production_inventory(
 
     all_nodes = sorted(nodes, key=lambda node: node.slug)
     eligible_slugs = {node.slug for node in all_nodes if is_production_eligible(node)}
+    dependency_resolutions = resolve_service_dependencies(all_nodes)
 
     ssh_hosts: dict[str, dict[str, Any]] = {}
     selector_members: dict[str, set[str]] = {group: set() for group in _CORE_GROUPS}
@@ -292,7 +304,13 @@ def compose_production_inventory(
             continue
 
         try:
-            host_vars, host_os, route = _compose_host(node, effective, validated_profiles, ssh_known_hosts_file)
+            host_vars, host_os, route = _compose_host(
+                node,
+                effective,
+                validated_profiles,
+                ssh_known_hosts_file,
+                dependency_resolutions.get(node.id),
+            )
         except LocalCompositionError as local_error:
             outcomes[node.id] = NodeOutcome(
                 state="skipped",
@@ -328,6 +346,7 @@ def compose_production_inventory(
             nautobot_device_id=host_vars.get("nautobot_device_id"),
             resolved_route=route,
             resolved_port=effective.ansible_port.value,
+            service_dependencies=(dependency_resolutions.get(node.id).provenance if node.id in dependency_resolutions else []),
         )
 
     inventory = _build_inventory_document(
@@ -465,6 +484,7 @@ def _compose_host(
     effective: EffectiveOperationalValues,
     profiles: Mapping[str, Any],
     ssh_known_hosts_file: str | None,
+    dependency: ServiceDependencyResolution | None,
 ) -> tuple[dict[str, Any], str, str | None]:
     """Build the ssh_hosts host variables for one included node.
 
@@ -510,6 +530,16 @@ def _compose_host(
         base_vars["network_interface"] = facts.network_interface
     if realized and realized.nautobot_device_id:
         base_vars["nautobot_device_id"] = realized.nautobot_device_id
+
+    if dependency is not None:
+        if dependency.error_code is not None:
+            raise LocalCompositionError(
+                dependency.error_code,
+                dependency.error_message or dependency.error_code,
+                stage="service_dependency",
+                evidence=dependency.error_evidence or {},
+            )
+        base_vars.update(dependency.variables)
 
     active_ids: list[str] = []
     assignments: list[tuple[str, Mapping[str, Any]]] = [(f"node:{node.slug}", base_vars)]

@@ -68,3 +68,4 @@ class NodeOutcome:
     local_error: Any | None = None
     resolved_route: str | None = None
     resolved_port: int | None = None
+    service_dependencies: list[dict[str, str]] = field(default_factory=list)

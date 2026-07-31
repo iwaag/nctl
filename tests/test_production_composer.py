@@ -18,6 +18,7 @@ from nctl_core.production.composer import (
     MERGE_LOCAL_CODES,
     NODE_LOCAL_CODES,
     PLACEMENT_LOCAL_CODES,
+    SERVICE_DEPENDENCY_LOCAL_CODES,
     ProductionComposition,
     compose_production_inventory,
     render_production_inventory_yml,
@@ -801,9 +802,9 @@ _GROUP_C_CASES = {
 
 
 def test_group_c_matrix_covers_every_declared_local_code():
-    assert set(_GROUP_C_CASES) == LOCAL_COMPOSITION_CODES - {"invalid_placement_config"}
+    assert set(_GROUP_C_CASES) == LOCAL_COMPOSITION_CODES - {"invalid_placement_config"} - SERVICE_DEPENDENCY_LOCAL_CODES
     assert "invalid_placement_config" in PLACEMENT_LOCAL_CODES
-    assert LOCAL_COMPOSITION_CODES == NODE_LOCAL_CODES | PLACEMENT_LOCAL_CODES | MERGE_LOCAL_CODES
+    assert LOCAL_COMPOSITION_CODES == NODE_LOCAL_CODES | PLACEMENT_LOCAL_CODES | MERGE_LOCAL_CODES | SERVICE_DEPENDENCY_LOCAL_CODES
 
 
 @pytest.mark.parametrize("code", sorted(_GROUP_C_CASES))
