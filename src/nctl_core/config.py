@@ -157,6 +157,7 @@ class AgentConfig(StrictModel):
     linux_workdir: Path = Path("/home/eiji/agent-work")
     workdir_by_slug: dict[str, Path] = Field(default_factory=dict)
     connect_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    request_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
 
     @field_validator("ssh_user")
     @classmethod

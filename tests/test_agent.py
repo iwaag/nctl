@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import nctl_core.agent as agent
+from nctl_core.agent_api import AgentApiError
 from nctl_core.config import Config
 from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredNodeOperationalOverride, DesiredSnapshot
 
@@ -103,3 +104,25 @@ def test_attach_passes_native_command_and_propagates_exit(tmp_path, monkeypatch)
     monkeypatch.setattr(agent.subprocess, "run", lambda argv, check=False: captured.setdefault("result", subprocess.CompletedProcess(argv, 7)))
     assert agent.attach_agent(cfg, "agpc", "ses_existing") == 7
     assert captured["result"].args == ["opencode", "attach", "http://127.0.0.1:43123", "--dir", "/home/eiji/agent-work", "--session", "ses_existing"]
+
+
+def test_run_timeout_keeps_created_session_and_uses_common_target_path(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    target = agent._target_from_snapshot(cfg, _snapshot(), "agpc")
+    monkeypatch.setattr(agent, "resolve_agent_target", lambda cfg, host: target)
+    monkeypatch.setattr(agent, "open_tunnel", lambda cfg, target: _tunnel(43123))
+    monkeypatch.setattr(agent, "_probe_health", lambda port, timeout: 200)
+
+    class FakeApi:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def create_session(self): return {"id": "ses_created"}
+        def send_message(self, *args): raise AgentApiError("agent_timeout", "timed out", {"session_id": "ses_created"})
+
+    monkeypatch.setattr(agent, "OpenCodeClient", FakeApi)
+    envelope = agent.build_agent_run(cfg, "agpc", "inspect")
+    assert envelope.ok is False
+    assert envelope.data.session_id == "ses_created"
+    assert envelope.data.outcome == "timed_out"
+    assert envelope.errors[0].code == "agent_timeout"
