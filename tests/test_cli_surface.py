@@ -26,6 +26,7 @@ RETAINED_COMMANDS = {
     "braindump",
     "ssh",
     "session",
+    "agent",
 }
 
 

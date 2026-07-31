@@ -15,6 +15,8 @@ import typer
 from pydantic import ValidationError
 
 from nctl_core.actual_render import build_actual, render_actual_text
+from nctl_core.agent import AGENT_STATUS_SCHEMA, AgentError, attach_agent, build_agent_status
+from nctl_core.agent_render import render_agent_status_text
 from nctl_core.braindump_render import (
     build_braindump_create,
     build_braindump_list,
@@ -67,6 +69,7 @@ braindump_app = typer.Typer(help="Read immutable Braindumps and manage their Ali
 ssh_app = typer.Typer(help="Manage the local, alias-keyed SSH trust store nctl uses for actuation.")
 session_app = typer.Typer(help="Create isolated agent-workspace session folders under .local/workspace/.")
 desired_app = typer.Typer(help="Preview or atomically apply a desired-state batch document.")
+agent_app = typer.Typer(help="Reach loopback-only node agents through managed SSH tunnels.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
 app.add_typer(ops_app, name="ops")
@@ -74,6 +77,7 @@ app.add_typer(braindump_app, name="braindump")
 app.add_typer(ssh_app, name="ssh")
 app.add_typer(session_app, name="session")
 app.add_typer(desired_app, name="desired")
+app.add_typer(agent_app, name="agent")
 
 
 @app.callback()
@@ -108,6 +112,34 @@ def status(config: ConfigOption = None, json_output: JsonOption = False) -> None
     envelope = build_status(cfg)
     emit(envelope, json_output, render_status_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+AgentHostArgument = Annotated[str, typer.Argument(help="Exact DesiredNode slug.")]
+AgentStatusJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.agent.status.v1 envelope as JSON.")]
+AgentSessionOption = Annotated[Optional[str], typer.Option("--session", help="Existing OpenCode session ID to resume.")]
+
+
+@agent_app.command("status")
+def agent_status(host: AgentHostArgument, config: ConfigOption = None, json_output: AgentStatusJsonOption = False) -> None:
+    """Check a node agent's /doc health endpoint through managed SSH."""
+    cfg = _load_config(config)
+    envelope = build_agent_status(cfg, host)
+    emit(envelope, json_output, render_agent_status_text)
+    if any(error.code == "unknown_host" for error in envelope.errors):
+        raise typer.Exit(EXIT_USAGE)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+@agent_app.command("attach")
+def agent_attach(host: AgentHostArgument, config: ConfigOption = None, session: AgentSessionOption = None) -> None:
+    """Open the controller's native OpenCode TUI through a temporary SSH tunnel."""
+    cfg = _load_config(config)
+    try:
+        code = attach_agent(cfg, host, session=session)
+    except AgentError as exc:
+        typer.echo(f"error [{exc.code}]: {exc}", err=True)
+        raise typer.Exit(EXIT_USAGE if exc.code == "unknown_host" else EXIT_FAILURE)
+    raise typer.Exit(code)
 
 
 ActualJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.actual.v1 envelope as JSON.")]

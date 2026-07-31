@@ -168,6 +168,13 @@ def test_ssh_config_defaults_when_section_absent(tmp_path):
     assert cfg.resolved_ssh_lock_path() == Path("~/.local/state/nctl/ssh.lock").expanduser()
 
 
+def test_agent_config_defaults_and_exact_workdir_map(tmp_path):
+    cfg = Config.load(write_config(tmp_path, VALID + '\n[agent]\nworkdir_by_slug = { agpc = "/work/agpc" }\n'))
+    assert cfg.agent.identity_file == Path("~/.ssh/ansible_key")
+    assert cfg.resolved_agent_identity_file() == Path("~/.ssh/ansible_key").expanduser()
+    assert cfg.agent.workdir_by_slug["agpc"] == Path("/work/agpc")
+
+
 def test_ssh_config_overrides_and_path_expansion(tmp_path):
     cfg = Config.load(
         write_config(

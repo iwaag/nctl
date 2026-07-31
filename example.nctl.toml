@@ -44,3 +44,17 @@ lock_path = "~/.local/state/nctl/reconcile.lock"
 known_hosts_file = "~/.local/state/nctl/ssh/known_hosts"
 keyscan_timeout_seconds = 10
 lock_path = "~/.local/state/nctl/ssh.lock"
+
+[agent]
+# OpenCode is loopback-only on every node; nctl reaches it through a managed
+# SSH local forward. These values are controller policy, never CLI input.
+port = 4096
+ssh_user = "eiji"
+identity_file = "~/.ssh/ansible_key"
+macos_workdir = "/Users/eiji/agent-work"
+linux_workdir = "/home/eiji/agent-work"
+connect_timeout_seconds = 15
+# Use exact DesiredNode slugs where desired state does not declare host OS.
+[agent.workdir_by_slug]
+# agstudio = "/Users/eiji/agent-work"
+# agpc = "/home/eiji/agent-work"
