@@ -40,7 +40,6 @@ def _base_response(**overrides) -> dict:
         "desired_node_operational_overrides": [],
         "desired_service_placements": [],
         "desired_services": [],
-        "desired_dependencies": [],
         "desired_compute_platforms": [],
         "desired_compute_instances": [],
     }
@@ -208,20 +207,6 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "lifecycle": "ACTIVE",
                             "catalog_namespace": "default",
                             "catalog_metadata_name": "dnsmasq",
-                            "requirements": {},
-                        }
-                    ],
-                    "desired_dependencies": [
-                        {
-                            "id": "dependency-1",
-                            "source_service": {"id": "service-1"},
-                            "dependency_kind": "requires",
-                            "namespace": "default",
-                            "name": "postgres",
-                            "raw_ref": "default/postgres",
-                            "dependency_type": "service",
-                            "resolution_status": "UNRESOLVED",
-                            "resolved_service": None,
                         }
                     ],
                     "desired_compute_platforms": [_healthy_platform()],
@@ -285,11 +270,6 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert service.service_type == "service"
     assert service.lifecycle == "active"
 
-    dependency = snapshot.dependencies[0]
-    assert dependency.resolution_status == "unresolved"
-    assert dependency.resolved_service_id is None
-
-
 def test_query_requests_all_desired_collections():
     for field in (
         "desired_nodes",
@@ -298,7 +278,6 @@ def test_query_requests_all_desired_collections():
         "desired_node_operational_overrides",
         "desired_service_placements",
         "desired_services",
-        "desired_dependencies",
         "desired_compute_platforms",
         "desired_compute_instances",
     ):

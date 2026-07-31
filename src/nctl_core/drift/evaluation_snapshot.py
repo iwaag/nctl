@@ -92,11 +92,6 @@ def evaluate_all_services(
     also emitting the classified global error in that case, so an
     unavailable contract can never read as silent convergence.
     """
-    services_by_id = {service.id: service for service in snapshot.desired.services}
-    dependencies_by_service: dict[str, list] = defaultdict(list)
-    for dependency in snapshot.desired.dependencies:
-        dependencies_by_service[dependency.source_service_id].append(dependency)
-
     nodes_by_id = {node.id: node for node in snapshot.desired.nodes}
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
     effective_by_node = {}
@@ -156,8 +151,6 @@ def evaluate_all_services(
     for service in snapshot.desired.services:
         base = evaluate_service_intent(
             service,
-            dependencies=dependencies_by_service.get(service.id, ()),
-            resolved_services_by_id=services_by_id,
             observed_facts={},
         )
         observation = placement_report[service.id]
@@ -197,7 +190,7 @@ def evaluate_all_services(
             status=status,
             gap_codes=[gap["code"] for gap in gaps],
             service_observation_status=observation["status"],
-            evaluation_scope="service_lifecycle_dependencies_and_placements",
+            evaluation_scope="service_lifecycle_and_placements",
         )
         results[service.id] = replace(
             base,

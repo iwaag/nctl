@@ -133,11 +133,10 @@ _MANUAL_REVIEW_CODES = frozenset(
         "ipam_reconcile_observation_missing",
         "ipam_reconcile_observation_mismatch",
         "ipam_reconcile_observation_ambiguous",
-        # Service lifecycle/dependency/placement issues that need a human
+        # Service lifecycle/placement issues that need a human
         # decision, not an actuation.
         "service_lifecycle_inactive",
         "missing_service_lifecycle",
-        "unresolved_dependency",
         "service_has_no_active_placement",
         "service_observed_on_wrong_node",
         # vm_first_realization P1: reporting only. Phase 2 promotes the

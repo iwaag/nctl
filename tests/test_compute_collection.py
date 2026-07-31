@@ -40,7 +40,6 @@ def _base_response(**overrides) -> dict:
         "desired_node_operational_overrides": [],
         "desired_service_placements": [],
         "desired_services": [],
-        "desired_dependencies": [],
         "desired_compute_platforms": [],
         "desired_compute_instances": [],
     }

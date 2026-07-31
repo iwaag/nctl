@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from ipaddress import ip_interface
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from nctl_core.sources.actual import ActualIPAddress
-    from nctl_core.sources.desired import DesiredDependency, DesiredService
+    from nctl_core.sources.desired import DesiredService
 
 NODE_TARGET_TYPE = "desired_node"
 ENDPOINT_TARGET_TYPE = "desired_endpoint"
@@ -52,42 +52,13 @@ class EvaluationResult:
         }
 
 
-def _expected_service_facts(
-    desired_service: DesiredService,
-    dependencies: list[DesiredDependency],
-    resolved_services_by_id: Mapping[str, DesiredService],
-) -> dict[str, Any]:
-    dependency_facts = [_dependency_facts(dependency, resolved_services_by_id) for dependency in dependencies]
+def _expected_service_facts(desired_service: DesiredService) -> dict[str, Any]:
     return {
         "name": _text(desired_service.name),
         "slug": _text(desired_service.slug),
         "lifecycle": _text(desired_service.lifecycle),
         "service_type": _text(desired_service.service_type),
-        "requirements": desired_service.requirements or {},
-        "dependencies": dependency_facts,
-        "dependency_counts": {
-            "total": len(dependency_facts),
-            "resolved": sum(1 for dependency in dependency_facts if dependency["resolution_status"] == "resolved"),
-            "unresolved": sum(1 for dependency in dependency_facts if dependency["resolution_status"] != "resolved"),
-        },
     }
-
-
-def _dependency_facts(
-    dependency: DesiredDependency, resolved_services_by_id: Mapping[str, DesiredService]
-) -> dict[str, Any]:
-    facts = {
-        "dependency_kind": _text(dependency.dependency_kind),
-        "namespace": _text(dependency.namespace),
-        "name": _text(dependency.name),
-        "raw_ref": _text(dependency.raw_ref),
-        "dependency_type": _text(dependency.dependency_type),
-        "resolution_status": _text(dependency.resolution_status) or "unresolved",
-    }
-    resolved_service = resolved_services_by_id.get(dependency.resolved_service_id or "")
-    if resolved_service is not None:
-        facts["resolved_service"] = _target_ref(resolved_service.id, resolved_service.name)
-    return facts
 
 
 def _actual_ref(object_type: str, obj: Any) -> dict[str, Any]:

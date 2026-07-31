@@ -20,7 +20,7 @@ from nctl_core.drift.ip_ranges import (
     overlapping_desired_ip_ranges,
 )
 from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddress, ActualVirtualMachine
-from nctl_core.sources.desired import DesiredDependency, DesiredEndpoint, DesiredIPRange, DesiredNode, DesiredService
+from nctl_core.sources.desired import DesiredEndpoint, DesiredIPRange, DesiredNode, DesiredService
 
 
 def node(**overrides):
@@ -121,25 +121,9 @@ def service(**overrides):
         lifecycle="active",
         catalog_namespace="default",
         catalog_metadata_name="api",
-        requirements={"memory_gb": 2},
     )
     data.update(overrides)
     return DesiredService(**data)
-
-
-def dependency(**overrides):
-    data = dict(
-        id="dep-1",
-        source_service_id="33333333-3333-3333-3333-333333333333",
-        dependency_kind="component",
-        namespace="default",
-        name="database",
-        raw_ref="component:default/database",
-        dependency_type="component",
-        resolution_status="unresolved",
-    )
-    data.update(overrides)
-    return DesiredDependency(**data)
 
 
 # --- node evaluation --------------------------------------------------------
@@ -696,29 +680,9 @@ def test_invalid_policy_range_is_reported_without_crashing():
 # --- service evaluation -------------------------------------------------------
 
 
-def test_unresolved_dependency_is_recorded_as_gap_and_action_without_ai_output():
-    payload = evaluate_service_intent(service(), dependencies=[dependency()], ai_review_enabled=True)
-
-    assert payload.target_type == "desired_service"
-    assert payload.status == "partial"
-    assert payload.observed_facts["ai_review"] == {"enabled": True, "executed": False}
-    gap_codes = [gap["code"] for gap in payload.gap_summary["gaps"]]
-    assert "unresolved_dependency" in gap_codes
-    assert "service_observed_facts_unknown" in gap_codes
-    assert payload.recommended_actions[0]["action"] == "resolve_service_dependency"
-    assert payload.recommended_actions[0]["dependency"]["raw_ref"] == "component:default/database"
-
-
-def test_service_with_provided_observed_facts_and_resolved_dependencies_is_satisfied():
-    resolved = service(id="db-service", slug="database", name="database", display_name="Database", catalog_metadata_name="database")
-    payload = evaluate_service_intent(
-        service(),
-        dependencies=[dependency(resolution_status="resolved", resolved_service_id=resolved.id)],
-        resolved_services_by_id={resolved.id: resolved},
-        observed_facts={"monitoring": {"status": "ok"}},
-    )
+def test_service_with_provided_observed_facts_is_satisfied():
+    payload = evaluate_service_intent(service(), observed_facts={"monitoring": {"status": "ok"}})
 
     assert payload.status == "satisfied"
     assert payload.observed_facts["service_observation_status"] == "provided"
-    assert payload.deterministic_summary["dependency_counts"]["resolved"] == 1
     assert payload.recommended_actions == []

@@ -154,8 +154,7 @@ def test_observation_codes_route_to_observe_node(code):
         "invalid_ip_policy_range",
         "ambiguous_ip_policy_range",
         "desired_mac_mismatch",
-        # unresolved service dependencies / inactive lifecycle
-        "unresolved_dependency",
+        # inactive lifecycle
         "service_lifecycle_inactive",
         # unexpected service removal (a service running somewhere it
         # shouldn't -- Out of scope forbids auto-removal, so this stays

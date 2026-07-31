@@ -18,7 +18,6 @@ EMPTY_DESIRED_RESPONSE = {
         "desired_node_operational_overrides": [],
         "desired_service_placements": [],
         "desired_services": [],
-        "desired_dependencies": [],
     }
 }
 
@@ -73,10 +72,8 @@ TWO_NODE_DESIRED_RESPONSE = {
                 "lifecycle": "ACTIVE",
                 "catalog_namespace": "ns",
                 "catalog_metadata_name": "web",
-                "requirements": {},
             }
         ],
-        "desired_dependencies": [],
     }
 }
 

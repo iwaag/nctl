@@ -8,7 +8,6 @@ from nctl_core.drift import comparators
 from nctl_core.drift.context import DriftContext
 from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddress, ActualSnapshot, ActualVirtualMachine
 from nctl_core.sources.desired import (
-    DesiredDependency,
     DesiredEndpoint,
     DesiredEndpointRef,
     DesiredNode,
@@ -454,30 +453,6 @@ def test_endpoint_intent_matching_satisfied_endpoint_is_silent():
     )
 
     assert list(comparators.endpoint_intent_matching(snapshot, CONTEXT)) == []
-
-
-def test_service_intent_matching_flags_unresolved_dependency_as_warning():
-    service = DesiredService(
-        id="s1", slug="api", name="api", display_name="API", service_type="service", lifecycle="active",
-        catalog_namespace="default", catalog_metadata_name="api",
-    )
-    dependency = DesiredDependency(
-        id="d1", source_service_id="s1", dependency_kind="component", namespace="default", name="database",
-        raw_ref="component:default/database", dependency_type="component", resolution_status="unresolved",
-    )
-    snapshot = make_snapshot(services=[service], dependencies=[dependency])
-
-    diffs = list(comparators.service_intent_matching(snapshot, CONTEXT))
-
-    codes = {d.code for d in diffs}
-    assert "unresolved_dependency" in codes
-    assert "service_has_no_active_placement" in codes
-    unresolved = next(d for d in diffs if d.code == "unresolved_dependency")
-    assert unresolved.severity.value == "warning"
-    assert unresolved.target.kind == "service"
-    assert unresolved.target.slug == "api"
-    no_placement = next(d for d in diffs if d.code == "service_has_no_active_placement")
-    assert no_placement.severity.value == "warning"
 
 
 def test_service_intent_matching_emits_placement_evidence_and_distinct_code():

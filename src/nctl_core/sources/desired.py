@@ -7,8 +7,8 @@ dependencies in a single round trip. As in `dnsmasq_query.py`, Nautobot's
 GraphQL layer serializes ChoiceField values (`lifecycle`, `node_type`,
 `endpoint_type`, `ip_policy`, ...) as their UPPERCASE enum *name*; every
 choice field here is lowercased back to the vocabulary the ported nintent
-logic (Steps 2 and 4) expects. Free-form JSON fields (`config`,
-`dnsmasq_options`, `requirements`) round-trip untouched. `placement_policy` was removed from
+logic (Steps 2 and 4) expects. Free-form JSON fields (`config`, `dnsmasq_options`)
+round-trip untouched. `placement_policy` was removed from
 `DesiredService` in Phase 4 (better_usability p4) Decision 6 -- inert, no producer of non-empty
 data, and no consumer; it is no longer fetched here or exposed on any typed model.
 
@@ -139,17 +139,6 @@ DESIRED_QUERY = """
     catalog_namespace
     catalog_metadata_name
   }
-  desired_dependencies {
-    id
-    source_service { id }
-    dependency_kind
-    namespace
-    name
-    raw_ref
-    dependency_type
-    resolution_status
-    resolved_service { id }
-  }
   desired_compute_platforms {
     id
     name
@@ -265,25 +254,6 @@ class DesiredService(BaseModel):
     lifecycle: str
     catalog_namespace: str
     catalog_metadata_name: str
-    # The schema no longer persists requirements. Keep the consumer's stable
-    # empty value until that evaluator contract is independently simplified.
-    requirements: dict[str, Any] = {}
-
-
-class DesiredDependency(BaseModel):
-    id: str
-    source_service_id: str
-    dependency_kind: str
-    namespace: str
-    name: str
-    raw_ref: str
-    dependency_type: str
-    resolution_status: str = "unresolved"
-    resolved_service_id: str | None = None
-
-
-
-
 class DesiredSnapshot(BaseModel):
     nodes: list[DesiredNode] = []
     endpoints: list[DesiredEndpoint] = []
@@ -291,7 +261,6 @@ class DesiredSnapshot(BaseModel):
     operational_overrides: list[DesiredNodeOperationalOverride] = []
     placements: list[DesiredServicePlacement] = []
     services: list[DesiredService] = []
-    dependencies: list[DesiredDependency] = []
     compute_platforms: list[DesiredComputePlatform] = []
     compute_instances: list[DesiredComputeInstance] = []
     source_issues: list[DesiredSourceIssue] = []
@@ -317,7 +286,6 @@ def fetch_desired_snapshot(client: NautobotClient) -> DesiredSnapshot:
         ],
         placements=[_build_placement(row) for row in data["desired_service_placements"]],
         services=[_build_service(row) for row in data["desired_services"]],
-        dependencies=[_build_dependency(row) for row in data["desired_dependencies"]],
         compute_platforms=compute_platforms,
         compute_instances=compute_instances,
         source_issues=source_issues,
@@ -429,21 +397,6 @@ def _build_service(row: dict[str, Any]) -> DesiredService:
         lifecycle=_lower(row["lifecycle"]),
         catalog_namespace=row["catalog_namespace"],
         catalog_metadata_name=row["catalog_metadata_name"],
-    )
-
-
-def _build_dependency(row: dict[str, Any]) -> DesiredDependency:
-    resolved = row.get("resolved_service")
-    return DesiredDependency(
-        id=row["id"],
-        source_service_id=row["source_service"]["id"],
-        dependency_kind=row["dependency_kind"],
-        namespace=row["namespace"],
-        name=row["name"],
-        raw_ref=row["raw_ref"],
-        dependency_type=row["dependency_type"],
-        resolution_status=_lower(row.get("resolution_status")) or "unresolved",
-        resolved_service_id=resolved["id"] if resolved else None,
     )
 
 

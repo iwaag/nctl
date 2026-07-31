@@ -8,7 +8,6 @@ from nctl_core.reconcile.profiles import ManagedFileSpec, ProfileAction, Profile
 from nctl_core.sources.actual import ActualDevice, ActualInterface, ActualIPAddress, ActualSnapshot
 from nctl_core.compute.model import DesiredComputeInstance
 from nctl_core.sources.desired import (
-    DesiredDependency,
     DesiredEndpoint,
     DesiredNode,
     DesiredNodeOperationalOverride,
@@ -19,9 +18,9 @@ from nctl_core.sources.desired import (
 from nctl_core.sources.snapshot import SourceSnapshot
 
 
-def make_snapshot(*, nodes=(), endpoints=(), services=(), dependencies=(), placements=(), operational_overrides=(), devices=(), interfaces=(), ip_addresses=()) -> SourceSnapshot:
+def make_snapshot(*, nodes=(), endpoints=(), services=(), placements=(), operational_overrides=(), devices=(), interfaces=(), ip_addresses=()) -> SourceSnapshot:
     return SourceSnapshot(
-        desired=DesiredSnapshot(nodes=list(nodes), endpoints=list(endpoints), services=list(services), dependencies=list(dependencies), placements=list(placements), operational_overrides=list(operational_overrides)),
+        desired=DesiredSnapshot(nodes=list(nodes), endpoints=list(endpoints), services=list(services), placements=list(placements), operational_overrides=list(operational_overrides)),
         actual=ActualSnapshot(devices=list(devices), interfaces=list(interfaces), ip_addresses=list(ip_addresses)),
         fetched_at=datetime.now(timezone.utc),
     )
@@ -106,24 +105,6 @@ def test_evaluate_all_endpoints_handles_endpoint_with_no_matching_node():
     result = evaluate_all_endpoints(snapshot, {})["e1"]
 
     assert result.observed_facts["interface_candidates"] == []
-
-
-def test_evaluate_all_services_resolves_dependency_by_source_service_id():
-    dependency = DesiredDependency(
-        id="d1", source_service_id="s1", dependency_kind="component", namespace="default",
-        name="database", raw_ref="component:default/database", dependency_type="component",
-        resolution_status="unresolved",
-    )
-    service = DesiredService(
-        id="s1", slug="api", name="api", display_name="API", service_type="service", lifecycle="active",
-        catalog_namespace="default", catalog_metadata_name="api",
-    )
-    snapshot = make_snapshot(services=[service], dependencies=[dependency])
-
-    result = evaluate_all_services(snapshot)["s1"]
-
-    assert result.status == "partial"
-    assert result.deterministic_summary["dependency_counts"]["unresolved"] == 1
 
 
 def test_evaluate_all_services_uses_placement_device_observation() -> None:

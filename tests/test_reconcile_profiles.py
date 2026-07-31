@@ -15,6 +15,7 @@ _REPO_PROFILE_NAMES = {
     "dnsmasq",
     "grafana",
     "home_assistant",
+    "manual_toolchain",
     "nomad_client",
     "nomad_server",
     "prometheus",
@@ -41,6 +42,7 @@ def test_real_repo_file_validates(tmp_path):
     assert entries["dnsmasq"].action.managed_files["records"].path == "/etc/dnsmasq.d/nintent-records.conf"
     assert entries["dnsmasq"].action.managed_files["records"].digest == "sha256"
     assert entries["home_assistant"].observe_only is True
+    assert entries["manual_toolchain"].observe_only is True
     assert entries["nomad_client"].dependencies == ["nomad_server"]
     assert entries["prometheus_node_exporter"].dependencies == ["prometheus"]
     assert entries["nomad_server"].action.kind == "playbook"
