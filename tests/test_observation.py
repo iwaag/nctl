@@ -189,7 +189,10 @@ def test_probe_hints_include_an_active_service_endpoint() -> None:
     ]
 
     assert yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"))) == {
-        "service_probe_hints": {"ollama": {"endpoint": "http://node-a.home.arpa:11434"}}
+        "service_probe_hints": {"ollama": {
+            "endpoint": "http://node-a.home.arpa:11434",
+            "local_endpoint": "http://127.0.0.1:11434",
+        }}
     }
 
 
