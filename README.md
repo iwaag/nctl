@@ -79,6 +79,8 @@ uv run nctl render production
 uv run nctl render production --out ../ansible_agdev/inventories/generated
 uv run nctl drift
 uv run nctl drift --host agstudio --json
+uv run nctl relations
+uv run nctl relations --json
 uv run nctl apply dnsmasq
 uv run nctl apply dnsmasq --yes
 uv run nctl reconcile
@@ -183,6 +185,29 @@ after deployment. The content contract covers only nctl's
 computing fresh desired-versus-actual status on every call, printed as human text or (`--json`)
 the `nctl.drift.v1` envelope. It never writes a file and never pushes anything back into nintent —
 there is no separate regeneration command to remember to run instead.
+
+`relations` projects the same three-source state as a service-binding graph (service_relation
+Phase 4, idea-A §9): "who depends on what, and is it real" for the whole cluster in one read.
+It calls the exact same `fetch_and_compute_drift`/`evaluate_binding_state` primitives `drift`
+does, so the two commands can never disagree about a binding's state. `--host SLUG` and
+`--service NAME` filter edges on either the consumer or the provider side. The `nctl.relations.v1`
+envelope contains:
+
+- `edges`: one per consumer binding, sorted by `(consumer_node, consumer_service, binding_name)`.
+  A resolved binding carries `consumer`, `binding_name`, `provider` (service/placement/node/
+  endpoint/URL), `state` (the same five-state vocabulary as a binding's drift evidence: `unknown`/
+  `unbound`/`misbound`/`unreachable`/`satisfied`), `gap_codes`, and `evidence` (configured
+  endpoint, reachability, `age_hours`/`stale_after_hours`). A binding whose desired resolution
+  itself failed (ambiguous provider, cycle, undeclared name, ...) still gets an edge — unlike
+  `drift`, which folds that case into node-local production-composition drift instead — with
+  `provider: null`, `state: null`, and the resolver's `error_code` as its sole `gap_codes` entry;
+- `unreferenced`: services with at least one active placement but zero inbound bindings, sorted
+  alphabetically. Informational only — never a deletion recommendation;
+- `summary`: edge counts per state (`resolution_error` counted as its own bucket);
+- `generated_at`.
+
+Nothing here is persisted or cached: every invocation recomputes from current desired + actual
+state, same as `drift`.
 
 ### Status legend
 
