@@ -174,13 +174,16 @@ _MANUAL_REVIEW_CODES = frozenset(
         "missing_desired_node",
         "missing_platform",
         "unknown_config_key",
-        # A node-agent cannot choose a provider endpoint from desired state.
-        "ambiguous_llm_provider_dependency",
-        "llm_provider_missing",
-        "llm_provider_ambiguous",
-        "llm_provider_endpoint_missing",
-        "llm_provider_endpoint_invalid",
-        "llm_provider_endpoint_unusable",
+        # A consumer binding cannot resolve to one usable provider endpoint
+        # from desired state (idea-A §6).
+        "binding_name_undeclared",
+        "binding_self_reference",
+        "binding_provider_missing",
+        "binding_provider_ambiguous",
+        "binding_cycle",
+        "binding_endpoint_missing",
+        "binding_endpoint_invalid",
+        "binding_endpoint_unusable",
         "vmid_out_of_range",
     }
 )

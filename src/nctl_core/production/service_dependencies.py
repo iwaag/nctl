@@ -1,10 +1,15 @@
-"""Resolve service-to-service client endpoints for generated inventory.
+"""Resolve service-to-service bindings into consumer host variables.
 
-Service dependency declarations live in a consumer placement's ``config``.
-This first version intentionally uses the small convention
-``llm_provider_service: <service slug>`` for the ``node_agent`` profile.  The
-resolver is pure and deterministic so the same desired snapshot always
-produces the same host variables or the same classified error.
+Service dependencies are `DesiredServiceBinding` rows (idea-A §3.1) attached
+to a consumer placement, fetched by `sources/desired.py` and threaded onto
+`PlacementInput.bindings`. The resolver walks, per binding: provider service →
+exactly one active placement → usable endpoint → URL (idea-A §4), and returns
+per-consumer-node variables + provenance or one classified §6 error. Pure and
+deterministic: the same desired snapshot always produces the same result.
+
+Self-reference and cycles are rejected by nintent's batch validator at write
+time, but this resolver reads a snapshot it does not control, so they are
+classified errors here rather than assertions.
 """
 
 from __future__ import annotations
@@ -14,7 +19,15 @@ import ipaddress
 from typing import Any, Iterable
 
 from .derivation import EndpointCandidate
-from .model import NodeInput, PlacementInput
+from .model import BindingInput, NodeInput, PlacementInput
+
+# The nctl twin of nintent's `PROFILE_BINDING_NAMES`: which binding names a
+# profile declares, and which inventory variable each one produces. A binding
+# name arriving from desired state that is not declared here is a classified
+# error (`binding_name_undeclared`), never a crash.
+PROFILE_BINDING_VARIABLES: dict[tuple[str, str], str] = {
+    ("node_agent", "llm_provider"): "nintent_opencode_ollama_url",
+}
 
 
 @dataclass(frozen=True)
@@ -27,96 +40,149 @@ class ServiceDependencyResolution:
 
 
 def resolve_service_dependencies(nodes: Iterable[NodeInput]) -> dict[str, ServiceDependencyResolution]:
-    """Resolve each active node-agent provider dependency from desired state.
+    """Resolve every binding on each node's active placements.
 
-    A service may have one active endpoint-bearing placement.  If a provider
-    has several active placements, one may declare ``primary: true`` in its
-    placement config; otherwise the ambiguity is an intentional, actionable
-    composition error rather than an arbitrary topology choice.
+    Returns one entry per consumer node that carries at least one binding:
+    either the merged variables/provenance of all its bindings, or the first
+    classified error in deterministic (placement instance_name, binding_name)
+    order.
     """
 
     all_nodes = tuple(nodes)
     endpoints = {endpoint.id: (node, endpoint) for node in all_nodes for endpoint in node.endpoints}
-    providers: dict[str, list[tuple[NodeInput, PlacementInput]]] = {}
+    active_by_service: dict[str, list[tuple[NodeInput, PlacementInput]]] = {}
     for node in all_nodes:
         for placement in node.placements:
-            if placement.desired_state == "active" and placement.service_slug:
-                providers.setdefault(placement.service_slug, []).append((node, placement))
+            if placement.desired_state == "active" and placement.service_id:
+                active_by_service.setdefault(placement.service_id, []).append((node, placement))
 
     result: dict[str, ServiceDependencyResolution] = {}
     for consumer in all_nodes:
-        dependencies = [
-            placement for placement in consumer.placements
+        bound = [
+            (placement, binding)
+            for placement in consumer.placements
             if placement.desired_state == "active"
-            and placement.deployment_profile == "node_agent"
-            and isinstance(placement.config.get("llm_provider_service"), str)
-            and placement.config["llm_provider_service"].strip()
+            for binding in placement.bindings
         ]
-        if not dependencies:
+        if not bound:
             continue
-        if len(dependencies) > 1:
-            result[consumer.id] = _error(
-                "ambiguous_llm_provider_dependency",
-                "more than one active node-agent placement declares an LLM provider",
-                {"consumer_node": consumer.slug, "placement_ids": sorted(item.id for item in dependencies)},
-            )
-            continue
-        dependency = dependencies[0]
-        service_slug = str(dependency.config["llm_provider_service"]).strip()
-        candidates = providers.get(service_slug, [])
-        primary = [(node, placement) for node, placement in candidates if placement.config.get("primary") is True]
-        if primary:
-            candidates = primary
-        if not candidates:
-            result[consumer.id] = _error(
-                "llm_provider_missing",
-                f"no active placement exists for LLM provider service {service_slug!r}",
-                {"consumer_placement_id": dependency.id, "service_slug": service_slug},
-            )
-            continue
-        if len(candidates) != 1:
-            result[consumer.id] = _error(
-                "llm_provider_ambiguous",
-                f"LLM provider service {service_slug!r} has multiple active placements",
-                {"consumer_placement_id": dependency.id, "service_slug": service_slug,
-                 "provider_placement_ids": sorted(placement.id for _node, placement in candidates)},
-            )
-            continue
-        provider_node, provider = candidates[0]
-        if not provider.endpoint_id:
-            result[consumer.id] = _error(
-                "llm_provider_endpoint_missing",
-                f"LLM provider service {service_slug!r} has no desired endpoint",
-                {"provider_placement_id": provider.id, "service_slug": service_slug},
-            )
-            continue
-        endpoint_pair = endpoints.get(provider.endpoint_id)
-        if endpoint_pair is None or endpoint_pair[0].id != provider_node.id:
-            result[consumer.id] = _error(
-                "llm_provider_endpoint_invalid",
-                "LLM provider placement references an endpoint outside its node",
-                {"provider_placement_id": provider.id, "endpoint_id": provider.endpoint_id},
-            )
-            continue
-        _node, endpoint = endpoint_pair
-        url = _endpoint_url(endpoint)
-        if url is None:
-            result[consumer.id] = _error(
-                "llm_provider_endpoint_unusable",
-                "LLM provider endpoint requires an address, protocol, and port",
-                {"provider_placement_id": provider.id, "endpoint_id": endpoint.id},
-            )
-            continue
-        provenance = [{
-            "consumer_placement_id": dependency.id,
-            "service_slug": service_slug,
+        variables: dict[str, Any] = {}
+        provenance: list[dict[str, str]] = []
+        error: ServiceDependencyResolution | None = None
+        for placement, binding in bound:
+            resolved = _resolve_binding(consumer, placement, binding, active_by_service, endpoints)
+            if resolved.error_code is not None:
+                error = resolved
+                break
+            variables.update(resolved.variables)
+            provenance.extend(resolved.provenance)
+        result[consumer.id] = error if error is not None else ServiceDependencyResolution(variables, provenance)
+    return result
+
+
+def _resolve_binding(
+    consumer: NodeInput,
+    placement: PlacementInput,
+    binding: BindingInput,
+    active_by_service: dict[str, list[tuple[NodeInput, PlacementInput]]],
+    endpoints: dict[str, tuple[NodeInput, EndpointCandidate]],
+) -> ServiceDependencyResolution:
+    variable = PROFILE_BINDING_VARIABLES.get((placement.deployment_profile, binding.binding_name))
+    if variable is None:
+        return _error(
+            "binding_name_undeclared",
+            f"profile {placement.deployment_profile!r} does not declare binding name {binding.binding_name!r}",
+            {"consumer_placement_id": placement.id, "binding_name": binding.binding_name,
+             "deployment_profile": placement.deployment_profile},
+        )
+    if binding.provider_service_id == placement.service_id:
+        return _error(
+            "binding_self_reference",
+            f"binding {binding.binding_name!r} points at its own consumer service",
+            {"consumer_placement_id": placement.id, "binding_name": binding.binding_name,
+             "provider_service_slug": binding.provider_service_slug},
+        )
+    candidates = active_by_service.get(binding.provider_service_id, [])
+    if not candidates:
+        return _error(
+            "binding_provider_missing",
+            f"no active placement exists for provider service {binding.provider_service_slug!r}",
+            {"consumer_placement_id": placement.id, "binding_name": binding.binding_name,
+             "provider_service_slug": binding.provider_service_slug},
+        )
+    if len(candidates) != 1:
+        return _error(
+            "binding_provider_ambiguous",
+            f"provider service {binding.provider_service_slug!r} has multiple active placements",
+            {"consumer_placement_id": placement.id, "binding_name": binding.binding_name,
+             "provider_service_slug": binding.provider_service_slug,
+             "provider_placement_ids": sorted(item.id for _node, item in candidates)},
+        )
+    if placement.service_id and _reaches(
+        binding.provider_service_id, placement.service_id, active_by_service, set()
+    ):
+        return _error(
+            "binding_cycle",
+            f"binding {binding.binding_name!r} closes a provider cycle back to service "
+            f"{placement.service_slug!r}",
+            {"consumer_placement_id": placement.id, "binding_name": binding.binding_name,
+             "provider_service_slug": binding.provider_service_slug},
+        )
+    provider_node, provider = candidates[0]
+    if not provider.endpoint_id:
+        return _error(
+            "binding_endpoint_missing",
+            f"provider service {binding.provider_service_slug!r} has no desired endpoint",
+            {"provider_placement_id": provider.id, "binding_name": binding.binding_name,
+             "provider_service_slug": binding.provider_service_slug},
+        )
+    endpoint_pair = endpoints.get(provider.endpoint_id)
+    if endpoint_pair is None or endpoint_pair[0].id != provider_node.id:
+        return _error(
+            "binding_endpoint_invalid",
+            "provider placement references an endpoint outside its node",
+            {"provider_placement_id": provider.id, "endpoint_id": provider.endpoint_id,
+             "binding_name": binding.binding_name},
+        )
+    _node, endpoint = endpoint_pair
+    url = _endpoint_url(endpoint)
+    if url is None:
+        return _error(
+            "binding_endpoint_unusable",
+            "provider endpoint requires an address, protocol, and port",
+            {"provider_placement_id": provider.id, "endpoint_id": endpoint.id,
+             "binding_name": binding.binding_name},
+        )
+    return ServiceDependencyResolution(
+        variables={variable: url},
+        provenance=[{
+            "consumer_placement_id": placement.id,
+            "binding_name": binding.binding_name,
+            "provider_service_slug": binding.provider_service_slug,
             "provider_placement_id": provider.id,
             "endpoint_id": endpoint.id,
-        }]
-        result[consumer.id] = ServiceDependencyResolution(
-            variables={"nintent_opencode_ollama_url": url}, provenance=provenance
-        )
-    return result
+        }],
+    )
+
+
+def _reaches(
+    service_id: str,
+    target_service_id: str,
+    active_by_service: dict[str, list[tuple[NodeInput, PlacementInput]]],
+    seen: set[str],
+) -> bool:
+    """Whether the binding graph reaches `target_service_id` from `service_id`."""
+
+    if service_id == target_service_id:
+        return True
+    if service_id in seen:
+        return False
+    seen.add(service_id)
+    for _node, placement in active_by_service.get(service_id, ()):
+        for binding in placement.bindings:
+            if _reaches(binding.provider_service_id, target_service_id, active_by_service, seen):
+                return True
+    return False
 
 
 def _endpoint_url(endpoint: EndpointCandidate) -> str | None:

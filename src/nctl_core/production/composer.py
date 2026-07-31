@@ -94,12 +94,14 @@ PLACEMENT_LOCAL_CODES = frozenset(
 )
 SERVICE_DEPENDENCY_LOCAL_CODES = frozenset(
     {
-        "ambiguous_llm_provider_dependency",
-        "llm_provider_missing",
-        "llm_provider_ambiguous",
-        "llm_provider_endpoint_missing",
-        "llm_provider_endpoint_invalid",
-        "llm_provider_endpoint_unusable",
+        "binding_name_undeclared",
+        "binding_self_reference",
+        "binding_provider_missing",
+        "binding_provider_ambiguous",
+        "binding_cycle",
+        "binding_endpoint_missing",
+        "binding_endpoint_invalid",
+        "binding_endpoint_unusable",
     }
 )
 MERGE_LOCAL_CODES = frozenset({"conflicting_host_variable"})

@@ -25,7 +25,7 @@ here is a schema-completeness fix rather than new domain logic.
 
 service_relation Phase 2 addition: `desired_service_bindings` (empirically
 checked against the live scratch Nautobot, 2026-08-01) carries the
-`DesiredServiceBinding` rows that replaced the `llm_provider_service` config
+`DesiredServiceBinding` rows that replaced the old placement-config provider
 key; the resolver in `production/service_dependencies.py` is their consumer.
 
 Compute roots are decoded here as transport data. Their pure row models,

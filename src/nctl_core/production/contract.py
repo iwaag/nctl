@@ -137,7 +137,13 @@ _NODE_RECORD_DESIRED_KEYS = {"node", "endpoints", "placements", "operational_ove
 _NODE_RECORD_ACTUAL_KEYS = {"operational_values", "operational_finding", "local_findings", "production", "service_dependencies"}
 _LOCAL_FINDING_KEYS = {"code", "severity", "message", "stage", "evidence"}
 _LOCAL_FINDING_SEVERITIES = {"error"}
-_SERVICE_DEPENDENCY_KEYS = {"consumer_placement_id", "service_slug", "provider_placement_id", "endpoint_id"}
+_SERVICE_DEPENDENCY_KEYS = {
+    "consumer_placement_id",
+    "binding_name",
+    "provider_service_slug",
+    "provider_placement_id",
+    "endpoint_id",
+}
 
 
 class ContractError(ValueError):
