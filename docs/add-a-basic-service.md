@@ -32,26 +32,12 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
 
 1. **Add a `desired_service` upsert operation** — one row per service, not per
    instance. Each batch operation has `op`, `kind`, `key`, and `values`:
-   - `name` / `slug`: e.g. `dnsmasq`.
-   - `display_name`: human label.
-   - `service_type`: `service` (or the closest fit).
+   - `name` / `slug`: e.g. `dnsmasq`; `slug` is the service identity.
    - `lifecycle`: **set this to `active` explicitly** once you intend it to
      actually run. Unlike `DesiredNode.lifecycle`, `DesiredService.lifecycle`
      deliberately kept its `proposed` default in Better Usability Phase 3 —
      nothing promotes a service to `active` for you, so this is genuine
      intent you must state, not an oversight.
-   - `intent_source`: required (non-null FK) — use a `manual` IntentSource
-     for hand-entered services; add an `intent_source` `upsert` operation
-     (`key: {slug: manual}`, `values: {}`) if none exists yet, same as
-     [register-a-new-pc.md](register-a-new-pc.md#1-one-time-prerequisite-an-intentsource).
-   - `catalog_namespace` / `catalog_metadata_name`: `default` / the service
-     slug is enough for a manual entry (these plus `intent_source` are the
-     row's uniqueness key).
-   - `requirements`: leave `{}` unless you have genuine operator-declared
-     requirements to record — this field is never populated by analysis
-     (Better Usability Phase 4 keeps `analysis_provenance` strictly separate
-     from operator intent, so a re-analysis run can never overwrite what you
-     put here).
 
 2. **Add a `desired_service_placement` upsert operation**, binding that service to the
    target node:
@@ -85,12 +71,12 @@ dry_run: true
 operations:
   - op: upsert
     kind: desired_service
-    key: {intent_source: manual, catalog_namespace: default, catalog_metadata_name: example-service, service_type: service}
+    key: {slug: example-service}
     values: {name: Example service, slug: example-service, lifecycle: active}
   - op: upsert
     kind: desired_service_placement
     key:
-      desired_service: {intent_source: manual, catalog_namespace: default, catalog_metadata_name: example-service, service_type: service}
+      desired_service: example-service
       instance_name: example-service
     values: {desired_node: example-node, desired_state: active, deployment_profile: example-service}
 ```

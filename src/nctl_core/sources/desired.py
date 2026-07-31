@@ -134,10 +134,7 @@ DESIRED_QUERY = """
     id
     slug
     name
-    service_type
     lifecycle
-    catalog_namespace
-    catalog_metadata_name
   }
   desired_compute_platforms {
     id
@@ -250,10 +247,7 @@ class DesiredService(BaseModel):
     id: str
     slug: str
     name: str
-    service_type: str
     lifecycle: str
-    catalog_namespace: str
-    catalog_metadata_name: str
 class DesiredSnapshot(BaseModel):
     nodes: list[DesiredNode] = []
     endpoints: list[DesiredEndpoint] = []
@@ -393,10 +387,7 @@ def _build_service(row: dict[str, Any]) -> DesiredService:
         id=row["id"],
         slug=row["slug"],
         name=row["name"],
-        service_type=_lower(row["service_type"]),
         lifecycle=_lower(row["lifecycle"]),
-        catalog_namespace=row["catalog_namespace"],
-        catalog_metadata_name=row["catalog_metadata_name"],
     )
 
 

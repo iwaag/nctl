@@ -57,7 +57,6 @@ def _expected_service_facts(desired_service: DesiredService) -> dict[str, Any]:
         "name": _text(desired_service.name),
         "slug": _text(desired_service.slug),
         "lifecycle": _text(desired_service.lifecycle),
-        "service_type": _text(desired_service.service_type),
     }
 
 

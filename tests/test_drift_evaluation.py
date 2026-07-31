@@ -117,10 +117,7 @@ def service(**overrides):
         slug="api-service",
         name="api-service",
         display_name="API Service",
-        service_type="service",
         lifecycle="active",
-        catalog_namespace="default",
-        catalog_metadata_name="api",
     )
     data.update(overrides)
     return DesiredService(**data)

@@ -97,8 +97,7 @@ def make_snapshot() -> SourceSnapshot:
     ]
 
     service = DesiredService(
-        id="s1", slug="web", name="web", display_name="Web", service_type="service",
-        lifecycle="active", catalog_namespace="default", catalog_metadata_name="web",
+        id="s1", slug="web", name="web", display_name="Web", lifecycle="active",
     )
     placements = [
         DesiredServicePlacement(

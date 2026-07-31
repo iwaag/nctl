@@ -149,11 +149,11 @@ def test_probe_hints_are_active_authoritative_service_names() -> None:
     snapshot.services = [
         DesiredService(
             id="svc-dns", slug="dns", name="dnsmasq", display_name="DNS",
-            service_type="system", lifecycle="active", catalog_namespace="x", catalog_metadata_name="dns",
+            lifecycle="active",
         ),
         DesiredService(
             id="svc-old", slug="old", name="old-service", display_name="Old",
-            service_type="system", lifecycle="active", catalog_namespace="x", catalog_metadata_name="old",
+            lifecycle="active",
         ),
     ]
     snapshot.placements = [
@@ -182,7 +182,7 @@ def test_probe_hints_attach_managed_files_from_profile_reconciliation() -> None:
     snapshot.services = [
         DesiredService(
             id="svc-dns", slug="dns", name="dnsmasq", display_name="DNS",
-            service_type="system", lifecycle="active", catalog_namespace="x", catalog_metadata_name="dns",
+            lifecycle="active",
         ),
     ]
     snapshot.placements = [
@@ -218,7 +218,7 @@ def test_probe_hints_omit_managed_files_when_profile_has_none(tmp_path) -> None:
     snapshot.services = [
         DesiredService(
             id="svc-grafana", slug="grafana", name="grafana", display_name="Grafana",
-            service_type="system", lifecycle="active", catalog_namespace="x", catalog_metadata_name="grafana",
+            lifecycle="active",
         ),
     ]
     snapshot.placements = [

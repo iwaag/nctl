@@ -203,10 +203,7 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "slug": "dnsmasq-service",
                             "name": "dnsmasq-service",
                             "display_name": "dnsmasq",
-                            "service_type": "SERVICE",
                             "lifecycle": "ACTIVE",
-                            "catalog_namespace": "default",
-                            "catalog_metadata_name": "dnsmasq",
                         }
                     ],
                     "desired_compute_platforms": [_healthy_platform()],
@@ -267,7 +264,6 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert placement.endpoint_id is None
 
     service = snapshot.services[0]
-    assert service.service_type == "service"
     assert service.lifecycle == "active"
 
 def test_query_requests_all_desired_collections():

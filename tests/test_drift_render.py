@@ -68,10 +68,7 @@ TWO_NODE_DESIRED_RESPONSE = {
                 "slug": "web",
                 "name": "web",
                 "display_name": "Web",
-                "service_type": "CONTAINER",
                 "lifecycle": "ACTIVE",
-                "catalog_namespace": "ns",
-                "catalog_metadata_name": "web",
             }
         ],
     }

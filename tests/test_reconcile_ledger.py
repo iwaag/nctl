@@ -78,7 +78,6 @@ def _graphql_desired_node_response(realized_device_id: str | None = None, realiz
                     "realized_device_source": realized_device_source if realized_device_id else None,
                     "realized_cluster": None,
                     "realized_cluster_source": None,
-                    "intent_source": None,
                 }
             ],
             "desired_endpoints": [],

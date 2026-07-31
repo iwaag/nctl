@@ -457,8 +457,7 @@ def test_endpoint_intent_matching_satisfied_endpoint_is_silent():
 
 def test_service_intent_matching_emits_placement_evidence_and_distinct_code():
     service = DesiredService(
-        id="s1", slug="nomad", name="nomad", display_name="Nomad", service_type="service",
-        lifecycle="active", catalog_namespace="default", catalog_metadata_name="nomad",
+        id="s1", slug="nomad", name="nomad", display_name="Nomad", lifecycle="active",
     )
     node = DesiredNode(
         id="n1", slug="node-a", name="node-a", lifecycle="active", node_type="device",
@@ -496,8 +495,7 @@ def test_service_intent_matching_profile_reconciliation_error_is_a_global_diff()
     # deployment_profile_reconciliation contract is a classified global
     # error -- never a silent convergence for a dnsmasq-profiled service.
     service = DesiredService(
-        id="s1", slug="dnsmasq", name="dnsmasq", display_name="dnsmasq", service_type="daemon",
-        lifecycle="active", catalog_namespace="default", catalog_metadata_name="dnsmasq",
+        id="s1", slug="dnsmasq", name="dnsmasq", display_name="dnsmasq", lifecycle="active",
     )
     snapshot = make_snapshot(services=[service])
     context = DriftContext(

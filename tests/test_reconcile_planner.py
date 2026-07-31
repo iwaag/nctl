@@ -41,10 +41,7 @@ def _service(service_id: str, slug: str) -> DesiredService:
         slug=slug,
         name=slug,
         display_name=slug,
-        service_type="daemon",
         lifecycle="active",
-        catalog_namespace="ns",
-        catalog_metadata_name=slug,
     )
 
 

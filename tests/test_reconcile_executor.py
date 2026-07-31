@@ -1285,10 +1285,7 @@ def _service_and_placement(slug, profile, node):
         slug=slug,
         name=slug,
         display_name=slug,
-        service_type="daemon",
         lifecycle="active",
-        catalog_namespace="ns",
-        catalog_metadata_name=slug,
     )
     placement = DesiredServicePlacement(
         id=f"p-{slug}",

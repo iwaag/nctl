@@ -109,8 +109,7 @@ def test_evaluate_all_endpoints_handles_endpoint_with_no_matching_node():
 
 def test_evaluate_all_services_uses_placement_device_observation() -> None:
     service = DesiredService(
-        id="s1", slug="nomad", name="nomad", display_name="Nomad", service_type="service",
-        lifecycle="active", catalog_namespace="default", catalog_metadata_name="nomad",
+        id="s1", slug="nomad", name="nomad", display_name="Nomad", lifecycle="active",
     )
     node = DesiredNode(
         id="n1", slug="agnomad", name="agnomad", lifecycle="active", node_type="device",
@@ -158,8 +157,7 @@ def test_evaluate_all_services_uses_placement_device_observation() -> None:
 
 def _dnsmasq_snapshot():
     service = DesiredService(
-        id="s1", slug="dnsmasq", name="dnsmasq", display_name="dnsmasq", service_type="daemon",
-        lifecycle="active", catalog_namespace="default", catalog_metadata_name="dnsmasq",
+        id="s1", slug="dnsmasq", name="dnsmasq", display_name="dnsmasq", lifecycle="active",
     )
     node = DesiredNode(
         id="n1", slug="agdnsmasq", name="agdnsmasq", lifecycle="active", node_type="device",

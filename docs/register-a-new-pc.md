@@ -4,7 +4,7 @@
 > **Superseded (Interface Contract Phase 3/4):** the nintent Nautobot UI is read-only. UI
 > add/edit/delete forms, `sources/add/`, and Quick Host Add (`nodes/quick-add/`) have been
 > deleted, not merely deprecated. Sections 1-3 below use the current, only path: place
-> `IntentSource`, `DesiredNode`, and `DesiredEndpoint` operations in a private batch document,
+> `DesiredNode` and `DesiredEndpoint` operations in a private batch document,
 > preview with `nctl desired apply -f .local/desired-state.yaml`, then add `--yes` to commit.
 > Use `nctl lifecycle NODE` for lifecycle transitions.
 
@@ -14,24 +14,7 @@ consolidated, now expressed as a private batch document instead of a UI form. Ev
 actual types, lifecycle, DNS/mDNS names) is derived by default; you only ever supply genuine
 intent, and every derivation is visible with an explicit override control if you need one.
 
-## 1. One-time prerequisite: an `IntentSource`
-
-Every `DesiredNode`/`DesiredService` needs a non-null `intent_source` FK. If this is your first
-node, add an operation to the private batch document:
-
-```yaml
-dry_run: true
-operations:
-  - op: upsert
-    kind: intent_source
-    key: {slug: manual}
-    values: {}
-```
-
-Skip this operation if a `manual` source already exists — check the read-only
-`/plugins/intent-catalog/sources/` list page first.
-
-## 2. Declare the node and its endpoint in the batch document
+## 1. Declare the node and its endpoint in the batch document
 
 Add `upsert` operations with `kind: desired_node` and `kind: desired_endpoint`, filling in only
 genuine identity/address/publishing choices. Each operation has `op`, `kind`, `key`, and `values`;
@@ -64,7 +47,7 @@ the endpoint key references the node by slug, so both can be applied atomically 
 Keep `dry_run: true` and review the proposed create/update actions. Change it to `false` only
 when the preview matches what you intended, then run `nctl desired apply -f .local/desired-state.yaml --yes`.
 
-## 3. The derived node type, accepted actual types, lifecycle, and DNS/mDNS names
+## 2. The derived node type, accepted actual types, lifecycle, and DNS/mDNS names
 
 `accepted_actual_types` is derived from `node_type` (e.g. `device` -> `device`) when omitted from
 the YAML — this is the common case and needs no input. Set it explicitly only if this specific
@@ -80,7 +63,7 @@ apply.
 DNS/mDNS names default from the node's slug (`names.py`'s canonical-name rules) when omitted from
 the endpoint's YAML; an explicit value you supply is recorded as `intent`, not `derived`.
 
-## 4. Inspect recorded/effective/application layers before mutating anything
+## 3. Inspect recorded/effective/application layers before mutating anything
 
 ```bash
 uv run --project nctl nctl drift --host NODE
@@ -93,7 +76,7 @@ for every placement that isn't simply `applied`). This is the answer to "what wi
 happen" before you run anything that touches the machine. Any `error`/`warning` diffs above it
 are the things worth fixing first.
 
-## 5. Review the bounded plan
+## 4. Review the bounded plan
 
 ```bash
 uv run --project nctl nctl reconcile NODE
@@ -102,7 +85,7 @@ uv run --project nctl nctl reconcile NODE
 No `--yes` yet — this is a dry plan with zero writes. Confirm the actions it proposes
 (bootstrap collection, IPAM linking, production render) match what you expect.
 
-## 6. Apply
+## 5. Apply
 
 ```bash
 uv run --project nctl nctl reconcile NODE --yes
@@ -112,7 +95,7 @@ One bounded operation: bootstrap collection, ledger/IPAM actions, a fresh produc
 verification, ending in a final drift check. This replaces any manual
 `ansible-playbook`/`make bootstrap-inventory` sequence for this node.
 
-## 7. Final host-scoped drift
+## 6. Final host-scoped drift
 
 ```bash
 uv run --project nctl nctl drift --host NODE
@@ -124,7 +107,7 @@ still short of `converged`, exactly which finding is blocking and why — never 
 ## Staying `planned` on purpose
 
 If you want a node recorded but not yet live (a future secure-route entry point, or a machine
-you're not ready to actuate), leave `lifecycle=planned` in step 2 or demote it afterward:
+you're not ready to actuate), leave `lifecycle=planned` in step 1 or demote it afterward:
 
 ```bash
 uv run --project nctl nctl lifecycle NODE planned
@@ -133,13 +116,6 @@ uv run --project nctl nctl lifecycle NODE planned
 A `planned` node's recorded intent is still fully visible in `intent_effect_summary`
 (`production.state: out_of_scope`, reason `node_out_of_scope` on any active placement) — nothing
 about it is hidden, it just doesn't actuate until promoted (`nctl lifecycle NODE active`).
-
-## Blank `IntentSource.ref` resolution
-
-If an `IntentSource` used for analysis (not this manual-registration path, but relevant if you
-also configure Git-backed sources) has no explicit `ref`, analysis tries the repository's
-discovered default branch first, then the deduplicated fallbacks `HEAD`, `main`, `master` in that
-order. An explicit `ref` always wins and is tried first.
 
 ## Next: add a service
 
