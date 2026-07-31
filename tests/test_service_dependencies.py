@@ -209,3 +209,36 @@ def test_multiple_bindings_merge_variables_and_provenance():
         "nintent_second_url": "http://agsecond.local:8080/v1",
     }
     assert [entry["binding_name"] for entry in resolution.provenance] == ["llm_provider", "second_provider"]
+
+
+def test_reverse_service_bindings_lists_inbound_consumers_per_provider():
+    from nctl_core.production.service_dependencies import reverse_service_bindings
+
+    provider = _ollama_provider()
+    consumer_one = _agent_consumer([_binding("b1", "llm_provider", "ollama")])
+    consumer_two = _node(
+        "consumer2", "agpc",
+        placements=[_placement("agent2", "node-agent", profile="node_agent", bindings=[_binding("b2", "llm_provider", "ollama")])],
+    )
+
+    reverse = reverse_service_bindings([consumer_one, consumer_two, provider])
+
+    assert reverse["service-ollama"] == [
+        {"consumer_node": "aghub", "consumer_service": "node-agent", "binding_name": "llm_provider"},
+        {"consumer_node": "agpc", "consumer_service": "node-agent", "binding_name": "llm_provider"},
+    ]
+
+
+def test_reverse_service_bindings_ignores_inactive_consumer_placements():
+    from nctl_core.production.service_dependencies import reverse_service_bindings
+
+    provider = _ollama_provider()
+    consumer = _node(
+        "consumer", "aghub",
+        placements=[_placement(
+            "agent", "node-agent", profile="node_agent",
+            bindings=[_binding("b1", "llm_provider", "ollama")], desired_state="retired",
+        )],
+    )
+
+    assert reverse_service_bindings([consumer, provider]) == {}

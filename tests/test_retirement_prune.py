@@ -3,7 +3,14 @@ from nctl_core.drift.engine import DriftResult, TargetStatus
 from nctl_core.drift.model import DiffRecord, Severity, Status, Target
 from nctl_core.retirement_prune import _desired_operations, _resolve
 from nctl_core.sources.actual import ActualCluster, ActualDevice, ActualSnapshot, ActualVirtualMachine, ProxmoxClusterFacts, ProxmoxVirtualMachineFacts
-from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredSnapshot
+from nctl_core.sources.desired import (
+    DesiredEndpoint,
+    DesiredNode,
+    DesiredService,
+    DesiredServiceBinding,
+    DesiredServicePlacement,
+    DesiredSnapshot,
+)
 from nctl_core.sources.snapshot import SourceSnapshot
 from datetime import datetime, timezone
 
@@ -41,6 +48,47 @@ def test_no_surviving_actual_roots_retries_desired_cleanup():
     assert payload is None
     assert eligibility["actual_roots"] == {"device_id": None, "virtual_machine_id": None}
     assert [operation["kind"] for operation in _desired_operations(snapshot, node, instance)] == ["desired_endpoint", "desired_compute_instance", "desired_node"]
+
+
+def test_eligibility_surfaces_inbound_consumers_of_a_hosted_provider_service():
+    base = _snapshot()
+    consumer_node = DesiredNode(id="node-2", slug="agconsumer", name="agconsumer", lifecycle="active", node_type="device")
+    snapshot = base.model_copy(update={
+        "desired": base.desired.model_copy(update={
+            "nodes": [*base.desired.nodes, consumer_node],
+            "services": [DesiredService(id="svc-ollama", slug="ollama", name="ollama", lifecycle="active")],
+            "placements": [
+                DesiredServicePlacement(
+                    id="ollama-main", service_id="svc-ollama", node_id="node-1",
+                    instance_name="ollama-main", deployment_profile="ollama", config_schema_version="1",
+                ),
+                DesiredServicePlacement(
+                    id="agent-placement", service_id="svc-agent", node_id="node-2",
+                    instance_name="node-agent", deployment_profile="node_agent", config_schema_version="1",
+                ),
+            ],
+            "service_bindings": [
+                DesiredServiceBinding(
+                    id="binding-1", binding_name="llm_provider",
+                    consumer_placement_id="agent-placement",
+                    provider_service_id="svc-ollama", provider_service_slug="ollama",
+                )
+            ],
+        }),
+    })
+    drift = DriftResult(targets=[TargetStatus(
+        target=Target(kind="compute_instance", id=snapshot.desired.compute_instances[0].id, slug="agfixture"),
+        status=Status.CONVERGED,
+        diffs=[DiffRecord(target=Target(kind="compute_instance", id=snapshot.desired.compute_instances[0].id),
+                           code="compute_instance_removal_complete", severity=Severity.INFO, message="done")],
+    )])
+
+    eligibility, *_ = _resolve(snapshot, drift, "agfixture")
+
+    assert eligibility["result"] == "eligible"
+    assert eligibility["inbound_consumers"] == [
+        {"consumer_node": "agconsumer", "consumer_service": "", "binding_name": "llm_provider"}
+    ]
 
 
 def test_partial_actual_cleanup_plans_the_surviving_root():

@@ -16,6 +16,8 @@ from nctl_core.drift_render import fetch_and_compute_drift
 from nctl_core.events import OperationLog
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
+from nctl_core.production.adapter import build_production_node_inputs
+from nctl_core.production.service_dependencies import reverse_service_bindings
 
 PRUNE_SCHEMA = "nctl.prune.v1"
 ACTUAL_PRUNE_PATH = "/api/plugins/intent-catalog/retirement-prune/actual/"
@@ -83,6 +85,26 @@ def _remove_operator_input(cfg: Config, host: str, artifacts: OperationArtifacts
     return {"path": str(path), "changed": True}
 
 
+def _inbound_consumers(snapshot, node) -> list[dict[str, str]]:
+    """The idea-A §8/§9 reverse view: who would be orphaned if `node`'s hosted
+    service(s) were deleted along with it, so a prune/retirement dry plan
+    never hides an inbound binding behind an opaque nintent conflict pk.
+    """
+    hosted_service_ids = {
+        placement.service_id
+        for placement in snapshot.desired.placements
+        if placement.node_id == node.id and placement.desired_state == "active"
+    }
+    if not hosted_service_ids:
+        return []
+    reverse = reverse_service_bindings(build_production_node_inputs(snapshot))
+    consumers: list[dict[str, str]] = []
+    for service_id in hosted_service_ids:
+        consumers.extend(reverse.get(service_id, []))
+    consumers.sort(key=lambda item: (item["consumer_node"], item["consumer_service"], item["binding_name"]))
+    return consumers
+
+
 def _resolve(snapshot, drift, host: str) -> tuple[dict[str, Any], Any, Any, dict[str, Any] | None]:
     nodes = [node for node in snapshot.desired.nodes if node.slug == host]
     if not nodes:
@@ -90,25 +112,30 @@ def _resolve(snapshot, drift, host: str) -> tuple[dict[str, Any], Any, Any, dict
     if len(nodes) != 1:
         return {"result": "ineligible", "reason": "slug is ambiguous"}, None, None, None
     node = nodes[0]
+    inbound_consumers = _inbound_consumers(snapshot, node)
     instances = [item for item in snapshot.desired.compute_instances if item.desired_node_id == node.id]
     if node.lifecycle != "retired" or len(instances) != 1 or instances[0].desired_presence != "absent":
-        return {"result": "ineligible", "reason": "requires one retired DesiredNode with one absent compute instance"}, None, None, None
+        return {"result": "ineligible", "reason": "requires one retired DesiredNode with one absent compute instance",
+                "inbound_consumers": inbound_consumers}, None, None, None
     instance = instances[0]
     vm_id, device_id = instance.realized_vm_id, node.realized_device_id
     vm = next((item for item in snapshot.actual.virtual_machines if item.id == vm_id), None)
     device = next((item for item in snapshot.actual.devices if item.id == device_id), None)
     if vm and (vm.proxmox is None or vm.proxmox.presence != "absent" or vm.proxmox.guest_type != "lxc"):
-        return {"result": "ineligible", "reason": "linked Proxmox LXC is not confirmed absent"}, None, None, None
+        return {"result": "ineligible", "reason": "linked Proxmox LXC is not confirmed absent",
+                "inbound_consumers": inbound_consumers}, None, None, None
     cluster = next((item for item in snapshot.actual.clusters if vm and item.id == vm.cluster_id), None)
     if vm and (not cluster or not cluster.proxmox or cluster.proxmox.observation_state != "complete"):
-        return {"result": "ineligible", "reason": "Proxmox observation is not complete"}, None, None, None
+        return {"result": "ineligible", "reason": "Proxmox observation is not complete",
+                "inbound_consumers": inbound_consumers}, None, None, None
     status = next((item for item in drift.targets if item.target.kind == "compute_instance" and item.target.id == instance.id), None)
     codes = {item.code for item in status.diffs} if status else set()
     if vm and ("compute_instance_removal_complete" not in codes or "compute_instance_destroy_required" in codes):
-        return {"result": "ineligible", "reason": "drift does not confirm completed removal", "drift_codes": sorted(codes)}, None, None, None
+        return {"result": "ineligible", "reason": "drift does not confirm completed removal", "drift_codes": sorted(codes),
+                "inbound_consumers": inbound_consumers}, None, None, None
     roots = {"device_id": device.id if device else None, "virtual_machine_id": vm.id if vm else None}
     eligibility = {"result": "eligible", "desired_node_id": node.id, "compute_instance_id": instance.id,
-                   "actual_roots": roots, "drift_codes": sorted(codes)}
+                   "actual_roots": roots, "drift_codes": sorted(codes), "inbound_consumers": inbound_consumers}
     payload = {"desired_node_id": node.id, **roots} if any(roots.values()) else None
     return eligibility, node, instance, payload
 
@@ -206,5 +233,11 @@ def render_prune_text(envelope: Envelope[PruneData]) -> str:
         lines.append(f"Actual records: {len(data.actual_plan.get('records', []))}")
     if data.desired_operations:
         lines.append(f"Desired deletes: {len(data.desired_operations)}")
+    inbound = data.eligibility.get("inbound_consumers") or []
+    if inbound:
+        lines.append(f"Inbound consumers ({len(inbound)}) -- deleting this node's service would orphan them:")
+        lines.extend(
+            f"  {item['consumer_node']} ({item['consumer_service']}) via {item['binding_name']}" for item in inbound
+        )
     lines.extend(f"error [{item.code}]: {item.message}" for item in envelope.errors)
     return "\n".join(lines)

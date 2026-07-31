@@ -205,3 +205,31 @@ def _endpoint_url(endpoint: EndpointCandidate) -> str | None:
 
 def _error(code: str, message: str, evidence: dict[str, Any]) -> ServiceDependencyResolution:
     return ServiceDependencyResolution({}, [], code, message, evidence)
+
+
+def reverse_service_bindings(nodes: Iterable[NodeInput]) -> dict[str, list[dict[str, str]]]:
+    """Given a desired snapshot, list each provider service's inbound consumers.
+
+    Pure, derived-on-demand (idea-A §8/§9): never persisted. Keyed by provider
+    `service_id`; each entry is one binding, sorted by
+    `(consumer_node_slug, consumer_service_slug, binding_name)` for stable
+    output. Used to surface the inbound set in prune/retirement dry plans
+    before a provider or its placement/endpoint is deleted.
+    """
+
+    all_nodes = tuple(nodes)
+    result: dict[str, list[dict[str, str]]] = {}
+    for consumer in all_nodes:
+        for placement in consumer.placements:
+            if placement.desired_state != "active":
+                continue
+            for binding in placement.bindings:
+                entry = {
+                    "consumer_node": consumer.slug,
+                    "consumer_service": placement.service_slug,
+                    "binding_name": binding.binding_name,
+                }
+                result.setdefault(binding.provider_service_id, []).append(entry)
+    for entries in result.values():
+        entries.sort(key=lambda item: (item["consumer_node"], item["consumer_service"], item["binding_name"]))
+    return result
