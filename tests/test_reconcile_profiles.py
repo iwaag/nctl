@@ -53,6 +53,8 @@ def test_real_repo_file_validates(tmp_path):
         "macos": "playbooks/nomad/setup_nomad_client_macos.yml",
     }
     assert entries["node_agent"].action.playbook == "playbooks/agent/setup_opencode.yml"
+    assert entries["node_agent"].action.bindings["llm_provider"].config_file == "~/.config/opencode/opencode.json"
+    assert entries["node_agent"].action.bindings["llm_provider"].json_path == "provider.ollama.options.baseURL"
     assert entries["ollama"].observe_only is True
 
 
@@ -247,6 +249,89 @@ def test_managed_files_forbidden_on_playbook_actions(tmp_path):
 
     with pytest.raises(ProfileReconciliationError):
         load_profile_reconciliation(playbook_dir, {"grafana"})
+
+
+# --- bindings (service_relation Phase 3) -------------------------------------
+
+
+def test_bindings_forbidden_on_dnsmasq_config_actions(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "dnsmasq": {
+                    "action": {
+                        "kind": "dnsmasq_config",
+                        "bindings": {"x": {"config_file": "/etc/x.json", "json_path": "a.b"}},
+                    }
+                },
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError):
+        load_profile_reconciliation(playbook_dir, {"dnsmasq"})
+
+
+def test_binding_config_file_must_be_absolute_or_home_relative(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "grafana": {
+                    "action": {
+                        "kind": "playbook",
+                        "playbook": "playbooks/monitoring/setup_grafana.yml",
+                        "bindings": {"x": {"config_file": "relative/x.json", "json_path": "a.b"}},
+                    }
+                },
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError, match="absolute or home-relative"):
+        load_profile_reconciliation(playbook_dir, {"grafana"})
+
+
+def test_binding_json_path_must_not_be_empty(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "grafana": {
+                    "action": {
+                        "kind": "playbook",
+                        "playbook": "playbooks/monitoring/setup_grafana.yml",
+                        "bindings": {"x": {"config_file": "~/x.json", "json_path": ""}},
+                    }
+                },
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError, match="json_path"):
+        load_profile_reconciliation(playbook_dir, {"grafana"})
+
+
+def test_binding_config_file_accepts_home_relative_path(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "grafana": {
+                    "action": {
+                        "kind": "playbook",
+                        "playbook": "playbooks/monitoring/setup_grafana.yml",
+                        "bindings": {"llm_provider": {"config_file": "~/.config/opencode/opencode.json", "json_path": "a.b"}},
+                    }
+                },
+            }
+        },
+    )
+
+    entries = load_profile_reconciliation(playbook_dir, {"grafana"})
+
+    assert entries["grafana"].action.bindings["llm_provider"].config_file == "~/.config/opencode/opencode.json"
 
 
 # --- resolve_dnsmasq_records_spec (fix_sshkey4 Step 3) -----------------------

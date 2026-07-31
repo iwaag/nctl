@@ -77,6 +77,11 @@ def render_probe_hints(
     copied here verbatim rather than re-derived. Probe hints (and therefore
     managed-file observation) appear only for services actually active on
     this node, matching the existing name-only hint behavior.
+
+    service_relation Phase 3: the same placement's `ProfileAction.bindings`
+    (e.g. `node_agent`'s `llm_provider` slot) is copied verbatim under
+    `bindings` alongside `managed_files`, so nodeutils knows which config
+    slot to read and probe on the consumer node.
     """
 
     service_names = {service.id: service.name for service in snapshot.services}
@@ -106,6 +111,15 @@ def render_probe_hints(
                 continue
             hints[service_names[service_id]]["managed_files"] = {
                 key: {"path": spec.path, "digest": spec.digest} for key, spec in entry.action.managed_files.items()
+            }
+    if profile_reconciliation:
+        for service_id, (profile_name, _endpoint_id) in active_by_service.items():
+            entry = profile_reconciliation.get(profile_name)
+            if entry is None or entry.action is None or not entry.action.bindings:
+                continue
+            hints[service_names[service_id]]["bindings"] = {
+                key: {"config_file": spec.config_file, "json_path": spec.json_path}
+                for key, spec in entry.action.bindings.items()
             }
     return yaml.safe_dump(
         {"service_probe_hints": hints},

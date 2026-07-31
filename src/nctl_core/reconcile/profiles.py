@@ -60,6 +60,36 @@ class ManagedFileSpec(BaseModel):
         return self
 
 
+class BindingSlotSpec(BaseModel):
+    """One closed consumer-side binding observation target (service_relation Phase 3).
+
+    Declares where a bound provider endpoint is written on the consumer node
+    and what to read back. `config_file` intentionally allows a `~`-relative
+    path (unlike `ManagedFileSpec.path`): the OpenCode config lives under the
+    login user's home and nodeutils runs as that user, so a deliberate
+    `Path.expanduser()` is the one documented deviation from the
+    managed-files "path must be absolute" rule. `json_path` is a dot-notation
+    path into the parsed JSON config (e.g. `provider.ollama.options.baseURL`).
+    Copied verbatim into the nodeutils probe config by
+    `nctl_core.observation.render_probe_hints`; nodeutils never re-derives it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    config_file: str
+    json_path: str
+
+    @model_validator(mode="after")
+    def _check_config_file(self) -> "BindingSlotSpec":
+        if not (self.config_file.startswith("~/") or Path(self.config_file).is_absolute()):
+            raise ValueError(
+                f"binding config_file must be absolute or home-relative (~/...): {self.config_file!r}"
+            )
+        if not self.json_path:
+            raise ValueError("binding json_path must not be empty")
+        return self
+
+
 class ProfileAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -71,12 +101,18 @@ class ProfileAction(BaseModel):
     # `dnsmasq_config` declares these in this phase -- content convergence
     # for arbitrary playbook profiles is explicitly out of scope.
     managed_files: dict[str, ManagedFileSpec] = Field(default_factory=dict)
+    # Closed binding-slot observation targets (service_relation Phase 3).
+    # Only `playbook` profiles declare these -- a consumer-side config slot
+    # that binds to another service, not a dnsmasq-style managed file.
+    bindings: dict[str, BindingSlotSpec] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_playbook_fields(self) -> "ProfileAction":
         if self.kind == "dnsmasq_config":
             if self.playbook is not None or self.playbook_by_os:
                 raise ValueError("dnsmasq_config actions must not set playbook/playbook_by_os")
+            if self.bindings:
+                raise ValueError("bindings is only supported for kind=playbook in this phase")
         else:
             if bool(self.playbook) == bool(self.playbook_by_os):
                 raise ValueError("a playbook action needs exactly one of playbook or playbook_by_os")

@@ -259,6 +259,56 @@ def test_probe_hints_omit_managed_files_when_profile_has_none(tmp_path) -> None:
     assert rendered == {"service_probe_hints": {"grafana": {}}}
 
 
+def test_probe_hints_attach_bindings_from_profile_reconciliation() -> None:
+    # service_relation Phase 3: an active placement whose deployment_profile
+    # has ProfileAction.bindings gets that metadata copied verbatim into its
+    # service's probe hint, alongside managed_files.
+    from nctl_core.reconcile.profiles import BindingSlotSpec, ProfileAction, ProfileReconciliation
+
+    snapshot = _snapshot("node-a")
+    snapshot.services = [
+        DesiredService(
+            id="svc-node-agent", slug="node-agent", name="node-agent", display_name="Node Agent",
+            lifecycle="active",
+        ),
+    ]
+    snapshot.placements = [
+        DesiredServicePlacement(
+            id="p1", service_id="svc-node-agent", node_id=_node_id("node-a"), instance_name="node-agent",
+            deployment_profile="node_agent", config_schema_version="v1",
+        ),
+    ]
+    profile_reconciliation = {
+        "node_agent": ProfileReconciliation(
+            action=ProfileAction(
+                kind="playbook",
+                playbook="playbooks/agent/setup_opencode.yml",
+                bindings={
+                    "llm_provider": BindingSlotSpec(
+                        config_file="~/.config/opencode/opencode.json",
+                        json_path="provider.ollama.options.baseURL",
+                    )
+                },
+            )
+        ),
+    }
+
+    rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"), profile_reconciliation))
+
+    assert rendered == {
+        "service_probe_hints": {
+            "node-agent": {
+                "bindings": {
+                    "llm_provider": {
+                        "config_file": "~/.config/opencode/opencode.json",
+                        "json_path": "provider.ollama.options.baseURL",
+                    }
+                },
+            },
+        }
+    }
+
+
 def test_observation_collects_caches_and_ingests_all_hosts(tmp_path: Path) -> None:
     now = datetime(2026, 7, 16, 1, tzinfo=timezone.utc)
     artifacts, log = _operation(tmp_path)
