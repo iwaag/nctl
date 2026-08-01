@@ -215,6 +215,18 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
                             "provider_service": {"id": "service-1", "slug": "dnsmasq-service"},
                         }
                     ],
+                    "desired_workspaces": [
+                        {
+                            "id": "workspace-1",
+                            "slug": "pj-voxel3dprint",
+                            "name": "pj-voxel3dprint",
+                            "lifecycle": "ACTIVE",
+                            "source_remote_url": "https://github.com/iwaag/pj-voxel3dprint.git",
+                            "expected_path": "/home/eiji/projects/pj-voxel3dprint",
+                            "desired_presence": "PRESENT",
+                            "desired_node": {"id": "node-1", "slug": "edge-1"},
+                        }
+                    ],
                     "desired_compute_platforms": [_healthy_platform()],
                     "desired_compute_instances": [_healthy_instance()],
                 }
@@ -281,6 +293,25 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
     assert binding.provider_service_id == "service-1"
     assert binding.provider_service_slug == "dnsmasq-service"
 
+    workspace = snapshot.workspaces[0]
+    assert workspace.slug == "pj-voxel3dprint"
+    assert workspace.lifecycle == "active"
+    assert workspace.desired_presence == "present"
+    assert workspace.source_remote_url == "https://github.com/iwaag/pj-voxel3dprint.git"
+    assert workspace.expected_path == "/home/eiji/projects/pj-voxel3dprint"
+    assert workspace.node_id == "node-1"
+    assert workspace.node_slug == "edge-1"
+
+
+@respx.mock
+def test_fetch_desired_snapshot_defaults_workspaces_when_field_absent():
+    client = _mock_graphql(_base_response())
+
+    snapshot = fetch_desired_snapshot(client)
+
+    assert snapshot.workspaces == []
+
+
 def test_query_requests_all_desired_collections():
     for field in (
         "desired_nodes",
@@ -290,6 +321,7 @@ def test_query_requests_all_desired_collections():
         "desired_service_placements",
         "desired_services",
         "desired_service_bindings",
+        "desired_workspaces",
         "desired_compute_platforms",
         "desired_compute_instances",
     ):

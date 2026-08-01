@@ -82,6 +82,14 @@ def render_probe_hints(
     (e.g. `node_agent`'s `llm_provider` slot) is copied verbatim under
     `bindings` alongside `managed_files`, so nodeutils knows which config
     slot to read and probe on the consumer node.
+
+    creative_workspace p1 Step 2: `workspace_probe_hints` is rendered from
+    declared `DesiredWorkspace` rows the same way, so the declared path
+    keeps one owner (README_DEV lesson 4) -- nodeutils never guesses a
+    workspace's expected location. Only `active`/`present` workspaces on
+    this node get a hint; observing a retired or not-yet-present path is
+    harmless but noisy, so it is filtered out here rather than left to the
+    collector.
     """
 
     service_names = {service.id: service.name for service in snapshot.services}
@@ -121,8 +129,15 @@ def render_probe_hints(
                 key: {"config_file": spec.config_file, "json_path": spec.json_path}
                 for key, spec in entry.action.bindings.items()
             }
+    workspace_hints: dict[str, dict[str, Any]] = {
+        workspace.slug: {"path": workspace.expected_path}
+        for workspace in snapshot.workspaces
+        if workspace.node_id == node_id
+        and workspace.lifecycle == "active"
+        and workspace.desired_presence == "present"
+    }
     return yaml.safe_dump(
-        {"service_probe_hints": hints},
+        {"service_probe_hints": hints, "workspace_probe_hints": workspace_hints},
         sort_keys=True,
         default_flow_style=False,
     )

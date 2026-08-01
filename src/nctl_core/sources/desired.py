@@ -28,6 +28,13 @@ checked against the live scratch Nautobot, 2026-08-01) carries the
 `DesiredServiceBinding` rows that replaced the old placement-config provider
 key; the resolver in `production/service_dependencies.py` is their consumer.
 
+creative_workspace p1 Step 2 addition: `desired_workspaces` (field names and
+plural confirmed live in `p0/report_step6.md`) carries `DesiredWorkspace`
+rows; `observation.py`'s `render_probe_hints` is the first consumer, driving
+`workspace_probe_hints`. Decoded with `.get(...) or []` like the compute
+roots below, not a required key, so existing fixtures that predate this
+field keep working.
+
 Compute roots are decoded here as transport data. Their pure row models,
 fixture-bound validation, collection assembly, and source-issue policy live
 in `nctl_core.compute`. Decode-time malformed-MAC tolerance stays here so an
@@ -156,6 +163,16 @@ DESIRED_QUERY = """
     config
     realized_cluster { id }
   }
+  desired_workspaces {
+    id
+    slug
+    name
+    lifecycle
+    source_remote_url
+    expected_path
+    desired_presence
+    desired_node { id slug }
+  }
   desired_compute_instances {
     id
     desired_node { id slug }
@@ -272,6 +289,20 @@ class DesiredServiceBinding(BaseModel):
     provider_service_slug: str
 
 
+class DesiredWorkspace(BaseModel):
+    """A composite Git checkout under active development (creative_workspace p1 Step 2)."""
+
+    id: str
+    slug: str
+    name: str
+    lifecycle: str
+    source_remote_url: str
+    expected_path: str
+    desired_presence: str
+    node_id: str
+    node_slug: str
+
+
 class DesiredSnapshot(BaseModel):
     nodes: list[DesiredNode] = []
     endpoints: list[DesiredEndpoint] = []
@@ -280,6 +311,7 @@ class DesiredSnapshot(BaseModel):
     placements: list[DesiredServicePlacement] = []
     services: list[DesiredService] = []
     service_bindings: list[DesiredServiceBinding] = []
+    workspaces: list[DesiredWorkspace] = []
     compute_platforms: list[DesiredComputePlatform] = []
     compute_instances: list[DesiredComputeInstance] = []
     source_issues: list[DesiredSourceIssue] = []
@@ -306,6 +338,7 @@ def fetch_desired_snapshot(client: NautobotClient) -> DesiredSnapshot:
         placements=[_build_placement(row) for row in data["desired_service_placements"]],
         services=[_build_service(row) for row in data["desired_services"]],
         service_bindings=[_build_service_binding(row) for row in data["desired_service_bindings"]],
+        workspaces=[_build_workspace(row) for row in data.get("desired_workspaces") or []],
         compute_platforms=compute_platforms,
         compute_instances=compute_instances,
         source_issues=source_issues,
@@ -414,6 +447,21 @@ def _build_service(row: dict[str, Any]) -> DesiredService:
         slug=row["slug"],
         name=row["name"],
         lifecycle=_lower(row["lifecycle"]),
+    )
+
+
+def _build_workspace(row: dict[str, Any]) -> DesiredWorkspace:
+    node = row["desired_node"]
+    return DesiredWorkspace(
+        id=row["id"],
+        slug=row["slug"],
+        name=row["name"],
+        lifecycle=_lower(row["lifecycle"]),
+        source_remote_url=row["source_remote_url"],
+        expected_path=row["expected_path"],
+        desired_presence=_lower(row["desired_presence"]),
+        node_id=node["id"],
+        node_slug=node["slug"],
     )
 
 

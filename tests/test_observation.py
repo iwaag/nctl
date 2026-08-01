@@ -22,6 +22,7 @@ from nctl_core.sources.desired import (
     DesiredService,
     DesiredServicePlacement,
     DesiredSnapshot,
+    DesiredWorkspace,
 )
 
 
@@ -168,7 +169,8 @@ def test_probe_hints_are_active_authoritative_service_names() -> None:
     ]
 
     assert yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"))) == {
-        "service_probe_hints": {"dnsmasq": {}}
+        "service_probe_hints": {"dnsmasq": {}},
+        "workspace_probe_hints": {},
     }
 
 
@@ -189,7 +191,8 @@ def test_probe_hints_include_an_active_service_endpoint() -> None:
     ]
 
     assert yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"))) == {
-        "service_probe_hints": {"ollama": {"endpoint": "http://node-a.home.arpa:11434"}}
+        "service_probe_hints": {"ollama": {"endpoint": "http://node-a.home.arpa:11434"}},
+        "workspace_probe_hints": {},
     }
 
 
@@ -228,7 +231,8 @@ def test_probe_hints_attach_managed_files_from_profile_reconciliation() -> None:
             "dnsmasq": {
                 "managed_files": {"records": {"path": "/etc/dnsmasq.d/nintent-records.conf", "digest": "sha256"}},
             },
-        }
+        },
+        "workspace_probe_hints": {},
     }
 
 
@@ -256,7 +260,7 @@ def test_probe_hints_omit_managed_files_when_profile_has_none(tmp_path) -> None:
 
     rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"), profile_reconciliation))
 
-    assert rendered == {"service_probe_hints": {"grafana": {}}}
+    assert rendered == {"service_probe_hints": {"grafana": {}}, "workspace_probe_hints": {}}
 
 
 def test_probe_hints_attach_bindings_from_profile_reconciliation() -> None:
@@ -305,8 +309,50 @@ def test_probe_hints_attach_bindings_from_profile_reconciliation() -> None:
                     }
                 },
             },
-        }
+        },
+        "workspace_probe_hints": {},
     }
+
+
+def _workspace(node: str, *, lifecycle: str = "active", presence: str = "present", slug: str = "pj-example") -> DesiredWorkspace:
+    return DesiredWorkspace(
+        id=f"ws-{slug}", slug=slug, name=slug, lifecycle=lifecycle,
+        source_remote_url="https://example.invalid/x.git", expected_path=f"/home/eiji/projects/{slug}",
+        desired_presence=presence, node_id=_node_id(node), node_slug=node,
+    )
+
+
+def test_probe_hints_include_active_present_workspace_on_this_node() -> None:
+    snapshot = _snapshot("node-a")
+    snapshot.workspaces = [_workspace("node-a")]
+
+    rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a")))
+
+    assert rendered == {
+        "service_probe_hints": {},
+        "workspace_probe_hints": {"pj-example": {"path": "/home/eiji/projects/pj-example"}},
+    }
+
+
+def test_probe_hints_omit_workspace_on_a_different_node() -> None:
+    snapshot = _snapshot("node-a", "node-b")
+    snapshot.workspaces = [_workspace("node-b")]
+
+    rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a")))
+
+    assert rendered["workspace_probe_hints"] == {}
+
+
+def test_probe_hints_omit_retired_or_absent_workspaces() -> None:
+    snapshot = _snapshot("node-a")
+    snapshot.workspaces = [
+        _workspace("node-a", lifecycle="retired", slug="pj-retired"),
+        _workspace("node-a", presence="absent", slug="pj-absent"),
+    ]
+
+    rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a")))
+
+    assert rendered["workspace_probe_hints"] == {}
 
 
 def test_observation_collects_caches_and_ingests_all_hosts(tmp_path: Path) -> None:
