@@ -21,6 +21,7 @@ from nctl_core.agent import (
 )
 from nctl_core.agent_render import render_agent_abort_text, render_agent_sessions_text, render_agent_status_text, render_agent_task_text
 from nctl_core.braindump_render import (
+    build_braindump_complete,
     build_braindump_create,
     build_braindump_list,
     build_braindump_purge,
@@ -28,6 +29,7 @@ from nctl_core.braindump_render import (
     build_braindump_review_delete,
     build_braindump_show,
     build_braindump_supersede,
+    render_braindump_complete_text,
     render_braindump_create_text,
     render_braindump_list_text,
     render_braindump_purge_text,
@@ -564,6 +566,7 @@ BRAINDUMP_USAGE_CODES = (
     "input_file_invalid_utf8",
     "braindump_not_found",
     "braindump_purge_ineligible",
+    "braindump_complete_ineligible",
 )
 
 
@@ -617,6 +620,7 @@ BraindumpSummaryFileOption = Annotated[
     Optional[Path], typer.Option("--file", help="Read the summary from this UTF-8 file instead of --summary.")
 ]
 BraindumpYesOption = Annotated[bool, typer.Option("--yes", help="Execute the requested destructive Braindump action.")]
+BraindumpReasonOption = Annotated[str, typer.Option("--reason", help="Why this active Braindump is done (recorded on the row).")]
 BraindumpOldOption = Annotated[list[str], typer.Option("--old", help="Active Braindump UUID to supersede; repeat for each old document.")]
 BraindumpIncludeSupersededOption = Annotated[bool, typer.Option("--include-superseded", help="Include reference-only superseded Braindumps.")]
 
@@ -673,6 +677,26 @@ def braindump_supersede(
         cfg, old_ids=old_ids, title=title, authorship=authorship.value, body=body, body_file=file
     )
     emit(envelope, json_output, render_braindump_supersede_text)
+    raise typer.Exit(_braindump_exit_code(envelope))
+
+
+@braindump_app.command("complete")
+def braindump_complete(
+    braindump_id: BraindumpIdArgument,
+    reason: BraindumpReasonOption,
+    config: ConfigOption = None,
+    yes: BraindumpYesOption = False,
+    json_output: BraindumpJsonOption = False,
+) -> None:
+    """Directly transition one active Braindump to completed; no replacement row is created."""
+    cfg = _load_config(config)
+    _confirm_destructive(
+        f"Mark Braindump {braindump_id} completed? It becomes reference-only history and eligible for purge.",
+        yes=yes,
+        json_output=json_output,
+    )
+    envelope = build_braindump_complete(cfg, braindump_id, reason=reason)
+    emit(envelope, json_output, render_braindump_complete_text)
     raise typer.Exit(_braindump_exit_code(envelope))
 
 

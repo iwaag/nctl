@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 import nctl_core.cli.main as main
 from nctl_core.braindump import (
     AlignmentReviewRecord,
+    BraindumpCompleteData,
     BraindumpCreateData,
     BraindumpListData,
     BraindumpPurgeData,
@@ -480,6 +481,69 @@ def test_review_delete_json_without_yes_is_usage_exit(monkeypatch):
 
     assert result.exit_code == 2
     assert result.stdout == ""
+
+
+# -- complete ----------------------------------------------------------------------------------
+
+
+def test_complete_with_yes(monkeypatch):
+    _setup(monkeypatch)
+    captured = {}
+
+    def fake_complete(cfg, braindump_id, *, reason):
+        captured.update(id=braindump_id, reason=reason)
+        return Envelope.build(
+            "nctl.braindump.complete.v1",
+            BraindumpCompleteData(braindump=_record(status="completed", completion_reason=reason), changed=True),
+        )
+
+    monkeypatch.setattr(main, "build_braindump_complete", fake_complete)
+    result = runner.invoke(main.app, ["braindump", "complete", BD_ID, "--reason", "Node retired.", "--yes"])
+
+    assert result.exit_code == 0
+    assert captured == {"id": BD_ID, "reason": "Node retired."}
+    assert "completed braindump" in result.stdout
+
+
+def test_complete_declined_prompt_performs_no_write(monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setattr(
+        main, "build_braindump_complete", lambda cfg, braindump_id, *, reason: (_ for _ in ()).throw(
+            AssertionError("must not complete without confirmation")
+        )
+    )
+
+    result = runner.invoke(main.app, ["braindump", "complete", BD_ID, "--reason", "done"], input="n\n")
+
+    assert result.exit_code == 2
+
+
+def test_complete_json_without_yes_is_usage_exit(monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setattr(
+        main, "build_braindump_complete", lambda cfg, braindump_id, *, reason: (_ for _ in ()).throw(
+            AssertionError("must not complete without --yes in --json mode")
+        )
+    )
+
+    result = runner.invoke(main.app, ["braindump", "complete", BD_ID, "--reason", "done", "--json"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+
+
+def test_complete_ineligible_is_failure_exit(monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setattr(
+        main, "build_braindump_complete",
+        lambda cfg, braindump_id, *, reason: _error_envelope(
+            "nctl.braindump.complete.v1", BraindumpCompleteData(), "braindump_complete_ineligible"
+        ),
+    )
+
+    result = runner.invoke(main.app, ["braindump", "complete", BD_ID, "--reason", "done", "--yes"])
+
+    assert result.exit_code == 2
 
 
 # -- purge -------------------------------------------------------------------------------------

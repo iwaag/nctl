@@ -20,6 +20,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from nctl_core.braindump_client import (
+    complete_braindump as post_complete_braindump,
     create_braindump as post_braindump,
     purge_braindump as purge_braindump_request,
     supersede_braindumps as post_supersede_braindumps,
@@ -29,6 +30,7 @@ from nctl_core.braindump_client import (
 )
 from nctl_core.braindump_errors import (
     braindump_confirmation_mismatch_error, braindump_not_found_error,
+    complete_confirmation_mismatch_error,
     delete_confirmation_mismatch_error, input_conflict_error, input_file_error,
     input_file_invalid_utf8_error, invalid_authorship_error, invalid_braindump_id_error,
     invalid_supersede_old_ids_error,
@@ -65,6 +67,7 @@ class BrainDumpRecord(BaseModel):
     body: str
     authorship: Authorship
     status: BraindumpStatus
+    completion_reason: str = ""
     created: datetime
     last_updated: datetime
     review_present: bool
@@ -102,6 +105,11 @@ class BraindumpCreateData(BaseModel):
 class BraindumpSupersedeData(BaseModel):
     braindump: BrainDumpRecord | None = None
     superseded_ids: list[str] = []
+    changed: bool = False
+
+
+class BraindumpCompleteData(BaseModel):
+    braindump: BrainDumpRecord | None = None
     changed: bool = False
 
 
@@ -174,6 +182,7 @@ def _require_nonblank(field_name: str, value: str) -> str:
 
 
 def list_braindumps(client: NautobotClient, *, include_superseded: bool = False) -> list[BrainDumpListItem]:
+    """`include_superseded` also includes `completed` rows: both are reference-only history."""
     records = fetch_braindump_list(client)
     if not include_superseded:
         records = [record for record in records if record.status == "active"]
@@ -239,6 +248,23 @@ def supersede_braindumps(
     ):
         raise supersede_confirmation_mismatch_error(new_id)
     return _to_record(replacement), canonical_old_ids, True
+
+
+def complete_braindump(client: NautobotClient, braindump_id: str, *, reason: str) -> tuple[BrainDumpRecord, bool]:
+    """Directly transition one active Braindump to completed; no replacement row is created."""
+    canonical_id = validate_braindump_id(braindump_id)
+    reason = _require_nonblank("reason", reason)
+
+    post_complete_braindump(client, canonical_id, reason=reason)
+    confirmed = fetch_braindump_show(client, canonical_id)
+    if (
+        confirmed is None
+        or confirmed.status != "completed"
+        or confirmed.completion_reason != reason
+    ):
+        raise complete_confirmation_mismatch_error(canonical_id)
+
+    return _to_record(confirmed), True
 
 
 def create_or_replace_review(
@@ -340,6 +366,7 @@ def _to_record(read: BrainDumpRead) -> BrainDumpRecord:
         body=read.body,
         authorship=read.authorship,
         status=read.status,
+        completion_reason=read.completion_reason,
         created=read.created,
         last_updated=read.last_updated,
         review_present=review is not None,

@@ -28,6 +28,7 @@ query ListBrainDumps {
     body
     authorship
     status
+    completion_reason
     created
     last_updated
     alignment_review {
@@ -48,6 +49,7 @@ query ShowBrainDump($id: ID!) {
     body
     authorship
     status
+    completion_reason
     created
     last_updated
     alignment_review {
@@ -61,7 +63,7 @@ query ShowBrainDump($id: ID!) {
 """
 
 Authorship = Literal["user_direct", "agent_transcribed"]
-BraindumpStatus = Literal["active", "superseded"]
+BraindumpStatus = Literal["active", "superseded", "completed"]
 Attention = Literal["unreviewed", "needs_attention", "review_present"]
 
 
@@ -78,6 +80,7 @@ class BrainDumpRead(BaseModel):
     body: str
     authorship: Authorship
     status: BraindumpStatus
+    completion_reason: str = ""
     created: datetime
     last_updated: datetime
     alignment_review: AlignmentReviewRead | None = None
@@ -127,6 +130,7 @@ def _build_braindump(row: dict[str, Any]) -> BrainDumpRead:
         body=row["body"],
         authorship=row["authorship"].lower(),
         status=row["status"].lower(),
+        completion_reason=row.get("completion_reason") or "",
         created=row["created"],
         last_updated=row["last_updated"],
         alignment_review=_build_review(review),

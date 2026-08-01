@@ -383,14 +383,14 @@ this module and the CLI alone, not published to or consumed by any external subs
 
 ### `braindump`
 
-`nctl braindump {list,show,create,supersede,review,review-delete,purge}` is the deterministic,
+`nctl braindump {list,show,create,supersede,complete,review,review-delete,purge}` is the deterministic,
 typed interface to the exchange diary described in `devdocs/big/braindump/roadmap.md`: a
 **Braindump** is the user's free-form wish, and its at-most-one current **Alignment Review** is the
 AI agent's latest natural-language reply. Neither is executable input, and this command surface has
 no import path into `drift`, `reconcile`, Jobs, nodeutils, or Ansible — reading or
 writing the diary never changes convergence status or triggers actuation.
 
-- `list [--include-superseded] [--json]` / `show ID [--json]` read through GraphQL only and never write. `list` returns only active documents by default; `--include-superseded` explicitly includes reference-only history. It returns a
+- `list [--include-superseded] [--json]` / `show ID [--json]` read through GraphQL only and never write. `list` returns only active documents by default; `--include-superseded` explicitly includes reference-only history (both `superseded` and `completed` documents). It returns a
   compact `id`/`title`/`authorship`/timestamps/review-presence/attention projection; `show` returns
   the full record including `body` and, if present, the review's `summary`.
 - `create --title TITLE --authorship AUTHOR (--body TEXT | --file PATH)` writes through REST
@@ -398,7 +398,15 @@ writing the diary never changes convergence status or triggers actuation.
   a command-scoped `*_confirmation_mismatch` failure, never a fabricated success. `AUTHOR` is
   exactly `user_direct` or `agent_transcribed` — there is no default, so provenance is never
   misstated.
-- `supersede --old OLD_ID [--old OLD_ID ...] --title TITLE --authorship AUTHOR (--body TEXT | --file PATH)` is the only status transition. It atomically creates the active replacement and marks exactly the selected active old documents `superseded`; any validation failure leaves all old rows active and retains no replacement.
+- `supersede --old OLD_ID [--old OLD_ID ...] --title TITLE --authorship AUTHOR (--body TEXT | --file PATH)` creates an active replacement and marks exactly the selected active old documents `superseded`; any validation failure leaves all old rows active and retains no replacement.
+- `complete ID --reason TEXT [--yes]` is the other status transition: it moves exactly one `active`
+  document straight to `completed`, in place, without creating a replacement row. Use it when a wish
+  is resolved (a node retired, a one-off task finished) and there is nothing to supersede it with —
+  `supersede` remains the only way to record that one wish replaced another. `--reason` is required
+  and stored on the row as `completion_reason`, the same non-negotiable audit trail `supersede`'s
+  replacement text provides. A non-`active` target is rejected (409, `braindump_complete_ineligible`)
+  and left unchanged. Like `review-delete`, it is destructive-gated: without `--yes` it prompts in
+  human mode and fails as a usage error in `--json` mode.
 - `--file PATH` reads the file as `Path.read_text(encoding="utf-8", errors="strict")` — the exact
   bytes are stored, with no trailing-newline stripping, line-ending normalization, BOM removal,
   Markdown rendering, variable interpolation, or shell/prompt interpretation. Prefer `--file` over
@@ -416,11 +424,11 @@ writing the diary never changes convergence status or triggers actuation.
   UUID in human mode; its `--json` mode is non-interactive and requires `--yes` or fails as a usage
   error (exit 2) before contacting Nautobot. `--yes` never broadens the target — there is no bulk,
   title-based, or wildcard delete.
-- `purge ID [--yes]` is the narrow exception for a document already marked `superseded`.
-  Without `--yes` it obtains and prints a read-only server-side plan for that exact UUID, including
-  whether its Alignment Review will cascade. With `--yes` it re-checks the UUID and status and
-  deletes the document and its one-to-one review in one transaction. An active document is
-  rejected; a repeated purge is the successful `already_purged` no-op. Purge never affects
+- `purge ID [--yes]` is the narrow exception for a document already marked `superseded` or
+  `completed`. Without `--yes` it obtains and prints a read-only server-side plan for that exact
+  UUID, including whether its Alignment Review will cascade. With `--yes` it re-checks the UUID and
+  status and deletes the document and its one-to-one review in one transaction. An active document
+  is rejected; a repeated purge is the successful `already_purged` no-op. Purge never affects
   Desired, Actual, drift, reconcile, operation evidence, or infrastructure.
 - Attention is a non-persisted, three-state hint computed only from the two diary timestamps:
   `unreviewed` (no review row), `needs_attention` (the review is older than its Braindump), or

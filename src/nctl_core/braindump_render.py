@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from nctl_core.braindump import (
-    BraindumpCreateData, BraindumpListData, BraindumpPurgeData, BraindumpReviewData, BraindumpReviewDeleteData,
-    BraindumpShowData, BraindumpSupersedeData, create_braindump, create_or_replace_review, delete_review,
-    list_braindumps, purge_braindump, resolve_text_input, show_braindump,
+    BraindumpCompleteData, BraindumpCreateData, BraindumpListData, BraindumpPurgeData, BraindumpReviewData,
+    BraindumpReviewDeleteData, BraindumpShowData, BraindumpSupersedeData, complete_braindump, create_braindump,
+    create_or_replace_review, delete_review, list_braindumps, purge_braindump, resolve_text_input, show_braindump,
     supersede_braindumps,
 )
 from nctl_core.braindump_errors import BraindumpError
@@ -20,6 +20,7 @@ LIST_SCHEMA = "nctl.braindump.list.v1"
 SHOW_SCHEMA = "nctl.braindump.show.v1"
 CREATE_SCHEMA = "nctl.braindump.create.v1"
 SUPERSEDE_SCHEMA = "nctl.braindump.supersede.v1"
+COMPLETE_SCHEMA = "nctl.braindump.complete.v1"
 REVIEW_SCHEMA = "nctl.braindump.review.v1"
 REVIEW_DELETE_SCHEMA = "nctl.braindump.review_delete.v1"
 PURGE_SCHEMA = "nctl.braindump.purge.v1"
@@ -75,6 +76,13 @@ def build_braindump_supersede(cfg: Config, *, old_ids: list[str], title: str, au
     return _build(cfg, SUPERSEDE_SCHEMA, BraindumpSupersedeData(), action)
 
 
+def build_braindump_complete(cfg: Config, braindump_id: str, *, reason: str) -> Envelope[BraindumpCompleteData]:
+    def action(c: NautobotClient) -> BraindumpCompleteData:
+        record, changed = complete_braindump(c, braindump_id, reason=reason)
+        return BraindumpCompleteData(braindump=record, changed=changed)
+    return _build(cfg, COMPLETE_SCHEMA, BraindumpCompleteData(), action)
+
+
 def build_braindump_review(cfg: Config, braindump_id: str, *, summary: str | None = None, summary_file: Path | None = None) -> Envelope[BraindumpReviewData]:
     def action(c: NautobotClient) -> BraindumpReviewData:
         record, verb = create_or_replace_review(c, braindump_id, summary=resolve_text_input(field_name="summary", literal=summary, file=summary_file))
@@ -109,7 +117,10 @@ def render_braindump_show_text(e):
     if not e.ok: return _errors(e)
     x = e.data.braindump
     if x is None: return "no Braindump"
-    lines = ["User-originated Braindump", f"  id: {x.id}", f"  title: {x.title}", f"  authorship: {x.authorship}", f"  status: {x.status}", f"  created: {x.created}", f"  last_updated: {x.last_updated}", f"  attention: {x.attention}", "  body:", x.body, "", "AI Alignment Review"]
+    lines = ["User-originated Braindump", f"  id: {x.id}", f"  title: {x.title}", f"  authorship: {x.authorship}", f"  status: {x.status}", f"  created: {x.created}", f"  last_updated: {x.last_updated}", f"  attention: {x.attention}", "  body:", x.body]
+    if x.status == "completed":
+        lines += ["  completion_reason:", x.completion_reason]
+    lines += ["", "AI Alignment Review"]
     if x.alignment_review is None: lines.append("  Unreviewed")
     else:
         r=x.alignment_review; lines += [f"  id: {r.id}", f"  created: {r.created}", f"  last_updated: {r.last_updated}", "  summary:", r.summary]
@@ -121,6 +132,9 @@ def render_braindump_create_text(e):
 def render_braindump_supersede_text(e):
     if not e.ok: return _errors(e)
     x=e.data; return f"created active replacement {x.braindump.id} and superseded: {', '.join(x.superseded_ids)}"
+def render_braindump_complete_text(e):
+    if not e.ok: return _errors(e)
+    x=e.data.braindump; return f"completed braindump {x.id} ({x.title!r}) at {x.last_updated}"
 def render_braindump_review_text(e):
     if not e.ok: return _errors(e)
     x=e.data; return f"{x.action} review for braindump {x.braindump.id} ({x.braindump.title!r}) at {x.braindump.alignment_review.last_updated}"

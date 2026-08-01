@@ -145,6 +145,7 @@ def test_list_query_requests_expected_fields():
         "body",
         "authorship",
         "status",
+        "completion_reason",
         "created",
         "last_updated",
         "alignment_review",

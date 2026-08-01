@@ -18,6 +18,7 @@ import pytest
 import respx
 
 from nctl_core.braindump import (
+    complete_braindump,
     create_braindump,
     create_or_replace_review,
     delete_review,
@@ -54,6 +55,7 @@ def _read(
         body: str = "body",
         authorship: str = "user_direct",
         status: str = "active",
+    completion_reason: str = "",
     created: datetime = T0,
     last_updated: datetime = T0,
     review: AlignmentReviewRead | None = None,
@@ -64,6 +66,7 @@ def _read(
         body=body,
         authorship=authorship,  # type: ignore[arg-type]
         status=status,  # type: ignore[arg-type]
+        completion_reason=completion_reason,
         created=created,
         last_updated=last_updated,
         alignment_review=review,
@@ -172,6 +175,24 @@ def test_list_braindumps_projects_compact_items(monkeypatch):
     assert item.review_id == "rev-1"
     assert item.attention == "review_present"
     assert not hasattr(item, "body")
+
+
+def test_list_braindumps_excludes_completed_by_default(monkeypatch):
+    _patch_list(monkeypatch, [_read(status="active"), _read(id="c", status="completed")])
+
+    with _client() as client:
+        items = list_braindumps(client)
+
+    assert [item.id for item in items] == [BD_ID]
+
+
+def test_list_braindumps_include_superseded_also_includes_completed(monkeypatch):
+    _patch_list(monkeypatch, [_read(status="active"), _read(id="c", status="completed")])
+
+    with _client() as client:
+        items = list_braindumps(client, include_superseded=True)
+
+    assert {item.id for item in items} == {BD_ID, "c"}
 
 
 def test_show_braindump_not_found_raises(monkeypatch):
@@ -328,6 +349,62 @@ def test_supersede_server_rejection_is_reported_without_confirmation_fetch(monke
         with pytest.raises(BraindumpError) as exc:
             supersede_braindumps(client, old_ids=[BD_ID], title="New", authorship="user_direct", body="Replacement")
     assert exc.value.code == "braindump_supersede_invalid"
+
+
+# -- complete ---------------------------------------------------------------------------------------
+
+
+@respx.mock
+def test_complete_posts_reason_and_confirms(monkeypatch):
+    _patch_show(monkeypatch, [_read(status="completed", completion_reason="Node retired.")])
+    route = respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/complete/").mock(
+        return_value=httpx.Response(200, json={"id": BD_ID, "status": "completed"})
+    )
+
+    with _client() as client:
+        record, changed = complete_braindump(client, BD_ID, reason="Node retired.")
+
+    assert json.loads(route.calls.last.request.content) == {"reason": "Node retired."}
+    assert record.status == "completed"
+    assert record.completion_reason == "Node retired."
+    assert changed is True
+
+
+@respx.mock
+def test_complete_rejects_blank_reason_before_any_request(monkeypatch):
+    def fail_show(client, braindump_id):
+        raise AssertionError("must not fetch for blank reason")
+    monkeypatch.setattr("nctl_core.braindump.fetch_braindump_show", fail_show)
+
+    with _client() as client:
+        with pytest.raises(BraindumpError) as exc:
+            complete_braindump(client, BD_ID, reason="   ")
+    assert exc.value.code == "invalid_text"
+
+
+@respx.mock
+def test_complete_non_active_row_maps_to_ineligible():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/complete/").mock(
+        return_value=httpx.Response(409, json={"detail": "Braindump is not active."})
+    )
+
+    with _client() as client:
+        with pytest.raises(BraindumpError) as exc:
+            complete_braindump(client, BD_ID, reason="done")
+    assert exc.value.code == "braindump_complete_ineligible"
+
+
+@respx.mock
+def test_complete_confirmation_mismatch_fails_closed(monkeypatch):
+    _patch_show(monkeypatch, [_read(status="active")])
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/braindumps/{BD_ID}/complete/").mock(
+        return_value=httpx.Response(200, json={"id": BD_ID, "status": "completed"})
+    )
+
+    with _client() as client:
+        with pytest.raises(BraindumpError) as exc:
+            complete_braindump(client, BD_ID, reason="done")
+    assert exc.value.code == "braindump_complete_confirmation_mismatch"
 
 
 # -- review create-or-replace ---------------------------------------------------------------------

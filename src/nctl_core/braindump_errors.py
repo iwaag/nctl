@@ -89,6 +89,22 @@ def supersede_confirmation_mismatch_error(braindump_id: str) -> BraindumpError:
     return error("braindump_supersede_confirmation_mismatch", f"GraphQL refetch of replacement Braindump {braindump_id!r} did not confirm supersession", {"braindump_id": braindump_id})
 
 
+def complete_ineligible_error(braindump_id: str, detail_text: str) -> BraindumpError:
+    return error(
+        "braindump_complete_ineligible",
+        f"Braindump {braindump_id!r} is not eligible for completion (it must be active)",
+        {"braindump_id": braindump_id, "detail": detail_text[:200]},
+    )
+
+
+def complete_rejected_error(status_code: int, detail_text: str) -> BraindumpError:
+    return error("braindump_complete_rejected", f"Braindump completion rejected: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
+
+
+def complete_confirmation_mismatch_error(braindump_id: str) -> BraindumpError:
+    return error("braindump_complete_confirmation_mismatch", f"GraphQL refetch of Braindump {braindump_id!r} did not confirm completion", {"braindump_id": braindump_id})
+
+
 def review_validation_failed_error(status_code: int, detail_text: str) -> BraindumpError:
     return error("review_validation_failed", f"Alignment review write rejected as invalid: HTTP {status_code}", {"status_code": status_code, "detail": detail_text[:200]})
 
