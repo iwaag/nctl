@@ -91,6 +91,7 @@ class ReconcileConfig(StrictModel):
     max_report_age_hours: int = Field(default=72, gt=0, le=8760)
     ingest_policy_file: Path = Path("seed/nodeutils_ingest.yaml")
     service_observation_max_age_hours: int = Field(default=24, gt=0, le=8760)
+    workspace_observation_max_age_hours: int = Field(default=24, gt=0, le=8760)
     lock_path: Path = Path("~/.local/state/nctl/reconcile.lock")
     # Normally resolved from the superproject's nodeutils gitlink. Packaged
     # controllers without superproject metadata may pin the same full SHA here.

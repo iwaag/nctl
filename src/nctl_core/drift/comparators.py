@@ -67,9 +67,10 @@ from nctl_core.sources.snapshot import SourceSnapshot
 from .context import DriftContext
 from .compute_evaluation import evaluate_compute
 from .evaluation import EvaluationResult
-from .evaluation_snapshot import evaluate_all_endpoints, evaluate_all_nodes, evaluate_all_services
+from .evaluation_snapshot import parse_now, evaluate_all_endpoints, evaluate_all_nodes, evaluate_all_services
 from .model import DiffRecord, Severity, Target
 from .registry import register
+from .workspace_evaluation import evaluate_all_workspaces
 from nctl_core.compute.manual_initial_access import awaiting_manual_initial_access
 
 _SEVERITY_BY_GAP_SEVERITY = {
@@ -399,6 +400,46 @@ def service_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -> 
     for service in snapshot.desired.services:
         target = Target(kind="service", slug=service.slug, name=service.name, id=service.id)
         yield from _gap_diffs(target, service_evaluations[service.id])
+
+
+_WORKSPACE_SEVERITY_BY_CODE = {
+    "workspace_missing": Severity.ERROR,
+    "workspace_identity_mismatch": Severity.ERROR,
+    "workspace_identity_unknown": Severity.WARNING,
+    "workspace_retired_present": Severity.WARNING,
+    "workspace_observation_missing": Severity.WARNING,
+    "workspace_observation_stale": Severity.WARNING,
+}
+
+
+@register("workspace")
+def workspace_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    """creative_workspace p2 Step 2: one `DiffRecord` per convergent gap
+    `workspace_evaluation.evaluate_workspace` finds -- the informational
+    `activity_class` it also computes is never read here (roadmap hard rule
+    2: reconcile must never be able to consume it as drift)."""
+
+    evaluations = evaluate_all_workspaces(
+        snapshot.desired.workspaces,
+        snapshot.desired.nodes,
+        snapshot.actual.devices,
+        now=parse_now(context.generated_at),
+        stale_after_hours=context.workspace_observation_max_age_hours,
+    )
+    for workspace in snapshot.desired.workspaces:
+        target = Target(kind="workspace", slug=workspace.slug, name=workspace.name, id=workspace.id)
+        evaluation = evaluations[workspace.id]
+        for gap in evaluation.gaps:
+            code = gap["code"]
+            evidence = {key: value for key, value in gap.items() if key != "code"}
+            yield DiffRecord(
+                target=target,
+                code=code,
+                severity=_WORKSPACE_SEVERITY_BY_CODE.get(code, Severity.WARNING),
+                message=f"{workspace.slug}: {code}",
+                actual=evidence,
+                sources=["desired", "actual"],
+            )
 
 
 def _gap_diffs(target: Target, evaluation: EvaluationResult) -> Iterator[DiffRecord]:

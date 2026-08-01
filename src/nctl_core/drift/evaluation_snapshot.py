@@ -145,7 +145,7 @@ def evaluate_all_services(
     device_node_map = {
         device.id: node.id for node in snapshot.desired.nodes for device in [devices_by_id.get(node.realized_device_id or "")] if device
     }
-    now = _parse_now(generated_at)
+    now = parse_now(generated_at)
 
     # A consumer binding's `binding_provider_not_converged` gap (idea-A §6)
     # needs its provider service's own convergence status, which this same
@@ -226,7 +226,7 @@ def evaluate_all_services(
     return results
 
 
-def _parse_now(value: str | None) -> datetime:
+def parse_now(value: str | None) -> datetime:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else datetime.now(timezone.utc)
     except ValueError:

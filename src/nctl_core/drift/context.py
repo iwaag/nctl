@@ -37,3 +37,4 @@ class DriftContext:
     profile_reconciliation_error: str | None = None
     events_dir: Path | None = None
     service_observation_max_age_hours: int = 24
+    workspace_observation_max_age_hours: int = 24

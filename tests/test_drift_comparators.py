@@ -15,6 +15,7 @@ from nctl_core.sources.desired import (
     DesiredService,
     DesiredServicePlacement,
     DesiredSnapshot,
+    DesiredWorkspace,
 )
 from nctl_core.sources.observed import ObservedFacts
 from nctl_core.sources.snapshot import SourceSnapshot
@@ -32,6 +33,7 @@ def make_snapshot(
     dependencies=(),
     placements=(),
     operational_overrides=(),
+    workspaces=(),
     devices=(),
     vms=(),
     interfaces=(),
@@ -47,6 +49,7 @@ def make_snapshot(
             dependencies=list(dependencies),
             placements=list(placements),
             operational_overrides=list(operational_overrides),
+            workspaces=list(workspaces),
         ),
         actual=ActualSnapshot(devices=list(devices), virtual_machines=list(vms), interfaces=list(interfaces), ip_addresses=list(ip_addresses)),
         observed=list(observed),
@@ -577,3 +580,69 @@ def test_production_policy_active_placement_not_applied_survives_empty_profiles(
 
     assert {d.code for d in diffs} == {"intent_effect_summary", "active_placement_not_applied"}
     assert next(d for d in diffs if d.code == "active_placement_not_applied").severity.value == "warning"
+
+
+# --- workspace_intent_matching ---------------------------------------------
+
+
+def _workspace(**overrides) -> DesiredWorkspace:
+    base = dict(
+        id="ws-1", slug="pj-voxel3dprint", name="pj-voxel3dprint", lifecycle="active",
+        source_remote_url="https://github.com/iwaag/pj-voxel3dprint.git",
+        expected_path="/home/eiji/projects/pj-voxel3dprint",
+        desired_presence="present", node_id="n1", node_slug="agpc",
+    )
+    base.update(overrides)
+    return DesiredWorkspace(**base)
+
+
+def test_workspace_intent_matching_registered_under_workspace_kind():
+    from nctl_core.drift.registry import registered_resource_types
+
+    assert "workspace" in registered_resource_types()
+
+
+def test_workspace_intent_matching_silent_when_converged():
+    node = DesiredNode(id="n1", slug="agpc", name="agpc", lifecycle="active", node_type="baremetal", realized_device_id="dev-1")
+    device = ActualDevice(id="dev-1", name="agpc.local", facts={
+        "observed_workspaces": {
+            "pj-voxel3dprint": {
+                "present": True, "remote_url": "https://github.com/iwaag/pj-voxel3dprint.git",
+                "checked_at": "2026-07-15T11:30:00+00:00",
+            }
+        }
+    })
+    snapshot = make_snapshot(nodes=[node], workspaces=[_workspace()], devices=[device])
+    diffs = list(comparators.workspace_intent_matching(snapshot, CONTEXT))
+    assert diffs == []
+
+
+def test_workspace_intent_matching_flags_missing_with_workspace_target_kind():
+    node = DesiredNode(id="n1", slug="agpc", name="agpc", lifecycle="active", node_type="baremetal", realized_device_id="dev-1")
+    device = ActualDevice(id="dev-1", name="agpc.local", facts={
+        "observed_workspaces": {"pj-voxel3dprint": {"present": False, "checked_at": "2026-07-15T11:30:00+00:00"}}
+    })
+    snapshot = make_snapshot(nodes=[node], workspaces=[_workspace()], devices=[device])
+    diffs = list(comparators.workspace_intent_matching(snapshot, CONTEXT))
+    assert len(diffs) == 1
+    diff = diffs[0]
+    assert diff.code == "workspace_missing"
+    assert diff.severity.value == "error"
+    assert diff.target.kind == "workspace"
+    assert diff.target.slug == "pj-voxel3dprint"
+
+
+def test_workspace_intent_matching_no_activity_class_leaks_into_diff_codes():
+    """Exit criterion 3, at the comparator boundary."""
+    node = DesiredNode(id="n1", slug="agpc", name="agpc", lifecycle="active", node_type="baremetal", realized_device_id="dev-1")
+    device = ActualDevice(id="dev-1", name="agpc.local", facts={
+        "observed_workspaces": {
+            "pj-voxel3dprint": {
+                "present": True, "remote_url": "https://github.com/iwaag/pj-voxel3dprint.git",
+                "ahead": 5, "dirty": True, "checked_at": "2026-07-15T11:30:00+00:00",
+            }
+        }
+    })
+    snapshot = make_snapshot(nodes=[node], workspaces=[_workspace()], devices=[device])
+    diffs = list(comparators.workspace_intent_matching(snapshot, CONTEXT))
+    assert {d.code for d in diffs} & {"active_development", "behind_origin", "idle"} == set()

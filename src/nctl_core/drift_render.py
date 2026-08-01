@@ -148,6 +148,7 @@ def fetch_and_compute_drift(
         profile_reconciliation_error=profile_reconciliation_error,
         events_dir=cfg.events.resolved_log_dir(),
         service_observation_max_age_hours=cfg.reconcile.service_observation_max_age_hours,
+        workspace_observation_max_age_hours=cfg.reconcile.workspace_observation_max_age_hours,
     )
     result = compute_drift(snapshot, context)
     return snapshot, result, generated_at

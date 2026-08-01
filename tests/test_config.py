@@ -97,6 +97,7 @@ def test_load_valid(tmp_path):
     assert cfg.reconcile.max_report_age_hours == 72
     assert cfg.reconcile.ingest_policy_file == Path("seed/nodeutils_ingest.yaml")
     assert cfg.reconcile.service_observation_max_age_hours == 24
+    assert cfg.reconcile.workspace_observation_max_age_hours == 24
     assert cfg.reconcile.resolved_lock_path().is_absolute()
 
 
