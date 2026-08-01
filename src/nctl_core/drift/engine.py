@@ -2,17 +2,18 @@
 over a `SourceSnapshot` and groups the resulting diff records into one
 `TargetStatus` per target.
 
-Every desired node and desired service is seeded into the result up front
-(with zero diffs, hence `converged`) so a node or service nobody flagged
-anything about still appears in `nctl.drift.v1`'s target list — the
+Every desired node, service, and workspace is seeded into the result up front
+(with zero diffs, hence `converged`) so a node, service, or workspace nobody
+flagged anything about still appears in `nctl.drift.v1`'s target list — the
 roadmap's "AI can read just that to explain the current state" only holds if
 silence means "nothing wrong", not "we forgot to report on it". Service
 seeding is new in Step 4 (the `service_intent_matching` comparator is the
-first thing that can produce a `kind="service"` diff). Comparator-produced
-targets outside the desired-node/service sets (a `kind="device"` ingest-lag
-diff for a dump with no matching desired node yet, or a `kind="global"`
-production contract error) are added as their own targets rather than
-dropped.
+first thing that can produce a `kind="service"` diff); workspace seeding is
+creative_workspace p2 Step 3, for the same reason. Comparator-produced
+targets outside the desired-node/service/workspace sets (a `kind="device"`
+ingest-lag diff for a dump with no matching desired node yet, or a
+`kind="global"` production contract error) are added as their own targets
+rather than dropped.
 """
 
 from __future__ import annotations
@@ -66,6 +67,12 @@ def _group_by_target(
 
     for service in snapshot.desired.services:
         target = Target(kind="service", slug=service.slug, name=service.name, id=service.id)
+        key = _target_key(target)
+        grouped[key] = []
+        target_by_key[key] = target
+
+    for workspace in snapshot.desired.workspaces:
+        target = Target(kind="workspace", slug=workspace.slug, name=workspace.name, id=workspace.id)
         key = _target_key(target)
         grouped[key] = []
         target_by_key[key] = target

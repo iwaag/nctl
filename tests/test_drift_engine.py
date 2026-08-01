@@ -6,13 +6,13 @@ from nctl_core.drift.context import DriftContext
 from nctl_core.drift.engine import compute_drift
 from nctl_core.drift.model import Status
 from nctl_core.sources.actual import ActualDevice, ActualSnapshot
-from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredServicePlacement, DesiredSnapshot
+from nctl_core.sources.desired import DesiredEndpoint, DesiredNode, DesiredServicePlacement, DesiredSnapshot, DesiredWorkspace
 from nctl_core.sources.snapshot import SourceSnapshot
 
 
-def make_snapshot(*, nodes=(), endpoints=(), placements=(), devices=(), observed=()) -> SourceSnapshot:
+def make_snapshot(*, nodes=(), endpoints=(), placements=(), workspaces=(), devices=(), observed=()) -> SourceSnapshot:
     return SourceSnapshot(
-        desired=DesiredSnapshot(nodes=list(nodes), endpoints=list(endpoints), placements=list(placements)),
+        desired=DesiredSnapshot(nodes=list(nodes), endpoints=list(endpoints), placements=list(placements), workspaces=list(workspaces)),
         actual=ActualSnapshot(devices=list(devices)),
         observed=list(observed),
         fetched_at=datetime.now(timezone.utc),
@@ -43,6 +43,33 @@ def test_node_with_no_diffs_is_seeded_as_converged():
     assert target_status.status == Status.CONVERGED
     assert [diff.code for diff in target_status.diffs] == ["intent_effect_summary"]
     assert result.summary["converged"] == 1
+
+
+def test_workspace_with_no_gaps_is_seeded_as_converged():
+    node = DesiredNode(id="n1", slug="agpc", name="agpc", lifecycle="active", node_type="baremetal", realized_device_id="dev-1")
+    device = ActualDevice(id="dev-1", name="agpc.local", facts={
+        "observed_workspaces": {
+            "pj-voxel3dprint": {
+                "present": True, "remote_url": "https://github.com/iwaag/pj-voxel3dprint.git",
+                "checked_at": "2026-07-15T11:30:00+00:00",
+            }
+        }
+    })
+    workspace = DesiredWorkspace(
+        id="ws-1", slug="pj-voxel3dprint", name="pj-voxel3dprint", lifecycle="active",
+        source_remote_url="https://github.com/iwaag/pj-voxel3dprint.git",
+        expected_path="/home/eiji/projects/pj-voxel3dprint",
+        desired_presence="present", node_id="n1", node_slug="agpc",
+    )
+    snapshot = make_snapshot(nodes=[node], workspaces=[workspace], devices=[device])
+    context = DriftContext(generated_at="2026-07-15T12:00:00+00:00")
+
+    result = compute_drift(snapshot, context)
+
+    workspace_target = next(t for t in result.targets if t.target.kind == "workspace")
+    assert workspace_target.target.slug == "pj-voxel3dprint"
+    assert workspace_target.status == Status.CONVERGED
+    assert workspace_target.diffs == []
 
 
 def test_node_missing_realized_device_is_unknown():

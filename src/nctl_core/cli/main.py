@@ -63,6 +63,7 @@ from nctl_core.production_render import (
 from nctl_core.reconcile.executor import run_reconcile
 from nctl_core.reconcile_render import render_reconcile_text
 from nctl_core.relations_render import build_relations, render_relations_text
+from nctl_core.workspaces_render import build_workspaces, render_workspaces_text
 from nctl_core.session import build_session_new, render_session_new_text
 from nctl_core.status import build_status, render_status_text
 from nctl_core.ssh_enroll import build_ssh_enroll, render_ssh_enroll_text
@@ -223,6 +224,18 @@ def relations(config: ConfigOption = None, host: HostOption = None, service: Ser
     cfg = _load_config(config)
     envelope = build_relations(cfg, host=host, service=service)
     emit(envelope, json_output, render_relations_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+WorkspacesJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.workspaces.v1 envelope as JSON.")]
+
+
+@app.command()
+def workspaces(config: ConfigOption = None, host: HostOption = None, json_output: WorkspacesJsonOption = False) -> None:
+    """One row per declared workspace: node, presence, identity match, activity class, observation freshness."""
+    cfg = _load_config(config)
+    envelope = build_workspaces(cfg, host=host)
+    emit(envelope, json_output, render_workspaces_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 

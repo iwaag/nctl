@@ -17,6 +17,7 @@ RETAINED_COMMANDS = {
     "actual",
     "drift",
     "relations",
+    "workspaces",
     "reconcile",
     "prune",
     "lifecycle",
