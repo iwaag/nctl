@@ -97,6 +97,7 @@ ACTUAL_FACT_FIELDS = {
     "inventory_source": "inventory_source",
     "observed_services": "observed_services",
     "service_inventory_updated_at": "service_inventory_updated_at",
+    "observed_workspaces": "observed_workspaces",
 }
 
 
@@ -117,6 +118,7 @@ class ActualFacts:
     inventory_source: str | None
     observed_services: dict[str, dict[str, Any]] | None = None
     service_inventory_updated_at: str | None = None
+    observed_workspaces: dict[str, dict[str, Any]] | None = None
 
 
 def read_actual_facts(custom_fields: Mapping[str, Any] | None) -> ActualFacts:
@@ -142,12 +144,13 @@ def read_actual_facts(custom_fields: Mapping[str, Any] | None) -> ActualFacts:
         network_interface=field("network_interface"),
         collected_at=field("collected_at"),
         inventory_source=field("inventory_source"),
-        observed_services=_observed_services(data.get(ACTUAL_FACT_FIELDS["observed_services"])),
+        observed_services=_dict_of_dicts(data.get(ACTUAL_FACT_FIELDS["observed_services"])),
         service_inventory_updated_at=field("service_inventory_updated_at"),
+        observed_workspaces=_dict_of_dicts(data.get(ACTUAL_FACT_FIELDS["observed_workspaces"])),
     )
 
 
-def _observed_services(value: Any) -> dict[str, dict[str, Any]] | None:
+def _dict_of_dicts(value: Any) -> dict[str, dict[str, Any]] | None:
     if not isinstance(value, Mapping):
         return None
     return {

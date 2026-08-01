@@ -117,6 +117,7 @@ def test_read_actual_facts_reads_only_the_allowlist():
             "inventory_source": "nodeutils",
             "observed_services": {"nomad": {"state": "running", "source": "systemd"}},
             "service_inventory_updated_at": "2026-07-14T00:01:00+00:00",
+            "observed_workspaces": {"pj-voxel3dprint": {"present": True, "dirty": False}},
             "inventory_raw_json": {"anything": "ignored"},
             "cpu_model": "ignored too",
         }
@@ -130,6 +131,7 @@ def test_read_actual_facts_reads_only_the_allowlist():
         inventory_source="nodeutils",
         observed_services={"nomad": {"state": "running", "source": "systemd"}},
         service_inventory_updated_at="2026-07-14T00:01:00+00:00",
+        observed_workspaces={"pj-voxel3dprint": {"present": True, "dirty": False}},
     )
 
 
@@ -160,6 +162,28 @@ def test_read_actual_facts_handles_missing_and_blank_values():
     facts = read_actual_facts({"host_system": "  "})
     assert facts.observed_system is None
     assert facts.local_ip is None
+    assert facts.observed_workspaces is None
+
+
+def test_read_actual_facts_drops_malformed_workspace_entries():
+    facts = read_actual_facts(
+        {
+            "observed_workspaces": {
+                "pj-voxel3dprint": {"present": True, "path": "/home/eiji/projects/pj-voxel3dprint"},
+                "": {"present": True},
+                "bogus": "not-a-dict",
+                None: {"present": True},
+            }
+        }
+    )
+    assert facts.observed_workspaces == {
+        "pj-voxel3dprint": {"present": True, "path": "/home/eiji/projects/pj-voxel3dprint"}
+    }
+
+
+def test_read_actual_facts_observed_workspaces_not_a_mapping():
+    facts = read_actual_facts({"observed_workspaces": ["not", "a", "mapping"]})
+    assert facts.observed_workspaces is None
 
 
 @respx.mock
