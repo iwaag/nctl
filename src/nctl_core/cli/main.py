@@ -67,6 +67,13 @@ from nctl_core.workspaces_render import build_workspaces, render_workspaces_text
 from nctl_core.session import build_session_new, render_session_new_text
 from nctl_core.status import build_status, render_status_text
 from nctl_core.ssh_enroll import build_ssh_enroll, render_ssh_enroll_text
+from nctl_core.workflow_episode import DEFAULT_LIST_STATUSES
+from nctl_core.workflow_episode_render import (
+    build_workflow_episode_list,
+    build_workflow_episode_show,
+    render_workflow_episode_list_text,
+    render_workflow_episode_show_text,
+)
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
 render_app = typer.Typer(help="Deterministic renders of desired state into consumer formats.")
@@ -77,6 +84,7 @@ ssh_app = typer.Typer(help="Manage the local, alias-keyed SSH trust store nctl u
 session_app = typer.Typer(help="Create isolated agent-workspace session folders under .local/workspace/.")
 desired_app = typer.Typer(help="Preview or atomically apply a desired-state batch document.")
 agent_app = typer.Typer(help="Reach loopback-only node agents through managed SSH tunnels.")
+workflow_episode_app = typer.Typer(help="Read and manage workflow-improvement episodes.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
 app.add_typer(ops_app, name="ops")
@@ -85,6 +93,7 @@ app.add_typer(ssh_app, name="ssh")
 app.add_typer(session_app, name="session")
 app.add_typer(desired_app, name="desired")
 app.add_typer(agent_app, name="agent")
+app.add_typer(workflow_episode_app, name="workflow-episode")
 
 
 @app.callback()
@@ -848,6 +857,73 @@ def session_new(
     if any(error.code in SESSION_USAGE_CODES for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+WORKFLOW_EPISODE_USAGE_CODES = (
+    "invalid_workflow_episode_id",
+    "invalid_status_filter",
+    "invalid_text",
+    "input_conflict",
+    "input_file_error",
+    "input_file_invalid_utf8",
+    "invalid_json",
+    "invalid_namespace_payload",
+    "workflow_episode_not_found",
+    "workflow_episode_validation_failed",
+    "workflow_episode_transition_ineligible",
+)
+
+
+def _workflow_episode_exit_code(envelope) -> int:
+    if envelope.ok:
+        return EXIT_OK
+    if any(error.code in WORKFLOW_EPISODE_USAGE_CODES for error in envelope.errors):
+        return EXIT_USAGE
+    return EXIT_FAILURE
+
+
+class WorkflowEpisodeStatusChoice(str, Enum):
+    candidate = "candidate"
+    selected = "selected"
+    resolved = "resolved"
+    dismissed = "dismissed"
+
+
+WorkflowEpisodeJsonOption = Annotated[
+    bool, typer.Option("--json", help="Print the corresponding nctl.workflow_episode.*.v1 envelope as JSON.")
+]
+WorkflowEpisodeIdArgument = Annotated[str, typer.Argument(help="WorkflowEpisode UUID.")]
+WorkflowEpisodeStatusOption = Annotated[
+    Optional[list[WorkflowEpisodeStatusChoice]],
+    typer.Option("--status", help=f"Restrict to this status; repeatable. Default: {', '.join(sorted(DEFAULT_LIST_STATUSES))}."),
+]
+WorkflowEpisodeAllOption = Annotated[bool, typer.Option("--all", help="Include every status, overriding --status.")]
+
+
+@workflow_episode_app.command("list")
+def workflow_episode_list(
+    config: ConfigOption = None,
+    status: WorkflowEpisodeStatusOption = None,
+    all_statuses: WorkflowEpisodeAllOption = False,
+    json_output: WorkflowEpisodeJsonOption = False,
+) -> None:
+    """List workflow-improvement episodes, defaulting to candidate + selected."""
+    cfg = _load_config(config)
+    statuses = None if all_statuses else (frozenset(s.value for s in status) if status else DEFAULT_LIST_STATUSES)
+    envelope = build_workflow_episode_list(cfg, statuses=statuses)
+    emit(envelope, json_output, render_workflow_episode_list_text)
+    raise typer.Exit(_workflow_episode_exit_code(envelope))
+
+
+@workflow_episode_app.command("show")
+def workflow_episode_show(
+    episode_id: WorkflowEpisodeIdArgument, config: ConfigOption = None, json_output: WorkflowEpisodeJsonOption = False
+) -> None:
+    """Show one workflow episode's full raw_data (report/assessment/references/resolution)."""
+    cfg = _load_config(config)
+    envelope = build_workflow_episode_show(cfg, episode_id)
+    emit(envelope, json_output, render_workflow_episode_show_text)
+    raise typer.Exit(_workflow_episode_exit_code(envelope))
 
 
 def main() -> None:

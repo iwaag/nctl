@@ -29,6 +29,7 @@ RETAINED_COMMANDS = {
     "ssh",
     "session",
     "agent",
+    "workflow-episode",
 }
 
 
