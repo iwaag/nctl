@@ -14,11 +14,15 @@ from nctl_core.workflow_episode import (
     WorkflowEpisodeCreateData,
     WorkflowEpisodeListData,
     WorkflowEpisodeShowData,
+    WorkflowEpisodeTransitionData,
     WorkflowEpisodeWriteData,
     create_episode,
+    dismiss_episode,
     list_episodes,
     resolve_json_object_input,
     resolve_optional_json_object_input,
+    resolve_episode,
+    select_episode,
     show_episode,
     write_namespace,
 )
@@ -28,6 +32,9 @@ LIST_SCHEMA = "nctl.workflow_episode.list.v1"
 SHOW_SCHEMA = "nctl.workflow_episode.show.v1"
 CREATE_SCHEMA = "nctl.workflow_episode.create.v1"
 WRITE_SCHEMA = "nctl.workflow_episode.write.v1"
+SELECT_SCHEMA = "nctl.workflow_episode.select.v1"
+RESOLVE_SCHEMA = "nctl.workflow_episode.resolve.v1"
+DISMISS_SCHEMA = "nctl.workflow_episode.dismiss.v1"
 T = TypeVar("T")
 
 
@@ -86,6 +93,27 @@ def build_workflow_episode_write(
     return _build(cfg, WRITE_SCHEMA, WorkflowEpisodeWriteData(), action)
 
 
+def build_workflow_episode_select(cfg: Config, episode_id: str) -> Envelope[WorkflowEpisodeTransitionData]:
+    def action(c: NautobotClient) -> WorkflowEpisodeTransitionData:
+        record, changed = select_episode(c, episode_id)
+        return WorkflowEpisodeTransitionData(episode=record, changed=changed)
+    return _build(cfg, SELECT_SCHEMA, WorkflowEpisodeTransitionData(), action)
+
+
+def build_workflow_episode_resolve(cfg: Config, episode_id: str) -> Envelope[WorkflowEpisodeTransitionData]:
+    def action(c: NautobotClient) -> WorkflowEpisodeTransitionData:
+        record, changed = resolve_episode(c, episode_id)
+        return WorkflowEpisodeTransitionData(episode=record, changed=changed)
+    return _build(cfg, RESOLVE_SCHEMA, WorkflowEpisodeTransitionData(), action)
+
+
+def build_workflow_episode_dismiss(cfg: Config, episode_id: str) -> Envelope[WorkflowEpisodeTransitionData]:
+    def action(c: NautobotClient) -> WorkflowEpisodeTransitionData:
+        record, changed = dismiss_episode(c, episode_id)
+        return WorkflowEpisodeTransitionData(episode=record, changed=changed)
+    return _build(cfg, DISMISS_SCHEMA, WorkflowEpisodeTransitionData(), action)
+
+
 def _errors(envelope: Envelope) -> str:
     return "\n".join(f"error[{error.code}]: {error.message}" for error in envelope.errors)
 
@@ -141,3 +169,10 @@ def render_workflow_episode_write_text(e: Envelope[WorkflowEpisodeWriteData]) ->
         return _errors(e)
     x = e.data
     return f"wrote {x.namespace} for workflow episode {x.episode.id} ({x.episode.title!r}); status={x.episode.status}"
+
+
+def render_workflow_episode_transition_text(e: Envelope[WorkflowEpisodeTransitionData]) -> str:
+    if not e.ok:
+        return _errors(e)
+    x = e.data.episode
+    return f"workflow episode {x.id} ({x.title!r}) is now {x.status}"

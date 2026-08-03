@@ -17,9 +17,12 @@ import respx
 from nctl_core.nautobot import NautobotClient
 from nctl_core.workflow_episode import (
     create_episode,
+    dismiss_episode,
     list_episodes,
+    resolve_episode,
     resolve_json_object_input,
     resolve_optional_json_object_input,
+    select_episode,
     show_episode,
     validate_workflow_episode_id,
     write_namespace,
@@ -223,3 +226,63 @@ def test_write_namespace_not_found():
     with pytest.raises(WorkflowEpisodeError) as exc_info:
         write_namespace(_client(), WE_ID, "assessment", {"verdict": "x"})
     assert exc_info.value.code == "workflow_episode_not_found"
+
+
+# -- transitions ----------------------------------------------------------------------------
+
+
+@respx.mock
+def test_select_episode_posts_to_select_action():
+    route = respx.post(f"{BASE_URL}/api/plugins/intent-catalog/workflow-episodes/{WE_ID}/select/").mock(
+        return_value=httpx.Response(200, json=_row(id=WE_ID, status="selected"))
+    )
+    record, changed = select_episode(_client(), WE_ID)
+    assert route.call_count == 1
+    assert record.status == "selected"
+    assert changed is True
+
+
+@respx.mock
+def test_resolve_episode_posts_to_resolve_action():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/workflow-episodes/{WE_ID}/resolve/").mock(
+        return_value=httpx.Response(200, json=_row(id=WE_ID, status="resolved"))
+    )
+    record, changed = resolve_episode(_client(), WE_ID)
+    assert record.status == "resolved"
+    assert changed is True
+
+
+@respx.mock
+def test_dismiss_episode_posts_to_dismiss_action():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/workflow-episodes/{WE_ID}/dismiss/").mock(
+        return_value=httpx.Response(200, json=_row(id=WE_ID, status="dismissed"))
+    )
+    record, changed = dismiss_episode(_client(), WE_ID)
+    assert record.status == "dismissed"
+    assert changed is True
+
+
+@respx.mock
+def test_transition_409_maps_to_ineligible_error():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/workflow-episodes/{WE_ID}/select/").mock(
+        return_value=httpx.Response(409, json={"status": ["invalid_transition: status: cannot transition from 'resolved' to 'selected'"]})
+    )
+    with pytest.raises(WorkflowEpisodeError) as exc_info:
+        select_episode(_client(), WE_ID)
+    assert exc_info.value.code == "workflow_episode_transition_ineligible"
+
+
+@respx.mock
+def test_transition_not_found():
+    respx.post(f"{BASE_URL}/api/plugins/intent-catalog/workflow-episodes/{WE_ID}/resolve/").mock(
+        return_value=httpx.Response(404, json={"detail": "not found"})
+    )
+    with pytest.raises(WorkflowEpisodeError) as exc_info:
+        resolve_episode(_client(), WE_ID)
+    assert exc_info.value.code == "workflow_episode_not_found"
+
+
+def test_select_episode_rejects_invalid_id():
+    with pytest.raises(WorkflowEpisodeError) as exc_info:
+        select_episode(_client(), "not-a-uuid")
+    assert exc_info.value.code == "invalid_workflow_episode_id"

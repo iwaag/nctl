@@ -19,6 +19,7 @@ from nctl_core.workflow_episode import (
     WorkflowEpisodeListItem,
     WorkflowEpisodeRecord,
     WorkflowEpisodeShowData,
+    WorkflowEpisodeTransitionData,
     WorkflowEpisodeWriteData,
 )
 
@@ -237,5 +238,60 @@ def test_write_error_maps_to_usage_exit_code(monkeypatch):
     monkeypatch.setattr(main, "build_workflow_episode_write", lambda cfg, episode_id, namespace, **kwargs: envelope)
 
     result = runner.invoke(main.app, ["workflow-episode", "write", WE_ID, "assessment", "--data", "{}"])
+
+    assert result.exit_code == 2
+
+
+# -- transitions ---------------------------------------------------------------------------
+
+
+def test_select_prints_text(monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setattr(
+        main, "build_workflow_episode_select",
+        lambda cfg, episode_id: Envelope.build("nctl.workflow_episode.select.v1", WorkflowEpisodeTransitionData(episode=_record(status="selected"), changed=True)),
+    )
+
+    result = runner.invoke(main.app, ["workflow-episode", "select", WE_ID])
+
+    assert result.exit_code == 0
+    assert "is now selected" in result.stdout
+
+
+def test_resolve_prints_text(monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setattr(
+        main, "build_workflow_episode_resolve",
+        lambda cfg, episode_id: Envelope.build("nctl.workflow_episode.resolve.v1", WorkflowEpisodeTransitionData(episode=_record(status="resolved"), changed=True)),
+    )
+
+    result = runner.invoke(main.app, ["workflow-episode", "resolve", WE_ID])
+
+    assert result.exit_code == 0
+    assert "is now resolved" in result.stdout
+
+
+def test_dismiss_prints_text(monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setattr(
+        main, "build_workflow_episode_dismiss",
+        lambda cfg, episode_id: Envelope.build("nctl.workflow_episode.dismiss.v1", WorkflowEpisodeTransitionData(episode=_record(status="dismissed"), changed=True)),
+    )
+
+    result = runner.invoke(main.app, ["workflow-episode", "dismiss", WE_ID])
+
+    assert result.exit_code == 0
+    assert "is now dismissed" in result.stdout
+
+
+def test_select_transition_ineligible_maps_to_usage_exit_code(monkeypatch):
+    _setup(monkeypatch)
+    envelope = Envelope.build(
+        "nctl.workflow_episode.select.v1", WorkflowEpisodeTransitionData(),
+        [EnvelopeError(code="workflow_episode_transition_ineligible", message="cannot transition")],
+    )
+    monkeypatch.setattr(main, "build_workflow_episode_select", lambda cfg, episode_id: envelope)
+
+    result = runner.invoke(main.app, ["workflow-episode", "select", WE_ID])
 
     assert result.exit_code == 2

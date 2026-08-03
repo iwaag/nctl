@@ -21,6 +21,7 @@ from nctl_core.workflow_episode_client import (
     create_workflow_episode as post_create_workflow_episode,
     get_workflow_episode,
     list_workflow_episodes,
+    transition_workflow_episode as post_transition_workflow_episode,
     write_workflow_episode_namespace as post_write_workflow_episode_namespace,
 )
 from nctl_core.workflow_episode_errors import (
@@ -72,6 +73,11 @@ class WorkflowEpisodeCreateData(BaseModel):
 class WorkflowEpisodeWriteData(BaseModel):
     episode: WorkflowEpisodeRecord | None = None
     namespace: str = ""
+    changed: bool = False
+
+
+class WorkflowEpisodeTransitionData(BaseModel):
+    episode: WorkflowEpisodeRecord | None = None
     changed: bool = False
 
 
@@ -154,6 +160,24 @@ def write_namespace(client: NautobotClient, episode_id: str, namespace: str, pay
     canonical_id = validate_workflow_episode_id(episode_id)
     row = post_write_workflow_episode_namespace(client, canonical_id, namespace, payload)
     return _to_record(row)
+
+
+def _transition(client: NautobotClient, episode_id: str, action: str, *, new_status: str) -> tuple[WorkflowEpisodeRecord, bool]:
+    canonical_id = validate_workflow_episode_id(episode_id)
+    row = post_transition_workflow_episode(client, canonical_id, action, new_status=new_status)
+    return _to_record(row), True
+
+
+def select_episode(client: NautobotClient, episode_id: str) -> tuple[WorkflowEpisodeRecord, bool]:
+    return _transition(client, episode_id, "select", new_status="selected")
+
+
+def resolve_episode(client: NautobotClient, episode_id: str) -> tuple[WorkflowEpisodeRecord, bool]:
+    return _transition(client, episode_id, "resolve", new_status="resolved")
+
+
+def dismiss_episode(client: NautobotClient, episode_id: str) -> tuple[WorkflowEpisodeRecord, bool]:
+    return _transition(client, episode_id, "dismiss", new_status="dismissed")
 
 
 def _to_record(row: dict) -> WorkflowEpisodeRecord:

@@ -70,12 +70,16 @@ from nctl_core.ssh_enroll import build_ssh_enroll, render_ssh_enroll_text
 from nctl_core.workflow_episode import DEFAULT_LIST_STATUSES
 from nctl_core.workflow_episode_render import (
     build_workflow_episode_create,
+    build_workflow_episode_dismiss,
     build_workflow_episode_list,
+    build_workflow_episode_resolve,
+    build_workflow_episode_select,
     build_workflow_episode_show,
     build_workflow_episode_write,
     render_workflow_episode_create_text,
     render_workflow_episode_list_text,
     render_workflow_episode_show_text,
+    render_workflow_episode_transition_text,
     render_workflow_episode_write_text,
 )
 
@@ -980,6 +984,39 @@ def workflow_episode_write(
     cfg = _load_config(config)
     envelope = build_workflow_episode_write(cfg, episode_id, namespace.value, data=data, data_file=file)
     emit(envelope, json_output, render_workflow_episode_write_text)
+    raise typer.Exit(_workflow_episode_exit_code(envelope))
+
+
+@workflow_episode_app.command("select")
+def workflow_episode_select(
+    episode_id: WorkflowEpisodeIdArgument, config: ConfigOption = None, json_output: WorkflowEpisodeJsonOption = False
+) -> None:
+    """Transition candidate -> selected."""
+    cfg = _load_config(config)
+    envelope = build_workflow_episode_select(cfg, episode_id)
+    emit(envelope, json_output, render_workflow_episode_transition_text)
+    raise typer.Exit(_workflow_episode_exit_code(envelope))
+
+
+@workflow_episode_app.command("resolve")
+def workflow_episode_resolve(
+    episode_id: WorkflowEpisodeIdArgument, config: ConfigOption = None, json_output: WorkflowEpisodeJsonOption = False
+) -> None:
+    """Transition selected -> resolved."""
+    cfg = _load_config(config)
+    envelope = build_workflow_episode_resolve(cfg, episode_id)
+    emit(envelope, json_output, render_workflow_episode_transition_text)
+    raise typer.Exit(_workflow_episode_exit_code(envelope))
+
+
+@workflow_episode_app.command("dismiss")
+def workflow_episode_dismiss(
+    episode_id: WorkflowEpisodeIdArgument, config: ConfigOption = None, json_output: WorkflowEpisodeJsonOption = False
+) -> None:
+    """Transition candidate|selected -> dismissed."""
+    cfg = _load_config(config)
+    envelope = build_workflow_episode_dismiss(cfg, episode_id)
+    emit(envelope, json_output, render_workflow_episode_transition_text)
     raise typer.Exit(_workflow_episode_exit_code(envelope))
 
 
