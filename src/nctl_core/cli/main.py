@@ -442,7 +442,7 @@ RefreshObservationOption = Annotated[
 ]
 AllowDestroyOption = Annotated[
     bool,
-    typer.Option("--allow-destroy", help="Permit planned LXC destruction for this --yes reconcile run."),
+    typer.Option("--allow-destroy", help="Permit planned LXC/QEMU guest destruction for this --yes reconcile run."),
 ]
 
 
@@ -479,12 +479,12 @@ def reconcile(
 
 @app.command()
 def prune(
-    host: Annotated[str, typer.Argument(help="Exact retired DesiredNode slug to prune after completed LXC removal.")],
+    host: Annotated[str, typer.Argument(help="Exact retired DesiredNode slug to prune after completed guest removal.")],
     config: ConfigOption = None,
     yes: YesOption = False,
     json_output: Annotated[bool, typer.Option("--json", help="Print the nctl.prune.v1 envelope as JSON.")] = False,
 ) -> None:
-    """Delete one fully-retired LXC's retained Actual then Desired ledger records."""
+    """Delete one fully-retired LXC/QEMU guest's retained Actual then Desired ledger records."""
     cfg = _load_config(config)
     envelope = run_prune(cfg, host, apply_changes=yes)
     emit(envelope, json_output, render_prune_text)

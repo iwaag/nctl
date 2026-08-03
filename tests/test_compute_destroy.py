@@ -76,6 +76,25 @@ def test_destroy_handler_runs_one_pinned_playbook_and_confirms_absence(tmp_path,
     assert json.loads(seen["command"][7]) == {**PARAMETERS, "result_path": str(context.artifacts.path("round-01/compute/destroy_compute_instance:agfixture.result.json"))}
 
 
+def test_destroy_handler_runs_qemu_playbook_for_virtual_machine_guest(tmp_path, monkeypatch):
+    context = _context(tmp_path)
+    qemu_parameters = {**PARAMETERS, "guest_type": "qemu"}
+    _install_disposition(monkeypatch, qemu_parameters)
+    seen = {}
+    class Runner:
+        def __init__(self, *_args, **_kwargs): pass
+        def run(self, command, **_kwargs):
+            seen["command"] = command
+            context.artifacts.path("round-01/compute/destroy_compute_instance:agfixture.result.json").write_text(
+                json.dumps({"destroyed": True, "absent": True})
+            )
+            return SimpleNamespace(command=command, exit_code=0)
+    monkeypatch.setattr(compute_destroy, "AnsibleRunner", Runner)
+    result = compute_destroy.execute(context, _action(qemu_parameters)).result
+    assert result.success and result.mutated
+    assert seen["command"][3] == str(tmp_path / "ansible_agdev/playbooks/proxmox/destroy_qemu.yml")
+
+
 def test_destroy_handler_refuses_changed_disposition_before_runner(tmp_path, monkeypatch):
     _install_disposition(monkeypatch, {**PARAMETERS, "vmid": 110})
     class Runner:

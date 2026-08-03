@@ -1,4 +1,4 @@
-"""Bounded post-convergence cleanup of one retired LXC's ledger records."""
+"""Bounded post-convergence cleanup of one retired guest's ledger records."""
 from __future__ import annotations
 
 import hashlib
@@ -121,8 +121,8 @@ def _resolve(snapshot, drift, host: str) -> tuple[dict[str, Any], Any, Any, dict
     vm_id, device_id = instance.realized_vm_id, node.realized_device_id
     vm = next((item for item in snapshot.actual.virtual_machines if item.id == vm_id), None)
     device = next((item for item in snapshot.actual.devices if item.id == device_id), None)
-    if vm and (vm.proxmox is None or vm.proxmox.presence != "absent" or vm.proxmox.guest_type != "lxc"):
-        return {"result": "ineligible", "reason": "linked Proxmox LXC is not confirmed absent",
+    if vm and (vm.proxmox is None or vm.proxmox.presence != "absent" or vm.proxmox.guest_type not in ("lxc", "qemu")):
+        return {"result": "ineligible", "reason": "linked Proxmox guest is not confirmed absent",
                 "inbound_consumers": inbound_consumers}, None, None, None
     cluster = next((item for item in snapshot.actual.clusters if vm and item.id == vm.cluster_id), None)
     if vm and (not cluster or not cluster.proxmox or cluster.proxmox.observation_state != "complete"):

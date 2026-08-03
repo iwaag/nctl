@@ -51,6 +51,9 @@ def derive_compute_dispositions(snapshot, *, generated_at: str) -> dict[str, Com
     return result
 
 
+_DESTROYABLE_GUEST_TYPES = {"container": "lxc", "virtual_machine": "qemu"}
+
+
 def _destroy_parameters(realization: ComputeRealization, nodes: dict) -> tuple[dict | None, str | None]:
     instance, platform, cluster, vm = realization.instance, realization.platform, realization.cluster, realization.virtual_machine
     if realization.instance_failures or cluster is None or vm is None:
@@ -58,12 +61,13 @@ def _destroy_parameters(realization: ComputeRealization, nodes: dict) -> tuple[d
     node = nodes.get(instance.desired_node_id)
     control = nodes.get(platform.control_node_id)
     facts = vm.proxmox
-    if instance.instance_kind != "container":
-        return None, "instance_kind_not_container"
+    expected_guest_type = _DESTROYABLE_GUEST_TYPES.get(instance.instance_kind)
+    if expected_guest_type is None:
+        return None, "instance_kind_not_destroyable"
     if facts is None or facts.presence != "present":
         return None, "guest_presence_not_explicitly_present"
-    if facts.guest_type != "lxc":
-        return None, "guest_type_not_lxc"
+    if facts.guest_type != expected_guest_type:
+        return None, "guest_type_disagrees_with_instance_kind"
     if facts.vmid != instance.config.get("vmid"):
         return None, "vmid_disagrees"
     if vm.cluster_id != cluster.id:
@@ -78,7 +82,7 @@ def _destroy_parameters(realization: ComputeRealization, nodes: dict) -> tuple[d
         "compute_platform_slug": platform.slug,
         "cluster_id": cluster.id,
         "virtual_machine_id": vm.id,
-        "guest_type": "lxc",
+        "guest_type": facts.guest_type,
         "vmid": facts.vmid,
         "observed_proxmox_node": facts.node,
         "control_desired_node_id": control.id,

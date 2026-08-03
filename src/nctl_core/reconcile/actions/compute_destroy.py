@@ -1,4 +1,4 @@
-"""Bounded, intent-pinned LXC destruction handler."""
+"""Bounded, intent-pinned LXC/QEMU guest destruction handler."""
 from __future__ import annotations
 
 import json
@@ -10,8 +10,11 @@ from ..model import ReconcileAction
 from .contract import ActionContext, ExecutedAction, actuation_result, failed_action_result
 
 
+DESTROY_PLAYBOOKS = {"lxc": "playbooks/proxmox/destroy_lxc.yml", "qemu": "playbooks/proxmox/destroy_qemu.yml"}
+
+
 def execute(context: ActionContext, action: ReconcileAction) -> ExecutedAction:
-    """Destroy exactly the still-pinned LXC, returning controller-owned evidence."""
+    """Destroy exactly the still-pinned LXC or QEMU guest, returning controller-owned evidence."""
     target_slugs = [target.slug for target in action.targets if target.slug]
     disposition = derive_compute_dispositions(
         context.snapshot, generated_at=context.generated_at
@@ -36,6 +39,12 @@ def execute(context: ActionContext, action: ReconcileAction) -> ExecutedAction:
     directory = context.cfg.ansible.resolved_playbook_dir(context.cfg.source_path.parent)
     inventory = context.cfg.ansible.resolved_inventory(context.cfg.source_path.parent)
     control_host = action.parameters["control_desired_node_slug"]
+    playbook = DESTROY_PLAYBOOKS.get(action.parameters["guest_type"])
+    if playbook is None:
+        return ExecutedAction(result=failed_action_result(
+            context, action, target_slugs, {},
+            f"no destroy playbook for guest_type={action.parameters['guest_type']!r}",
+        ))
     runner = AnsibleRunner(
         directory,
         timeout_seconds=context.cfg.reconcile.ansible_timeout_seconds,
@@ -44,7 +53,7 @@ def execute(context: ActionContext, action: ReconcileAction) -> ExecutedAction:
     )
     command = [
         "ansible-playbook", "-i", str(inventory),
-        str(directory / "playbooks/proxmox/destroy_lxc.yml"), "--limit", control_host,
+        str(directory / playbook), "--limit", control_host,
         "--extra-vars", json.dumps(variables, sort_keys=True),
     ]
     run = runner.run(
