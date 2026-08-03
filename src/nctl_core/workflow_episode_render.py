@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Callable, TypeVar
 
 from nctl_core.config import Config, ConfigError
@@ -10,15 +11,23 @@ from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.workflow_episode import (
     DEFAULT_LIST_STATUSES,
+    WorkflowEpisodeCreateData,
     WorkflowEpisodeListData,
     WorkflowEpisodeShowData,
+    WorkflowEpisodeWriteData,
+    create_episode,
     list_episodes,
+    resolve_json_object_input,
+    resolve_optional_json_object_input,
     show_episode,
+    write_namespace,
 )
 from nctl_core.workflow_episode_errors import WorkflowEpisodeError
 
 LIST_SCHEMA = "nctl.workflow_episode.list.v1"
 SHOW_SCHEMA = "nctl.workflow_episode.show.v1"
+CREATE_SCHEMA = "nctl.workflow_episode.create.v1"
+WRITE_SCHEMA = "nctl.workflow_episode.write.v1"
 T = TypeVar("T")
 
 
@@ -55,6 +64,26 @@ def build_workflow_episode_show(cfg: Config, episode_id: str) -> Envelope[Workfl
         cfg, SHOW_SCHEMA, WorkflowEpisodeShowData(),
         lambda c: WorkflowEpisodeShowData(episode=show_episode(c, episode_id)),
     )
+
+
+def build_workflow_episode_create(
+    cfg: Config, *, title: str, raw_data: str | None = None, raw_data_file: Path | None = None
+) -> Envelope[WorkflowEpisodeCreateData]:
+    def action(c: NautobotClient) -> WorkflowEpisodeCreateData:
+        resolved = resolve_optional_json_object_input(field_name="raw_data", literal=raw_data, file=raw_data_file)
+        record, changed = create_episode(c, title=title, raw_data=resolved)
+        return WorkflowEpisodeCreateData(episode=record, changed=changed)
+    return _build(cfg, CREATE_SCHEMA, WorkflowEpisodeCreateData(), action)
+
+
+def build_workflow_episode_write(
+    cfg: Config, episode_id: str, namespace: str, *, data: str | None = None, data_file: Path | None = None
+) -> Envelope[WorkflowEpisodeWriteData]:
+    def action(c: NautobotClient) -> WorkflowEpisodeWriteData:
+        payload = resolve_json_object_input(field_name="data", literal=data, file=data_file)
+        record = write_namespace(c, episode_id, namespace, payload)
+        return WorkflowEpisodeWriteData(episode=record, namespace=namespace, changed=True)
+    return _build(cfg, WRITE_SCHEMA, WorkflowEpisodeWriteData(), action)
 
 
 def _errors(envelope: Envelope) -> str:
@@ -98,3 +127,17 @@ def render_workflow_episode_show_text(e: Envelope[WorkflowEpisodeShowData]) -> s
         lines += _render_namespace_section(namespace, x.raw_data.get(namespace) or {})
         lines.append("")
     return "\n".join(lines).rstrip("\n")
+
+
+def render_workflow_episode_create_text(e: Envelope[WorkflowEpisodeCreateData]) -> str:
+    if not e.ok:
+        return _errors(e)
+    x = e.data.episode
+    return f"created workflow episode {x.id} ({x.title!r}) status={x.status} at {x.last_updated}"
+
+
+def render_workflow_episode_write_text(e: Envelope[WorkflowEpisodeWriteData]) -> str:
+    if not e.ok:
+        return _errors(e)
+    x = e.data
+    return f"wrote {x.namespace} for workflow episode {x.episode.id} ({x.episode.title!r}); status={x.episode.status}"

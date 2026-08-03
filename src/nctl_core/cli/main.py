@@ -69,10 +69,14 @@ from nctl_core.status import build_status, render_status_text
 from nctl_core.ssh_enroll import build_ssh_enroll, render_ssh_enroll_text
 from nctl_core.workflow_episode import DEFAULT_LIST_STATUSES
 from nctl_core.workflow_episode_render import (
+    build_workflow_episode_create,
     build_workflow_episode_list,
     build_workflow_episode_show,
+    build_workflow_episode_write,
+    render_workflow_episode_create_text,
     render_workflow_episode_list_text,
     render_workflow_episode_show_text,
+    render_workflow_episode_write_text,
 )
 
 app = typer.Typer(help="Unified CLI for pj-clusterintent reconciliation workflows.")
@@ -923,6 +927,59 @@ def workflow_episode_show(
     cfg = _load_config(config)
     envelope = build_workflow_episode_show(cfg, episode_id)
     emit(envelope, json_output, render_workflow_episode_show_text)
+    raise typer.Exit(_workflow_episode_exit_code(envelope))
+
+
+class WorkflowEpisodeNamespaceChoice(str, Enum):
+    report = "report"
+    assessment = "assessment"
+    references = "references"
+    resolution = "resolution"
+
+
+WorkflowEpisodeTitleOption = Annotated[str, typer.Option("--title", help="WorkflowEpisode title.")]
+WorkflowEpisodeRawDataOption = Annotated[
+    Optional[str], typer.Option("--raw-data", help="Literal JSON object for the whole initial raw_data document.")
+]
+WorkflowEpisodeFileOption = Annotated[
+    Optional[Path], typer.Option("--file", help="Read the JSON object from this UTF-8 file instead of the literal option.")
+]
+WorkflowEpisodeNamespaceArgument = Annotated[
+    WorkflowEpisodeNamespaceChoice, typer.Argument(help="raw_data namespace to replace wholesale.")
+]
+WorkflowEpisodeDataOption = Annotated[
+    Optional[str], typer.Option("--data", help="Literal JSON object for this namespace.")
+]
+
+
+@workflow_episode_app.command("create")
+def workflow_episode_create(
+    title: WorkflowEpisodeTitleOption,
+    config: ConfigOption = None,
+    raw_data: WorkflowEpisodeRawDataOption = None,
+    file: WorkflowEpisodeFileOption = None,
+    json_output: WorkflowEpisodeJsonOption = False,
+) -> None:
+    """Create a workflow episode; status always starts candidate."""
+    cfg = _load_config(config)
+    envelope = build_workflow_episode_create(cfg, title=title, raw_data=raw_data, raw_data_file=file)
+    emit(envelope, json_output, render_workflow_episode_create_text)
+    raise typer.Exit(_workflow_episode_exit_code(envelope))
+
+
+@workflow_episode_app.command("write")
+def workflow_episode_write(
+    episode_id: WorkflowEpisodeIdArgument,
+    namespace: WorkflowEpisodeNamespaceArgument,
+    config: ConfigOption = None,
+    data: WorkflowEpisodeDataOption = None,
+    file: WorkflowEpisodeFileOption = None,
+    json_output: WorkflowEpisodeJsonOption = False,
+) -> None:
+    """Replace one raw_data namespace wholesale; the other namespaces are untouched."""
+    cfg = _load_config(config)
+    envelope = build_workflow_episode_write(cfg, episode_id, namespace.value, data=data, data_file=file)
+    emit(envelope, json_output, render_workflow_episode_write_text)
     raise typer.Exit(_workflow_episode_exit_code(envelope))
 
 

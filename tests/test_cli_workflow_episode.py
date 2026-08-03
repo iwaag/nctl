@@ -13,7 +13,14 @@ from typer.testing import CliRunner
 
 import nctl_core.cli.main as main
 from nctl_core.output import Envelope, EnvelopeError
-from nctl_core.workflow_episode import WorkflowEpisodeListData, WorkflowEpisodeListItem, WorkflowEpisodeRecord, WorkflowEpisodeShowData
+from nctl_core.workflow_episode import (
+    WorkflowEpisodeCreateData,
+    WorkflowEpisodeListData,
+    WorkflowEpisodeListItem,
+    WorkflowEpisodeRecord,
+    WorkflowEpisodeShowData,
+    WorkflowEpisodeWriteData,
+)
 
 runner = CliRunner()
 WE_ID = "11111111-1111-1111-1111-111111111111"
@@ -135,3 +142,100 @@ def test_show_connection_error_maps_to_failure_exit_code(monkeypatch):
     result = runner.invoke(main.app, ["workflow-episode", "show", WE_ID])
 
     assert result.exit_code == 1
+
+
+# -- create ------------------------------------------------------------------------------------
+
+
+def test_create_prints_text(monkeypatch):
+    _setup(monkeypatch)
+    captured = {}
+
+    def fake_create(cfg, **kwargs):
+        captured.update(kwargs)
+        return Envelope.build("nctl.workflow_episode.create.v1", WorkflowEpisodeCreateData(episode=_record(), changed=True))
+
+    monkeypatch.setattr(main, "build_workflow_episode_create", fake_create)
+
+    result = runner.invoke(main.app, ["workflow-episode", "create", "--title", "My title", "--raw-data", '{"report": {"summary": "s"}}'])
+
+    assert result.exit_code == 0
+    assert "created workflow episode" in result.stdout
+    assert captured["title"] == "My title"
+    assert captured["raw_data"] == '{"report": {"summary": "s"}}'
+
+
+def test_create_without_raw_data(monkeypatch):
+    _setup(monkeypatch)
+    captured = {}
+
+    def fake_create(cfg, **kwargs):
+        captured.update(kwargs)
+        return Envelope.build("nctl.workflow_episode.create.v1", WorkflowEpisodeCreateData(episode=_record(), changed=True))
+
+    monkeypatch.setattr(main, "build_workflow_episode_create", fake_create)
+
+    result = runner.invoke(main.app, ["workflow-episode", "create", "--title", "My title"])
+
+    assert result.exit_code == 0
+    assert captured["raw_data"] is None
+    assert captured["raw_data_file"] is None
+
+
+def test_create_error_maps_to_usage_exit_code(monkeypatch):
+    _setup(monkeypatch)
+    envelope = Envelope.build(
+        "nctl.workflow_episode.create.v1", WorkflowEpisodeCreateData(),
+        [EnvelopeError(code="invalid_json", message="bad json")],
+    )
+    monkeypatch.setattr(main, "build_workflow_episode_create", lambda cfg, **kwargs: envelope)
+
+    result = runner.invoke(main.app, ["workflow-episode", "create", "--title", "t", "--raw-data", "not json"])
+
+    assert result.exit_code == 2
+
+
+# -- write -------------------------------------------------------------------------------------
+
+
+def test_write_prints_text(monkeypatch):
+    _setup(monkeypatch)
+    captured = {}
+
+    def fake_write(cfg, episode_id, namespace, **kwargs):
+        captured["episode_id"] = episode_id
+        captured["namespace"] = namespace
+        captured.update(kwargs)
+        return Envelope.build(
+            "nctl.workflow_episode.write.v1",
+            WorkflowEpisodeWriteData(episode=_record(raw_data={"assessment": {"verdict": "promote"}}), namespace="assessment", changed=True),
+        )
+
+    monkeypatch.setattr(main, "build_workflow_episode_write", fake_write)
+
+    result = runner.invoke(main.app, ["workflow-episode", "write", WE_ID, "assessment", "--data", '{"verdict": "promote"}'])
+
+    assert result.exit_code == 0
+    assert "wrote assessment" in result.stdout
+    assert captured["episode_id"] == WE_ID
+    assert captured["namespace"] == "assessment"
+    assert captured["data"] == '{"verdict": "promote"}'
+
+
+def test_write_rejects_unknown_namespace(monkeypatch):
+    _setup(monkeypatch)
+    result = runner.invoke(main.app, ["workflow-episode", "write", WE_ID, "bogus", "--data", "{}"])
+    assert result.exit_code == 2
+
+
+def test_write_error_maps_to_usage_exit_code(monkeypatch):
+    _setup(monkeypatch)
+    envelope = Envelope.build(
+        "nctl.workflow_episode.write.v1", WorkflowEpisodeWriteData(),
+        [EnvelopeError(code="workflow_episode_not_found", message="no such episode")],
+    )
+    monkeypatch.setattr(main, "build_workflow_episode_write", lambda cfg, episode_id, namespace, **kwargs: envelope)
+
+    result = runner.invoke(main.app, ["workflow-episode", "write", WE_ID, "assessment", "--data", "{}"])
+
+    assert result.exit_code == 2
