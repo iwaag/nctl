@@ -756,6 +756,7 @@ Desired row, an unmanaged guest, or a missing observation as deletion intent.
 For an existing guest, the smallest canonical document is:
 
 ```yaml
+dry_run: true
 operations:
   - op: upsert
     kind: desired_node
