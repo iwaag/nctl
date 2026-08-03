@@ -87,7 +87,6 @@ def test_placement_config_is_allowlisted_and_typed():
 def test_connection_resolution_and_ansible_host():
     local = resolve_connection_variables(
         inventory_hostname="node-a",
-        actual_state_policy="required",
         connection_path="local",
         actual_local_ip="192.0.2.10/24",
         local_endpoint={"dns_name": "node-a.example.test", "mdns_name": "node-a.local"},
@@ -98,7 +97,6 @@ def test_connection_resolution_and_ansible_host():
 
     tailscale = resolve_connection_variables(
         inventory_hostname="node-a",
-        actual_state_policy="required",
         connection_path="tailscale",
         tailscale_endpoint={"ip_address": "100.64.0.10/32"},
     )
@@ -108,7 +106,6 @@ def test_connection_resolution_and_ansible_host():
         "unresolved_connection_path",
         resolve_connection_variables,
         inventory_hostname="node-a",
-        actual_state_policy="required",
         connection_path="tailscale",
     )
 
@@ -159,7 +156,6 @@ def test_production_inventory_schema_is_closed():
                 },
                 "linux": {"hosts": {"node-a": {}}},
                 "macos": {"hosts": {}},
-                "haos": {"hosts": {}},
                 "power_managed": {"hosts": {"node-a": {}}},
                 "demo_server": {"hosts": {"node-a": {}}},
             },

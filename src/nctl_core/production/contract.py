@@ -121,7 +121,6 @@ _DESIRED_PLACEMENT_KEYS = {
 }
 _OPERATIONAL_OVERRIDE_KEYS = {
     "id",
-    "declared_host_os",
     "connection_path",
     "ansible_port",
     "power_control",
@@ -340,7 +339,7 @@ def validate_production_inventory_document(
     children = all_data["children"]
     if not isinstance(children, dict):
         raise ContractError("invalid_inventory_schema", "all.children must be an object")
-    core_groups = {"ssh_hosts", "linux", "macos", "haos", "power_managed"}
+    core_groups = {"ssh_hosts", "linux", "macos", "power_managed"}
     service_groups = {profile["group"] for profile in validated_profiles.values()}
     unknown_groups = set(children) - core_groups - service_groups
     missing_groups = core_groups - set(children)

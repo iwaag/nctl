@@ -60,8 +60,8 @@ PRODUCTION_ELIGIBLE_NODE_TYPES = frozenset({"device", "virtual_machine", "servic
 PRODUCTION_ELIGIBLE_LIFECYCLES = frozenset({"approved", "active"})
 
 # Core groups that must always exist in the document, even when empty.
-_CORE_GROUPS = ("ssh_hosts", "linux", "macos", "haos", "power_managed")
-_OS_SELECTOR_GROUP = {"linux": "linux", "macos": "macos", "haos": "haos"}
+_CORE_GROUPS = ("ssh_hosts", "linux", "macos", "power_managed")
+_OS_SELECTOR_GROUP = {"linux": "linux", "macos": "macos"}
 
 # Phase 1 (better_usability p1) target-local failure-scope groups, per
 # p0/field-classification.md Section 6 Group C. These are the exhaustively
@@ -428,13 +428,10 @@ def resolve_effective_route(node: NodeInput, effective: EffectiveOperationalValu
     never exports `ansible_host` per host (see `_compose_host` below), so this
     is the one place both call sites can get it from.
     """
-    declared = effective.actual_state_policy.value == "declared"
-    realized = None if declared else node.realized
-    facts: ActualFacts | None = realized.facts if realized else None
+    facts: ActualFacts | None = node.realized.facts if node.realized else None
     selected = effective.selected_endpoint
     return resolve_connection_variables(
         inventory_hostname=node.slug,
-        actual_state_policy=effective.actual_state_policy.value,
         connection_path=effective.connection_path.value,
         actual_local_ip=facts.local_ip if facts else None,
         local_endpoint=selected.evidence() if effective.connection_path.value == "local" else None,
@@ -497,8 +494,7 @@ def _compose_host(
     `resolve_effective_route` returned no `ansible_host` at all.
     """
 
-    declared = effective.actual_state_policy.value == "declared"
-    realized = None if declared else node.realized
+    realized = node.realized
     facts: ActualFacts | None = realized.facts if realized else None
 
     try:
@@ -616,7 +612,7 @@ def _build_inventory_document(
     children: dict[str, Any] = {
         "ssh_hosts": {"hosts": {hostname: ssh_hosts[hostname] for hostname in sorted(ssh_hosts)}}
     }
-    for group in ("linux", "macos", "haos", "power_managed"):
+    for group in ("linux", "macos", "power_managed"):
         children[group] = {"hosts": {hostname: {} for hostname in sorted(selector_members[group])}}
     for group in sorted(service_members):
         children[group] = {"hosts": {hostname: {} for hostname in sorted(service_members[group])}}

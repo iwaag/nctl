@@ -54,12 +54,6 @@ def test_missing_device_and_missing_timestamp_are_insufficient_observation():
     assert "service_observation_missing" in gap_codes(evaluate(devices={"d1": device(service_inventory_updated_at=None)}))
 
 
-def test_declared_node_is_observation_exempt():
-    report = evaluate(placements=[placement(actual_state_policy="declared")], devices={})
-    assert report["status"] == "satisfied"
-    assert report["placements"][0]["gaps"] == []
-
-
 def test_running_service_on_non_target_is_wrong_node_without_changing_membership():
     report = evaluate(devices={"d1": device(), "d2": device()})
     assert report["unexpected_locations"][0]["code"] == "service_observed_on_wrong_node"

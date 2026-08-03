@@ -139,20 +139,19 @@ def test_endpoint_scenario_matrix_fails_locally_and_orders_evidence(endpoints, c
         assert [item["id"] for item in raised.value.evidence["candidates"]] == ["a", "z"]
 
 
-def test_declared_haos_and_forced_tailscale_are_override_driven() -> None:
+def test_forced_tailscale_is_override_driven() -> None:
     vpn = _endpoint("vpn", endpoint_type="vpn", ip_address="100.64.0.10")
     override = OperationalOverride(
         id="override-1",
-        declared_host_os="haos",
         connection_path="tailscale",
         tailscale_endpoint_id="vpn",
         ansible_port=2222,
     )
 
-    values = _resolve(endpoints=(vpn,), override=override, facts=None, realized_type=None)
+    values = _resolve(endpoints=(vpn,), override=override)
 
-    assert values.actual_state_policy.value == "declared"
-    assert values.host_os.as_dict()["override_won"] is True
+    assert values.actual_state_policy.value == "required"
+    assert values.host_os.as_dict()["override_won"] is False
     assert values.connection_path.source == "override"
     assert values.connection_address.value == "100.64.0.10"
     assert values.ansible_port.value == 2222

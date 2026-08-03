@@ -21,7 +21,6 @@ _OBSERVED_SYSTEM_MAP = {"Linux": "linux", "Darwin": "macos"}
 _POWER_BY_PLATFORM = {
     "linux": frozenset({"none", "wol"}),
     "macos": frozenset({"none", "macos_sleep"}),
-    "haos": frozenset({"none"}),
 }
 
 
@@ -71,7 +70,6 @@ class EndpointCandidate:
 @dataclass(frozen=True)
 class OperationalOverride:
     id: str
-    declared_host_os: str | None = None
     connection_path: str | None = None
     local_endpoint_id: str | None = None
     tailscale_endpoint_id: str | None = None
@@ -153,56 +151,40 @@ def resolve_operational_values(
         "field": field_name,
     }
 
-    declared_host_os = override.declared_host_os if override else None
-    if declared_host_os is not None:
-        if declared_host_os != "haos":
-            raise _failure(
-                "unsupported_observed_host_os",
-                "declared_host_os",
-                f"unsupported declared host OS {declared_host_os!r}",
-                {"declared_host_os": declared_host_os},
-            )
-        policy = ValueRecord(
-            "declared", "derived", {"kind": "override_presence", "field": "declared_host_os"}, False
+    type_problem = actual_type_problem(realized_type)
+    if type_problem:
+        raise _failure(type_problem, "host_os", "a supported realized device is required", {})
+    if facts is None:
+        raise _failure("missing_actual_data", "host_os", "actual facts are missing", {})
+    freshness_problem = actual_state_problem(facts.collected_at, generated_at)
+    if freshness_problem:
+        raise _failure(
+            freshness_problem,
+            "host_os",
+            "actual observation is missing, stale, or invalid",
+            {"collected_at": facts.collected_at},
         )
-        host_os = ValueRecord(declared_host_os, "override", override_ref("declared_host_os"), True)
-    else:
-        type_problem = actual_type_problem(realized_type)
-        if type_problem:
-            raise _failure(type_problem, "host_os", "a supported realized device is required", {})
-        if facts is None:
-            raise _failure("missing_actual_data", "host_os", "actual facts are missing", {})
-        freshness_problem = actual_state_problem(facts.collected_at, generated_at)
-        if freshness_problem:
-            raise _failure(
-                freshness_problem,
-                "host_os",
-                "actual observation is missing, stale, or invalid",
-                {"collected_at": facts.collected_at},
-            )
-        if not facts.observed_system:
-            raise _failure("missing_observed_system", "host_os", "observed system is missing", {})
-        normalized_os = _OBSERVED_SYSTEM_MAP.get(facts.observed_system)
-        if normalized_os is None:
-            raise _failure(
-                "unsupported_observed_host_os",
-                "host_os",
-                f"unsupported observed system {facts.observed_system!r}",
-                {"observed_system": facts.observed_system},
-            )
-        policy = ValueRecord(
-            "required", "derived", {"kind": "override_absence", "field": "declared_host_os"}, False
+    if not facts.observed_system:
+        raise _failure("missing_observed_system", "host_os", "observed system is missing", {})
+    normalized_os = _OBSERVED_SYSTEM_MAP.get(facts.observed_system)
+    if normalized_os is None:
+        raise _failure(
+            "unsupported_observed_host_os",
+            "host_os",
+            f"unsupported observed system {facts.observed_system!r}",
+            {"observed_system": facts.observed_system},
         )
-        host_os = ValueRecord(
-            normalized_os,
-            "derived",
-            {
-                "kind": "nodeutils_observation",
-                "observed_system": facts.observed_system,
-                "collected_at": facts.collected_at,
-            },
-            False,
-        )
+    policy = ValueRecord("required", "derived", {"kind": "override_absence", "field": "operational_override"}, False)
+    host_os = ValueRecord(
+        normalized_os,
+        "derived",
+        {
+            "kind": "nodeutils_observation",
+            "observed_system": facts.observed_system,
+            "collected_at": facts.collected_at,
+        },
+        False,
+    )
 
     endpoint_by_id = {endpoint.id: endpoint for endpoint in endpoints}
     selected: EndpointCandidate

@@ -20,7 +20,7 @@ def select_local_route(*, local_ip: str | None, local_dns_hostname: str | None,
     return next(value for value in candidates if isinstance(value, str) and value.strip())
 
 
-def resolve_connection_variables(*, inventory_hostname: str, actual_state_policy: str,
+def resolve_connection_variables(*, inventory_hostname: str,
                                  connection_path: str, actual_local_ip: str | None = None,
                                  local_endpoint: Mapping[str, Any] | None = None,
                                  tailscale_endpoint: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -30,8 +30,6 @@ def resolve_connection_variables(*, inventory_hostname: str, actual_state_policy
     tailscale_endpoint = tailscale_endpoint or {}
     if actual_local_ip:
         variables["local_ip"] = _normalize_ip(actual_local_ip, "actual_local_ip")
-    elif actual_state_policy == "declared" and local_endpoint.get("ip_address"):
-        variables["local_ip"] = _normalize_ip(local_endpoint["ip_address"], "local_endpoint.ip_address")
     if _nonempty(local_endpoint.get("dns_name")):
         variables["local_dns_hostname"] = local_endpoint["dns_name"].strip()
     if _nonempty(local_endpoint.get("mdns_name")):

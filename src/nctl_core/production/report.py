@@ -54,7 +54,7 @@ def _placement_desired_entry(placement: PlacementInput) -> dict[str, Any]:
 def _operational_override_entry(override: Any | None) -> dict[str, Any] | None:
     if override is None:
         return None
-    return {"id": override.id, "declared_host_os": override.declared_host_os,
+    return {"id": override.id,
         "connection_path": override.connection_path, "ansible_port": override.ansible_port,
         "power_control": override.power_control, "is_laptop": override.is_laptop,
         "local_endpoint_id": override.local_endpoint_id, "tailscale_endpoint_id": override.tailscale_endpoint_id}

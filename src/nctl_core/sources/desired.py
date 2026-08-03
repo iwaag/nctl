@@ -123,7 +123,6 @@ DESIRED_QUERY = """
   desired_node_operational_overrides {
     id
     desired_node { id }
-    declared_host_os
     connection_path
     ansible_port
     power_control
@@ -250,7 +249,6 @@ class DesiredIPRange(BaseModel):
 class DesiredNodeOperationalOverride(BaseModel):
     id: str
     node_id: str
-    declared_host_os: str | None = None
     connection_path: str | None = None
     ansible_port: int | None = None
     power_control: str | None = None
@@ -416,7 +414,6 @@ def _build_operational_override(row: dict[str, Any]) -> DesiredNodeOperationalOv
     return DesiredNodeOperationalOverride(
         id=row["id"],
         node_id=row["desired_node"]["id"],
-        declared_host_os=_lower(row.get("declared_host_os")),
         connection_path=_lower(row.get("connection_path")),
         ansible_port=row.get("ansible_port"),
         power_control=_lower(row.get("power_control")),

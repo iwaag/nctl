@@ -97,12 +97,10 @@ def compute_instance(snapshot: SourceSnapshot, context: DriftContext) -> Iterato
 @register("node")
 def node_existence(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
     from nctl_core.compute.manual_initial_access import awaiting_manual_initial_access
-    override_by_node = {item.node_id: item for item in snapshot.desired.operational_overrides}
     devices_by_id = {device.id: device for device in snapshot.actual.devices}
 
     for node in snapshot.desired.nodes:
         target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
-        operational_override = override_by_node.get(node.id)
 
         if awaiting_manual_initial_access(snapshot, node):
             yield DiffRecord(
@@ -126,10 +124,7 @@ def node_existence(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[
                 desired={"realized_device_id": node.realized_device_id},
                 sources=["desired", "actual"],
             )
-        if (
-            (operational_override is None or operational_override.declared_host_os is None)
-            and not node.realized_device_id
-        ):
+        if not node.realized_device_id:
             yield DiffRecord(
                 target=target,
                 code="no_realized_object",

@@ -133,8 +133,6 @@ def evaluate_active_placement(
         "observed_at": None,
         "gaps": [],
     }
-    if policy == "declared":
-        return report
     facts = devices.get(device_id) if device_id else None
     if facts is None:
         report["gaps"].append({"code": "service_observation_missing", "reason": "no_realized_device" if not device_id else "device_facts_unavailable"})

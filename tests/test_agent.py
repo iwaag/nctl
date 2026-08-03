@@ -26,11 +26,11 @@ def _config(tmp_path: Path) -> Config:
     return Config.load(path)
 
 
-def _snapshot(os_name: str = "linux") -> DesiredSnapshot:
+def _snapshot() -> DesiredSnapshot:
     return DesiredSnapshot(
         nodes=[DesiredNode(id=NODE_ID, slug="agpc", name="agpc", lifecycle="active", node_type="device", realized_device_id=NODE_ID)],
         endpoints=[DesiredEndpoint(id="endpoint", name="primary", endpoint_type="primary", node_id=NODE_ID, node_slug="agpc", mdns_name="agpc.local")],
-        operational_overrides=[DesiredNodeOperationalOverride(id="override", node_id=NODE_ID, declared_host_os=os_name, ansible_port=2222)],
+        operational_overrides=[DesiredNodeOperationalOverride(id="override", node_id=NODE_ID, ansible_port=2222)],
     )
 
 
@@ -50,21 +50,9 @@ def test_target_resolution_requires_exact_slug_and_enrollment(tmp_path):
     assert exc.value.code == "unknown_host"
 
 
-def test_target_resolution_uses_observed_os_before_declared_os(tmp_path):
-    cfg = _config(tmp_path)
-    target = agent._target_from_snapshot(cfg, _snapshot("linux"), _actual_snapshot("Darwin"), "agpc")
-    assert target.workdir == Path("/Users/eiji/agent-work")
-
-
-def test_target_resolution_uses_declared_os_before_first_observation(tmp_path):
-    cfg = _config(tmp_path)
-    target = agent._target_from_snapshot(cfg, _snapshot("macos"), _actual_snapshot(None), "agpc")
-    assert target.workdir == Path("/Users/eiji/agent-work")
-
-
 def test_ssh_tunnel_args_close_the_managed_trust_policy(tmp_path):
     cfg = _config(tmp_path)
-    argv = agent.ssh_tunnel_argv(cfg, agent._target_from_snapshot(cfg, _snapshot("macos"), _actual_snapshot("Darwin"), "agpc"), 43123)
+    argv = agent.ssh_tunnel_argv(cfg, agent._target_from_snapshot(cfg, _snapshot(), _actual_snapshot("Darwin"), "agpc"), 43123)
     assert argv[:6] == ["ssh", "-N", "-p", "2222", "-L", "127.0.0.1:43123:127.0.0.1:4096"]
     assert "IdentitiesOnly=yes" in argv
     assert str(cfg.resolved_agent_identity_file()) in argv

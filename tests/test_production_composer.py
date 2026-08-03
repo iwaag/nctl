@@ -56,8 +56,8 @@ PROFILES = {
             "port": {"ansible_variable": "db_port", "type": "integer", "required": False},
         },
     },
-    "home_assistant": {
-        "group": "haos_server",
+    "empty": {
+        "group": "empty_server",
         "config_schema_version": "1",
         "variables": {},
     },
@@ -98,36 +98,6 @@ def linux_node(slug, *, placements=(), power="none", facts=None, realized_type="
         operational_override=override,
         placements=tuple(placements),
         realized=realized,
-    )
-
-
-def haos_node(slug="aghaos", *, placements=()):
-    endpoint = EndpointCandidate(
-        id="endpoint-haos",
-        name="primary",
-        endpoint_type="primary",
-        node_slug=slug,
-        ip_address="192.168.0.20/24",
-        dns_name="aghaos.example.test",
-    )
-    override = OperationalOverride(
-        id="override-haos",
-        connection_path="local",
-        power_control="none",
-        declared_host_os="haos",
-        local_endpoint_id=endpoint.id,
-        ansible_port=2222,
-    )
-    return NodeInput(
-        id=_node_id("aghaos"),
-        slug=slug,
-        name="HAOS",
-        lifecycle="active",
-        node_type="device",
-        endpoints=(endpoint,),
-        operational_override=override,
-        placements=tuple(placements),
-        realized=None,
     )
 
 
@@ -396,32 +366,7 @@ def test_tailscale_connection_exports_tailscale_ip():
     assert host["tailscale_ip"] == "100.64.0.10"
 
 
-def test_haos_composed_without_realized_object():
-    result = compose([haos_node()])
-
-    host = ssh_host(result, "aghaos")
-    assert host["host_os"] == "haos"
-    assert host["local_ip"] == "192.168.0.20"
-    assert host["ansible_port"] == 2222
-    assert "mac_address" not in host
-    assert "network_interface" not in host
-    assert "nautobot_device_id" not in host
-    assert "aghaos" in group_hosts(result, "haos")
-    assert group_hosts(result, "power_managed") == set()
-
-
-def test_haos_declared_node_joins_service_group():
-    # The declared-node path must still place HAOS into its service group so
-    # the home-assistant deployment play can target it without nodeutils data.
-    node = haos_node(placements=[PlacementInput("p1", "primary", "home_assistant", "1", config={})])
-    result = compose([node])
-
-    assert "aghaos" in group_hosts(result, "haos_server")
-    assert ssh_host(result, "aghaos")["nintent_active_placement_ids"] == ["p1"]
-    assert result.report["summary"]["active_placements"] == 1
-
-
-def test_linux_macos_and_declared_haos_compose_together():
+def test_linux_and_macos_compose_together():
     nodes = [
         linux_node(
             "aglinux",
@@ -436,20 +381,15 @@ def test_linux_macos_and_declared_haos_compose_together():
                 iface="en0",
             ),
         ),
-        haos_node(
-            placements=[PlacementInput("p-haos", "primary", "home_assistant", "1", config={})],
-        ),
     ]
 
     result = compose(nodes)
 
-    assert result.report["summary"]["included"] == 3
-    assert group_hosts(result, "ssh_hosts") == {"aglinux", "agmac", "aghaos"}
+    assert result.report["summary"]["included"] == 2
+    assert group_hosts(result, "ssh_hosts") == {"aglinux", "agmac"}
     assert group_hosts(result, "linux") == {"aglinux"}
     assert group_hosts(result, "macos") == {"agmac"}
-    assert group_hosts(result, "haos") == {"aghaos"}
     assert group_hosts(result, "web_server") == {"aglinux"}
-    assert group_hosts(result, "haos_server") == {"aghaos"}
     for hostname in group_hosts(result, "ssh_hosts"):
         assert "package_manager" not in ssh_host(result, hostname)
 
@@ -607,7 +547,7 @@ def test_ineligible_nodes_are_out_of_scope():
 def test_output_is_byte_stable():
     nodes = [
         linux_node("agweb", placements=[PlacementInput("p1", "primary", "web", "1", config={"enabled": True})]),
-        haos_node(),
+        linux_node("agmac", facts=linux_facts(system="Darwin", local_ip="192.168.0.11", mac="11:22:33:44:55:66", iface="en0")),
         linux_node("agwol", power="wol"),
     ]
     first = compose(list(nodes))
@@ -944,7 +884,7 @@ def test_disabled_placement_on_ineligible_node_produces_no_finding():
 def test_empty_config_is_still_evidence_for_unapplied_placement():
     node = _planned_node(
         "agplanned",
-        placements=[PlacementInput("p1", "primary", "home_assistant", "1", config={})],
+        placements=[PlacementInput("p1", "primary", "empty", "1", config={})],
     )
     result = compose([node])
 

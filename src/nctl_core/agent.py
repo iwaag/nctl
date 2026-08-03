@@ -111,16 +111,15 @@ def _target_from_snapshot(
         raise AgentError("node_without_mdns", f"DesiredNode {host!r} has no mDNS endpoint", {"host": host})
     override = next((item for item in snapshot.operational_overrides if item.node_id == node.id), None)
     ssh_port = override.ansible_port if override and override.ansible_port else 22
-    declared_os = override.declared_host_os if override else None
     devices_by_id = {device.id: device for device in actual.devices}
     device = devices_by_id.get(node.realized_device_id or "")
     observed_os = device.actual_facts().observed_system if device is not None else None
-    workdir = _workdir_from_os(cfg, observed_os) or _workdir_from_os(cfg, declared_os)
+    workdir = _workdir_from_os(cfg, observed_os)
     if workdir is None:
         raise AgentError(
             "agent_workdir_unresolved",
-            f"DesiredNode {host!r} needs a Linux/Darwin nodeutils observation or declared_host_os",
-            {"host": host, "observed_system": observed_os, "declared_host_os": declared_os},
+            f"DesiredNode {host!r} needs a Linux/Darwin nodeutils observation",
+            {"host": host, "observed_system": observed_os},
         )
     alias = derive_host_key_alias(node.id)
     try:

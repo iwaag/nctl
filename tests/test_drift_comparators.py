@@ -95,16 +95,6 @@ def test_node_existence_flags_required_policy_with_no_realized_object():
     assert [d.code for d in diffs] == ["no_realized_object"]
 
 
-def test_node_existence_allows_declared_policy_with_no_realized_object():
-    node = DesiredNode(id="n1", slug="aghaos", name="aghaos", lifecycle="active", node_type="device")
-    override = DesiredNodeOperationalOverride(
-        id="op1", node_id="n1", connection_path="local", declared_host_os="haos"
-    )
-    snapshot = make_snapshot(nodes=[node], operational_overrides=[override])
-
-    assert list(comparators.node_existence(snapshot, CONTEXT)) == []
-
-
 @pytest.mark.parametrize("missing", ["link", "running", "device", "observation"])
 def test_node_existence_waits_for_manual_initial_access_only_when_all_four_conditions_hold(missing):
     """A created LXC is an explicit safe terminal only until first guest observation."""

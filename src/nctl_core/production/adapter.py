@@ -87,7 +87,6 @@ def _operational_override(item: DesiredNodeOperationalOverride | None) -> Operat
         return None
     return OperationalOverride(
         id=item.id,
-        declared_host_os=item.declared_host_os,
         connection_path=item.connection_path,
         local_endpoint_id=item.local_endpoint.id if item.local_endpoint else None,
         tailscale_endpoint_id=item.tailscale_endpoint.id if item.tailscale_endpoint else None,

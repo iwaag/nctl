@@ -138,6 +138,21 @@ def _node(slug="agweb") -> DesiredNode:
     )
 
 
+def _realized_node(slug="agweb") -> DesiredNode:
+    """A node with a matching Linux actual device, so route derivation
+    resolves without needing an operational-override shortcut."""
+    return _node(slug).model_copy(update={"realized_device_id": "dev-1"})
+
+
+def _linux_actual(
+    node: DesiredNode, *, generated_at="2026-07-17T00:00:00+00:00", local_ip: str | None = None
+) -> ActualSnapshot:
+    facts = {"host_system": "Linux", "last_seen": generated_at}
+    if local_ip is not None:
+        facts["primary_ip_address"] = local_ip
+    return ActualSnapshot(devices=[ActualDevice(id="dev-1", name=node.name, facts=facts)])
+
+
 def _target_status(target, status, diffs=()) -> TargetStatus:
     return TargetStatus(target=target, status=status, diffs=list(diffs))
 
@@ -840,7 +855,7 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
         lambda *a, **k: SimpleNamespace(run=lambda *a2, **k2: playbook_run_calls.__setitem__("n", playbook_run_calls["n"] + 1)),
     )
 
-    node = _node()
+    node = _realized_node()
     good_service = _service_and_placement("good-svc", "good", node)
     diff = DiffRecord(
         target=Target(kind="service", slug="good-svc", name="good-svc", id="s-good"),
@@ -855,11 +870,8 @@ def test_service_phase_blocks_on_mismatched_key_after_production_regen(tmp_path,
         snapshot.desired.placements = [good_service[1]]
         # fix_sshkey2 Step 3: a resolvable production route is required for
         # this test to genuinely exercise route-based mismatch detection
-        # (rather than an unrelated no_resolvable_production_route). "declared"
-        # policy needs no realized/actual facts on this node fixture.
-        snapshot.desired.operational_overrides = [
-            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
-        ]
+        # (rather than an unrelated no_resolvable_production_route).
+        snapshot.actual = _linux_actual(node)
         return snapshot
 
     _patch_production_render(monkeypatch, make_snapshot)
@@ -932,7 +944,7 @@ def test_production_write_failure_starts_no_service_ansible_process(tmp_path, mo
         lambda *a, **k: SimpleNamespace(run=lambda *a2, **k2: playbook_run_calls.__setitem__("n", playbook_run_calls["n"] + 1)),
     )
 
-    node = _node()
+    node = _realized_node()
     good_service = _service_and_placement("good-svc", "good", node)
     diff = DiffRecord(
         target=Target(kind="service", slug="good-svc", name="good-svc", id="s-good"),
@@ -945,9 +957,7 @@ def test_production_write_failure_starts_no_service_ansible_process(tmp_path, mo
         snapshot = _snapshot(nodes=[node])
         snapshot.desired.services = [good_service[0]]
         snapshot.desired.placements = [good_service[1]]
-        snapshot.desired.operational_overrides = [
-            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
-        ]
+        snapshot.actual = _linux_actual(node)
         return snapshot
 
     _patch_production_render(monkeypatch, make_snapshot)
@@ -999,7 +1009,7 @@ def test_service_phase_scans_freshly_regenerated_route_not_round_start_snapshot(
 
     monkeypatch.setattr(playbook_module.AnsibleRunner, "run", fake_runner_run)
 
-    node = _node()
+    node = _realized_node()
     good_service = _service_and_placement("good-svc", "good", node)
     diff = DiffRecord(
         target=Target(kind="service", slug="good-svc", name="good-svc", id="s-good"),
@@ -1010,12 +1020,9 @@ def test_service_phase_scans_freshly_regenerated_route_not_round_start_snapshot(
 
     def snapshot_with_ip(ip: str):
         snapshot = _snapshot(nodes=[node])
-        snapshot.desired.endpoints[0].ip_address = ip
         snapshot.desired.services = [good_service[0]]
         snapshot.desired.placements = [good_service[1]]
-        snapshot.desired.operational_overrides = [
-            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
-        ]
+        snapshot.actual = _linux_actual(node, local_ip=ip)
         return snapshot
 
     OLD_IP = "10.0.0.1"
@@ -1098,7 +1105,7 @@ def test_independent_service_action_failure_does_not_block_the_other(tmp_path, m
     )
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
 
-    node = _node()
+    node = _realized_node()
     good_service = _service_and_placement("good-svc", "good", node)
     bad_service = _service_and_placement("bad-svc", "bad", node)
 
@@ -1122,9 +1129,7 @@ def test_independent_service_action_failure_does_not_block_the_other(tmp_path, m
         # fix_sshkey2 Step 3: a resolvable production route is required so the
         # post-regen scan reports ready (matching FIXTURE_KEY_BLOB) instead of
         # no_resolvable_production_route.
-        snapshot.desired.operational_overrides = [
-            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
-        ]
+        snapshot.actual = _linux_actual(node)
         return snapshot
 
     _patch_production_render(monkeypatch, make_snapshot)
@@ -1204,7 +1209,7 @@ def test_interruption_mid_round_retains_actions_completed_before_it(tmp_path, mo
     )
     monkeypatch.setattr(executor_module, "write_production_artifacts", lambda envelope, out_dir: None)
 
-    node = _node()
+    node = _realized_node()
     good_service = _service_and_placement("good-svc", "good", node)
     bad_service = _service_and_placement("bad-svc", "bad", node)
     good_diff = DiffRecord(
@@ -1220,9 +1225,7 @@ def test_interruption_mid_round_retains_actions_completed_before_it(tmp_path, mo
         snapshot = _snapshot(nodes=[node])
         snapshot.desired.services = [good_service[0], bad_service[0]]
         snapshot.desired.placements = [good_service[1], bad_service[1]]
-        snapshot.desired.operational_overrides = [
-            DesiredNodeOperationalOverride(id="ov-1", node_id=node.id, declared_host_os="haos")
-        ]
+        snapshot.actual = _linux_actual(node)
         return snapshot
 
     _patch_production_render(monkeypatch, make_snapshot)
@@ -1942,9 +1945,9 @@ def test_post_actuation_observation_store_failure_retains_deployment_evidence(tm
     # even though the post-actuation observation that follows it hits a
     # managed-store failure.
     ctx = _direct_round_setup(tmp_path, monkeypatch)
-    ctx.snapshot.desired.operational_overrides = [
-        DesiredNodeOperationalOverride(id="ov-1", node_id=ctx.node.id, declared_host_os="haos")
-    ]
+    ctx.node = ctx.node.model_copy(update={"realized_device_id": "dev-1"})
+    ctx.snapshot.desired.nodes = [ctx.node]
+    ctx.snapshot.actual = _linux_actual(ctx.node)
     dnsmasq_action = ReconcileAction(
         id="dnsmasq-1",
         reconciler_id="dnsmasq_config",
@@ -2014,9 +2017,9 @@ def test_dnsmasq_config_action_with_blocked_render_never_invokes_ansible(tmp_pat
     without ever invoking `ansible-playbook`, exactly like `build_dnsmasq_apply`
     already proves at its own layer."""
     ctx = _direct_round_setup(tmp_path, monkeypatch)
-    ctx.snapshot.desired.operational_overrides = [
-        DesiredNodeOperationalOverride(id="ov-1", node_id=ctx.node.id, declared_host_os="haos")
-    ]
+    ctx.node = ctx.node.model_copy(update={"realized_device_id": "dev-1"})
+    ctx.snapshot.desired.nodes = [ctx.node]
+    ctx.snapshot.actual = _linux_actual(ctx.node)
     dnsmasq_action = ReconcileAction(
         id="dnsmasq-1",
         reconciler_id="dnsmasq_config",
