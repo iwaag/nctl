@@ -67,7 +67,23 @@ def select_scoped_diffs(diffs: list[DiffRecord], scope: PlanScope, snapshot: Sou
             selected.append(diff)
         elif diff.target.kind == "service":
             service = services_by_slug.get(diff.target.slug or "")
-            if service is not None and service.id in service_ids_on_host:
+            if service is None or service.id not in service_ids_on_host:
+                continue
+            expected = diff.desired.get("expected") if isinstance(diff.desired, dict) else None
+            placement_node_slug = expected.get("node_slug") if isinstance(expected, dict) else None
+            placement_node_id = expected.get("node_id") if isinstance(expected, dict) else None
+            if placement_node_slug is not None or placement_node_id is not None:
+                # Placement-specific diff: it names its own owning node, so it
+                # belongs to that node's scope only -- not every host the
+                # service also happens to be placed on (Decision: a diff
+                # naming another node must never widen this host's scope).
+                if placement_node_slug == host_node.slug or placement_node_id == host_node.id:
+                    selected.append(diff)
+            else:
+                # Genuinely service-wide diff (no placement-specific node
+                # identity, e.g. service_has_no_active_placement or an
+                # unexpected-location conflict): keep the existing
+                # service-membership behavior.
                 selected.append(diff)
     return selected
 

@@ -184,7 +184,13 @@ def _run_plan_only(
     if plan_error is not None:
         return _finish(op, data, "failed", [plan_error])
     if refresh_observation:
-        plan = _with_forced_observation(plan, snapshot, scope)
+        try:
+            plan = _with_forced_observation(plan, snapshot, scope)
+        except ForcedObservationScopeError as exc:
+            return _finish(
+                op, data, "failed",
+                [EnvelopeError(code="forced_observation_scope_violation", message=str(exc))],
+            )
 
     data.plan_path = str(artifacts.write_json("plan.json", plan.model_dump(mode="json")))
     data.plan = plan.model_dump(mode="json")
@@ -257,7 +263,11 @@ def _run_apply(
             state, errors = "failed", [plan_error]
             break
         if refresh_observation and round_index == 0:
-            plan = _with_forced_observation(plan, snapshot, scope)
+            try:
+                plan = _with_forced_observation(plan, snapshot, scope)
+            except ForcedObservationScopeError as exc:
+                state, errors = "failed", [EnvelopeError(code="forced_observation_scope_violation", message=str(exc))]
+                break
         data.plan_path = str(artifacts.write_json("plan.json", plan.model_dump(mode="json")))
         op.emit(
             "plan_created",
@@ -753,6 +763,16 @@ def _build_plan_or_error(
     return plan, None
 
 
+class ForcedObservationScopeError(Exception):
+    """A host-scoped forced observation would touch more than the requested host.
+
+    `select_scoped_diffs` is expected to project every diff onto exactly the
+    requested host before this function runs, so an existing `observe_node`
+    action naming any other node here is a planner invariant violation, not
+    a reason to silently widen the refresh to those extra hosts.
+    """
+
+
 def _with_forced_observation(
     plan: ReconcilePlan,
     snapshot: SourceSnapshot,
@@ -773,6 +793,12 @@ def _with_forced_observation(
     for index, action in enumerate(actions):
         if action.reconciler_id != "observe_node":
             continue
+        other_slugs = sorted({target.slug for target in action.targets if target.slug != node.slug})
+        if other_slugs:
+            raise ForcedObservationScopeError(
+                f"host-scoped forced observation for {node.slug!r} would also touch "
+                f"{other_slugs!r}; refusing to merge into a multi-target observe_node action"
+            )
         if any(target.slug == node.slug for target in action.targets):
             actions[index] = action.model_copy(
                 update={

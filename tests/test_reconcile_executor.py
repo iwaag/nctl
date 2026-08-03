@@ -430,6 +430,59 @@ def test_refresh_observation_requires_host_scope(tmp_path):
     assert envelope.errors[0].code == "refresh_observation_requires_host"
 
 
+def test_with_forced_observation_refuses_to_merge_into_a_multi_target_action():
+    """Defense in depth (p3/fix1 Step 2): even if a scoped plan somehow still
+    carried a multi-target observe_node action, forced refresh must refuse to
+    merge into it rather than silently contacting the extra hosts."""
+    node = _node("aghub")
+    other = Target(kind="node", slug="agpc", name="agpc", id="22222222-2222-2222-2222-222222222222")
+    mine = Target(kind="node", slug="aghub", name="aghub", id=node.id)
+    plan = ReconcilePlan(
+        scope=PlanScope(kind="host", host_slug="aghub"),
+        drift_fingerprint="fp",
+        generated_at=datetime.now(timezone.utc),
+        actions=[ReconcileAction(
+            id="observe_node", reconciler_id="observe_node", action_kind="observation",
+            targets=[mine, other], claimed_diff_codes=[], reason="test",
+            mutates=True, requires_observation=False,
+        )],
+    )
+    snapshot = _snapshot(nodes=[node])
+
+    with pytest.raises(executor_module.ForcedObservationScopeError, match="agpc"):
+        executor_module._with_forced_observation(plan, snapshot, PlanScope(kind="host", host_slug="aghub"))
+
+
+def test_refresh_observation_scope_violation_surfaces_as_failed_envelope(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    target = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
+    converged = _drift([_target_status(target, Status.CONVERGED)], nodes=[node])
+    _sequence(monkeypatch, [converged])
+
+    other = Target(kind="node", slug="agpc", name="agpc", id="22222222-2222-2222-2222-222222222222")
+    mine = Target(kind="node", slug=node.slug, name=node.name, id=node.id)
+    widened_plan = ReconcilePlan(
+        scope=PlanScope(kind="host", host_slug=node.slug),
+        drift_fingerprint="fp",
+        generated_at=datetime.now(timezone.utc),
+        actions=[ReconcileAction(
+            id="observe_node", reconciler_id="observe_node", action_kind="observation",
+            targets=[mine, other], claimed_diff_codes=[], reason="test",
+            mutates=True, requires_observation=False,
+        )],
+    )
+    monkeypatch.setattr(executor_module, "_build_plan_or_error", lambda *_a, **_k: (widened_plan, None))
+
+    envelope = run_reconcile(cfg, host=node.slug, apply_changes=False, refresh_observation=True)
+
+    assert not envelope.ok
+    assert envelope.data.state == "failed"
+    assert envelope.errors[0].code == "forced_observation_scope_violation"
+    assert "agpc" in envelope.errors[0].message
+
+
 def test_terminal_result_json_is_persisted_publicly_and_matches_the_envelope(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     _no_op_deployment_profiles(monkeypatch)

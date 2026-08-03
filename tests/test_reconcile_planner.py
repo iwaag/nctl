@@ -145,6 +145,71 @@ def test_select_scoped_diffs_unknown_host_raises():
         select_scoped_diffs([], PlanScope(kind="host", host_slug="ghost"), snapshot)
 
 
+def test_select_scoped_diffs_placement_specific_observation_stays_on_its_owning_node():
+    """The p3/fix1 regression shape: a node_agent-style service placed on three
+    hosts must not widen a host-scoped `--refresh-observation` beyond the one
+    requested host merely because the service also runs there."""
+    aghub = _node("n1", "aghub")
+    agpc = _node("n2", "agpc")
+    agstudio = _node("n3", "agstudio")
+    svc = _service("s1", "node_agent")
+    placements = [
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="daemon"),
+        _placement("p2", service_id="s1", node_id="n2", deployment_profile="daemon"),
+        _placement("p3", service_id="s1", node_id="n3", deployment_profile="daemon"),
+    ]
+    snapshot = _snapshot(nodes=[aghub, agpc, agstudio], services=[svc], placements=placements)
+
+    diffs = [
+        _service_observation_diff(svc, aghub),
+        _service_observation_diff(svc, agpc),
+        _service_observation_diff(svc, agstudio),
+    ]
+
+    scoped = select_scoped_diffs(diffs, PlanScope(kind="host", host_slug="aghub"), snapshot)
+
+    assert len(scoped) == 1
+    expected = scoped[0].desired["expected"]
+    assert expected["node_slug"] == "aghub"
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="aghub"))
+    [action] = plan.actions
+    assert action.reconciler_id == "observe_node"
+    assert {t.slug for t in action.targets} == {"aghub"}
+
+
+def test_select_scoped_diffs_node_local_and_service_observation_dedupe_to_one_target():
+    aghub = _node("n1", "aghub")
+    svc = _service("s1", "node_agent")
+    placement = _placement("p1", service_id="s1", node_id="n1", deployment_profile="daemon")
+    snapshot = _snapshot(nodes=[aghub], services=[svc], placements=[placement])
+
+    diffs = [
+        _node_diff(aghub, "missing_actual_data"),
+        _service_observation_diff(svc, aghub),
+    ]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="aghub"))
+    [action] = plan.actions
+    assert action.reconciler_id == "observe_node"
+    assert {t.slug for t in action.targets} == {"aghub"}
+
+
+def test_select_scoped_diffs_cluster_scope_retains_multi_host_observation():
+    aghub = _node("n1", "aghub")
+    agpc = _node("n2", "agpc")
+    svc = _service("s1", "node_agent")
+    placements = [
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="daemon"),
+        _placement("p2", service_id="s1", node_id="n2", deployment_profile="daemon"),
+    ]
+    snapshot = _snapshot(nodes=[aghub, agpc], services=[svc], placements=placements)
+    diffs = [_service_observation_diff(svc, aghub), _service_observation_diff(svc, agpc)]
+
+    scoped = select_scoped_diffs(diffs, CLUSTER, snapshot)
+    assert len(scoped) == 2
+
+
 def test_actual_without_desired_node_is_inert_and_never_plans_a_destructive_action():
     """Tier A: observations outside desired state are not deletion candidates.
 
