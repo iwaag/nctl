@@ -93,6 +93,9 @@ uv run nctl ops list
 uv run nctl ops list --limit 5 --json
 uv run nctl ops show 01KXPYQRJ8GTNND0PC3KZSMPXC
 uv run nctl ops show 01KXPYQRJ8GTNND0PC3KZSMPXC --after-seq 3 --json
+uv run nctl upload state.json
+uv run nctl upload state.json --ttl 2h --json
+uv run nctl upload report.md evidence/ --zip
 uv run nctl braindump list
 uv run nctl braindump show <braindump-id>
 uv run nctl braindump create --title "Home lab" --authorship user_direct --body "Keep Ollama on agpc."
@@ -380,6 +383,29 @@ reader (schema `nctl.ops.show.v1`; a truncated or partially written final line i
 `corrupt_lines`, not raised as an error). `nctl_core.operations_index` is a retained CLI-only
 helper: the JSONL event log and operation-artifact directories are durable disk evidence read by
 this module and the CLI alone, not published to or consumed by any external subscriber.
+
+### `upload`
+
+`nctl upload PATH [PATH...] [--zip] [--ttl DURATION] [--json]` puts the given file(s) in the
+`[storage]` MinIO bucket and prints one time-limited presigned download URL (schema
+`nctl.upload.v1`: url, expiry, object key, byte size). A single regular file uploads as-is;
+multiple paths, any directory, or an explicit `--zip` bundle everything into one zip, so one
+invocation always yields exactly one URL. Object keys are prefixed with a timestamp and short
+random suffix (`2026-08-05/143012-a1b2c3/state.json`) so repeated uploads never collide. `--ttl`
+takes integer minutes or `30m`/`2h`, bounded to 7 days; default is `storage.default_ttl_minutes`.
+
+There is deliberately no state-specific export command: write state with the existing readers,
+then upload the file —
+
+```bash
+uv run nctl drift --json > /tmp/state.json && uv run nctl upload /tmp/state.json
+```
+
+The `[storage]` section (endpoint, bucket, access key, secret file/env) is optional and only
+`upload` needs it; see `example.nctl.toml`. The endpoint host is signed into the URL, so configure
+the name recipients actually reach (a LAN name, not `localhost`, when downloads happen on another
+machine). The bucket is private; the presigned URL is the only read path, and there is no deletion
+or lifecycle handling yet — objects accumulate until removed by hand.
 
 ### `braindump`
 

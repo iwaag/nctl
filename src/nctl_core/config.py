@@ -46,6 +46,34 @@ class NautobotConfig(StrictModel):
         return os.environ.get(self.token_env)
 
 
+class StorageConfig(StrictModel):
+    """MinIO object storage for `nctl upload` presigned download URLs.
+
+    `endpoint` is both the upload target and the host baked into presigned
+    URLs (signatures cover the host), so one value owns both roles.
+    """
+
+    endpoint: str
+    bucket: str
+    access_key: str
+    secret_key_env: str = "NCTL_STORAGE_SECRET"
+    secret_key_file: Path | None = None
+    default_ttl_minutes: int = Field(default=30, ge=1, le=10080)
+
+    def resolve_secret_key(self, config_dir: Path) -> str | None:
+        """Return the secret key from secret_key_file or the secret_key_env variable, if set.
+
+        A relative secret_key_file resolves against the loaded nctl.toml's
+        directory, like the [ssh] paths.
+        """
+        if self.secret_key_file is not None:
+            path = resolve_local_path(self.secret_key_file, config_dir)
+            if not path.is_file():
+                raise ConfigInvalidError(f"storage.secret_key_file does not exist: {path}")
+            return path.read_text().strip()
+        return os.environ.get(self.secret_key_env)
+
+
 class InventoryConfig(StrictModel):
     dumps_dir: Path = Path("~/.local/state/nctl/dumps")
 
@@ -181,6 +209,7 @@ class Config(StrictModel):
     reconcile: ReconcileConfig = ReconcileConfig()
     ssh: SshConfig = SshConfig()
     agent: AgentConfig = AgentConfig()
+    storage: StorageConfig | None = None
 
     # Where the config file was loaded from; relative paths resolve against its parent.
     source_path: Path
@@ -199,6 +228,17 @@ class Config(StrictModel):
 
     def resolved_agent_identity_file(self) -> Path:
         return self.agent.resolved_identity_file(self.source_path.parent)
+
+    def require_storage(self) -> StorageConfig:
+        if self.storage is None:
+            raise ConfigInvalidError(
+                "nctl upload requires a [storage] section in nctl.toml "
+                "(endpoint, bucket, access_key, secret_key_file or secret_key_env)"
+            )
+        return self.storage
+
+    def resolved_storage_secret_key(self) -> str | None:
+        return self.require_storage().resolve_secret_key(self.source_path.parent)
 
     @classmethod
     def load(cls, explicit_path: Path | None = None, cwd: Path | None = None) -> "Config":

@@ -54,6 +54,7 @@ from nctl_core.desired_apply import apply_document
 from nctl_core.desired_write import DesiredWriteError
 from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
+from nctl_core.upload import build_upload, make_store, render_upload_text
 from nctl_core.production_render import (
     build_production_render,
     render_production_inventory_text,
@@ -135,6 +136,41 @@ def status(config: ConfigOption = None, json_output: JsonOption = False) -> None
     cfg = _load_config(config)
     envelope = build_status(cfg)
     emit(envelope, json_output, render_status_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+UploadPathsArgument = Annotated[list[Path], typer.Argument(help="Files or directories to upload.")]
+UploadZipOption = Annotated[bool, typer.Option("--zip", help="Bundle into one zip even for a single file.")]
+UploadTtlOption = Annotated[
+    Optional[str],
+    typer.Option("--ttl", help="URL lifetime: integer minutes, or e.g. 30m / 2h (default: storage.default_ttl_minutes)."),
+]
+UploadJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.upload.v1 envelope as JSON.")]
+
+
+@app.command()
+def upload(
+    paths: UploadPathsArgument,
+    config: ConfigOption = None,
+    zip_output: UploadZipOption = False,
+    ttl: UploadTtlOption = None,
+    json_output: UploadJsonOption = False,
+) -> None:
+    """Upload file(s) to the [storage] MinIO bucket and print one time-limited download URL.
+
+    Multiple paths, any directory, or --zip bundle everything into a single zip;
+    one invocation always yields exactly one URL.
+    """
+    cfg = _load_config(config)
+    try:
+        store = make_store(cfg)
+    except ConfigError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(EXIT_USAGE)
+    envelope = build_upload(cfg, paths, zip_requested=zip_output, ttl=ttl, store=store)
+    emit(envelope, json_output, render_upload_text)
+    if any(error.code in ("invalid_ttl", "missing_path") for error in envelope.errors):
+        raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 

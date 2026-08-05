@@ -257,3 +257,76 @@ def test_resolve_token_from_file(tmp_path, monkeypatch):
     cfg = cfg.model_copy(update={"nautobot": cfg.nautobot.model_copy(update={"token_file": token_file})})
     monkeypatch.setenv("NAUTOBOT_TOKEN", "should-not-win")
     assert cfg.nautobot.resolve_token() == "tok456"
+
+
+STORAGE = """
+[storage]
+endpoint = "http://agstudio.local:9100"
+bucket = "nctl-outbox"
+access_key = "nctl"
+"""
+
+
+def test_storage_section_absent_by_default(tmp_path):
+    cfg = Config.load(write_config(tmp_path))
+    assert cfg.storage is None
+    with pytest.raises(ConfigInvalidError, match=r"\[storage\]"):
+        cfg.require_storage()
+
+
+def test_storage_section_present_with_defaults(tmp_path):
+    cfg = Config.load(write_config(tmp_path, VALID + STORAGE))
+    storage = cfg.require_storage()
+    assert storage.endpoint == "http://agstudio.local:9100"
+    assert storage.bucket == "nctl-outbox"
+    assert storage.access_key == "nctl"
+    assert storage.secret_key_env == "NCTL_STORAGE_SECRET"
+    assert storage.secret_key_file is None
+    assert storage.default_ttl_minutes == 30
+
+
+def test_storage_secret_from_env(tmp_path, monkeypatch):
+    cfg = Config.load(write_config(tmp_path, VALID + STORAGE))
+    monkeypatch.setenv("NCTL_STORAGE_SECRET", "sekrit")
+    assert cfg.resolved_storage_secret_key() == "sekrit"
+
+
+def test_storage_secret_from_file_beats_env(tmp_path, monkeypatch):
+    secret_file = tmp_path / "minio-secret"
+    secret_file.write_text("filesecret\n")
+    body = VALID + STORAGE + f'secret_key_file = "{secret_file}"\n'
+    cfg = Config.load(write_config(tmp_path, body))
+    monkeypatch.setenv("NCTL_STORAGE_SECRET", "should-not-win")
+    assert cfg.resolved_storage_secret_key() == "filesecret"
+
+
+def test_storage_secret_file_relative_resolves_against_config_dir(tmp_path, monkeypatch):
+    config_dir = tmp_path / "cfgdir"
+    config_dir.mkdir()
+    (config_dir / "minio-secret").write_text("relsecret\n")
+    body = VALID + STORAGE + 'secret_key_file = "minio-secret"\n'
+    cfg = Config.load(write_config(config_dir, body))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert cfg.resolved_storage_secret_key() == "relsecret"
+
+
+def test_storage_secret_file_missing_raises(tmp_path):
+    body = VALID + STORAGE + f'secret_key_file = "{tmp_path / "absent"}"\n'
+    cfg = Config.load(write_config(tmp_path, body))
+    with pytest.raises(ConfigInvalidError, match="secret_key_file"):
+        cfg.resolved_storage_secret_key()
+
+
+def test_storage_rejects_inline_secret_key(tmp_path):
+    body = VALID + STORAGE + 'secret_key = "sekrit"\n'
+    with pytest.raises(ConfigInvalidError, match="secret_key"):
+        Config.load(write_config(tmp_path, body))
+
+
+def test_storage_rejects_bad_ttl_bounds(tmp_path):
+    with pytest.raises(ConfigInvalidError, match="default_ttl_minutes"):
+        Config.load(write_config(tmp_path, VALID + STORAGE + "default_ttl_minutes = 0\n"))
+    with pytest.raises(ConfigInvalidError, match="default_ttl_minutes"):
+        Config.load(write_config(tmp_path, VALID + STORAGE + "default_ttl_minutes = 10081\n"))

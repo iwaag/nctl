@@ -30,6 +30,7 @@ RETAINED_COMMANDS = {
     "session",
     "agent",
     "workflow-episode",
+    "upload",
 }
 
 
