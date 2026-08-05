@@ -9,7 +9,7 @@ format (`nctl desired export`, the canonical batch document `desired apply
 envelope already is its file representation.
 
 Bundling is a documented composition, not an `nctl bundle` command: the
-composer runs the four read commands, writes `manifest.json` from their
+composer runs the read commands (four required views, plus optional detail), writes `manifest.json` from their
 envelope headers, zips, and uploads. (If chronic manifest mistakes make this
 painful, that is the Easier Next Time signal to promote it to a command —
 record the pain, don't improvise a second format.)
@@ -18,12 +18,22 @@ record the pain, don't improvise a second format.)
 
 ```
 cluster-state-<UTC timestamp>.zip
-├── manifest.json    # nctl.bundle.v1 (this convention)
-├── desired.yaml     # nctl desired export   (raw canonical batch document)
-├── drift.json       # nctl drift --json     (nctl.drift.v1 envelope)
-├── actual.json      # nctl actual --json    (nctl.actual.v1 envelope)
-└── relations.json   # nctl relations --json (nctl.relations.v1 envelope)
+├── manifest.json         # nctl.bundle.v1 (this convention)
+├── desired.yaml          # nctl desired export   (raw canonical batch document)
+├── drift.json            # nctl drift --json     (nctl.drift.v1 envelope)
+├── actual.json           # nctl actual --json    (nctl.actual.v2 envelope)
+├── relations.json        # nctl relations --json (nctl.relations.v1 envelope)
+└── actual_detail.json    # optional: nctl actual --json --detail (nctl.actual.v2 envelope)
 ```
+
+`actual_detail.json` is an **optional** fifth payload file: the same
+`nctl actual` envelope with per-device `facts_raw` (the full nodeutils facts —
+GPU, memory, running containers, and the rest) populated. When present it is
+listed in `manifest.json` `contents` like the others, with its `schema` read
+from its own envelope header; a bundle without it remains valid, so
+`nctl.bundle.v1` is unchanged. Size caveat: raw facts can dominate the bundle
+on large clusters — composers may prefer host-scoped detail files
+(`nctl actual HOST --json --detail`) there.
 
 ## `manifest.json` fields
 
@@ -55,6 +65,9 @@ uv run --project nctl nctl desired export > "$DIR/desired.yaml"   # exit 0 requi
 uv run --project nctl nctl drift --json     > "$DIR/drift.json"
 uv run --project nctl nctl actual --json    > "$DIR/actual.json"
 uv run --project nctl nctl relations --json > "$DIR/relations.json"
+
+# Optional per-node detail (raw nodeutils facts); add its manifest entry too.
+uv run --project nctl nctl actual --json --detail > "$DIR/actual_detail.json"
 
 # Write $DIR/manifest.json yourself: schema/generated_at/nctl_git_sha as
 # above, and one contents entry per file — schema and generated_at for the

@@ -237,20 +237,36 @@ def agent_abort(host: AgentHostArgument, session_id: Annotated[str, typer.Argume
     raise typer.Exit(EXIT_USAGE if any(error.code == "unknown_host" for error in envelope.errors) else (EXIT_OK if envelope.ok else EXIT_FAILURE))
 
 
-ActualJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.actual.v1 envelope as JSON.")]
+ActualJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.actual.v2 envelope as JSON.")]
+ActualHostArgument = Annotated[
+    Optional[str], typer.Argument(help="Scope the devices section to one Device by name.")
+]
+ActualDetailOption = Annotated[
+    bool,
+    typer.Option(
+        "--detail",
+        help="Include each device's raw nodeutils facts (facts_raw) in the JSON output; "
+        "text mode prints summary lines only, so combine with --json.",
+    ),
+]
 
 
 @app.command()
-def actual(config: ConfigOption = None, json_output: ActualJsonOption = False) -> None:
-    """Read-only typed actual-state diagnostic: observer Device -> Proxmox Cluster -> guests.
+def actual(
+    host: ActualHostArgument = None,
+    config: ConfigOption = None,
+    detail: ActualDetailOption = False,
+    json_output: ActualJsonOption = False,
+) -> None:
+    """Read-only typed actual-state diagnostic: devices plus observer Device -> Proxmox Cluster -> guests.
 
     Not drift and has no write path -- it renders only what nctl's typed actual reader
-    observed in Nautobot (native Cluster/VirtualMachine/VMInterface fields plus the
-    dedicated proxmox_* custom fields). It never infers desired ownership or the future
-    desired Cluster slug.
+    observed in Nautobot (Device facts, native Cluster/VirtualMachine/VMInterface fields,
+    and the dedicated proxmox_* custom fields). It never infers desired ownership or the
+    future desired Cluster slug.
     """
     cfg = _load_config(config)
-    envelope = build_actual(cfg)
+    envelope = build_actual(cfg, detail=detail, host=host)
     emit(envelope, json_output, render_actual_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 

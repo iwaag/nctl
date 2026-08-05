@@ -1,13 +1,17 @@
 """`nctl actual`: read-only typed actual-state diagnostic (Phase 2 Step 6).
 
-Renders the observer Device -> Proxmox Cluster -> guest graph nctl already fetches
-through `nctl_core.sources.actual.fetch_actual_snapshot`. This is not drift: it has no
+Renders a `devices` section (identity plus the allowlisted `ActualFacts`; with
+`--detail` also the raw nodeutils facts stored in `inventory_raw_json`) and the
+observer Device -> Proxmox Cluster -> guest graph nctl already fetches through
+`nctl_core.sources.actual.fetch_actual_snapshot`. This is not drift: it has no
 write path, no desired-side input, and it never invents the future desired Cluster slug
 `aghub-pve` or infers desired ownership (plan.md Section 5.6). It is purely a typed view
 of what `fetch_actual_snapshot` observed, plus any structured proxmox_* read errors.
 """
 
 from __future__ import annotations
+
+from typing import Any, Mapping
 
 from pydantic import BaseModel
 
@@ -16,6 +20,8 @@ from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.sources.actual import (
     ActualCluster,
+    ActualDevice,
+    ActualFacts,
     ActualSnapshot,
     ActualVirtualMachine,
     ActualVMInterface,
@@ -25,7 +31,7 @@ from nctl_core.sources.actual import (
 
 _UNKNOWN_OBSERVER = "unknown"
 
-ACTUAL_SCHEMA = "nctl.actual.v1"
+ACTUAL_SCHEMA = "nctl.actual.v2"
 
 
 class ActualGuestData(BaseModel):
@@ -74,13 +80,32 @@ class ActualClusterData(BaseModel):
     guests: list[ActualGuestData] = []
 
 
+class ActualDeviceData(BaseModel):
+    """One realized Device: identity, the allowlisted facts, and (detail only) raw facts.
+
+    `facts_raw` is the nodeutils `facts` dict nauto stored under the
+    `inventory_raw_json` Device custom field, passed through unchanged. It is
+    populated only when the caller asked for detail; deterministic processing
+    (drift, planning) keeps consuming the allowlisted `facts` instead.
+    """
+
+    id: str
+    name: str
+    serial: str | None = None
+    platform: str | None = None
+    facts: ActualFacts
+    facts_raw: dict[str, Any] | None = None
+
+
 class ActualData(BaseModel):
+    detail_level: str = "basic"
+    devices: list[ActualDeviceData] = []
     clusters: list[ActualClusterData] = []
     read_errors: list[ProxmoxFactsReadError] = []
 
 
-def build_actual(cfg: Config) -> Envelope[ActualData]:
-    """Fetch the actual snapshot and render it as the `nctl.actual.v1` typed graph."""
+def build_actual(cfg: Config, *, detail: bool = False, host: str | None = None) -> Envelope[ActualData]:
+    """Fetch the actual snapshot and render it as the `nctl.actual.v2` typed view."""
 
     try:
         token = cfg.nautobot.resolve_token()
@@ -95,7 +120,7 @@ def build_actual(cfg: Config) -> Envelope[ActualData]:
     finally:
         client.close()
 
-    data = render_actual_data(snapshot)
+    data = render_actual_data(snapshot, detail=detail, host=host)
     errors = [
         EnvelopeError(
             code="proxmox_facts_invalid",
@@ -104,15 +129,29 @@ def build_actual(cfg: Config) -> Envelope[ActualData]:
         )
         for err in snapshot.proxmox_read_errors
     ]
+    if host is not None and not data.devices:
+        errors.append(
+            EnvelopeError(code="unknown_host", message=f"no Device named {host!r} in the actual snapshot")
+        )
     return Envelope.build(ACTUAL_SCHEMA, data, errors)
 
 
-def render_actual_data(snapshot: ActualSnapshot) -> ActualData:
-    """Build the typed `nctl.actual.v1` graph from an already-fetched `ActualSnapshot`.
+def render_actual_data(
+    snapshot: ActualSnapshot, *, detail: bool = False, host: str | None = None
+) -> ActualData:
+    """Build the typed `nctl.actual.v2` view from an already-fetched `ActualSnapshot`.
 
     Shared by `build_actual` (live fetch) and tests (fixture snapshots), mirroring the
     `build_*`/`render_*_data` split other `nctl_core` render modules already use.
+    `host` scopes the devices section only; the cluster graph is not filtered.
     """
+
+    devices = [
+        _device_data(device, detail)
+        for device in snapshot.devices
+        if host is None or device.name == host
+    ]
+    devices.sort(key=lambda d: d.name)
 
     ifaces_by_vm: dict[str, list[ActualVMInterface]] = {}
     for iface in snapshot.vm_interfaces:
@@ -137,7 +176,33 @@ def render_actual_data(snapshot: ActualSnapshot) -> ActualData:
         )
         for cluster in snapshot.clusters
     ]
-    return ActualData(clusters=clusters, read_errors=snapshot.proxmox_read_errors)
+    return ActualData(
+        detail_level="raw" if detail else "basic",
+        devices=devices,
+        clusters=clusters,
+        read_errors=snapshot.proxmox_read_errors,
+    )
+
+
+def _device_data(device: ActualDevice, detail: bool) -> ActualDeviceData:
+    return ActualDeviceData(
+        id=device.id,
+        name=device.name,
+        serial=device.serial,
+        platform=device.platform,
+        facts=device.actual_facts(),
+        facts_raw=_raw_facts(device.facts) if detail else None,
+    )
+
+
+def _raw_facts(custom_fields: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The nodeutils `facts` dict at `inventory_raw_json.facts`, unchanged; None if absent."""
+
+    raw = custom_fields.get("inventory_raw_json")
+    if not isinstance(raw, Mapping):
+        return None
+    facts = raw.get("facts")
+    return dict(facts) if isinstance(facts, Mapping) else None
 
 
 def _cluster_data(
@@ -220,6 +285,15 @@ def _interface_data(
 
 def render_actual_text(envelope: Envelope[ActualData]) -> str:
     lines: list[str] = []
+    for device in envelope.data.devices:
+        facts = device.facts
+        lines.append(
+            f"device {device.name}  system={facts.observed_system or '?'}  "
+            f"ip={facts.local_ip or '?'}  collected {facts.collected_at or 'never'}"
+        )
+    if envelope.data.detail_level == "raw" and envelope.data.devices:
+        lines.append("(raw per-device facts included in --json output only)")
+
     observer_ids = sorted({c.observer_device_id for c in envelope.data.clusters if c.observer_device_id})
     if observer_ids:
         for observer_id in observer_ids:

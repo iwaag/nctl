@@ -85,9 +85,11 @@ ACTUAL_QUERY = """
 """
 
 # Closed allowlist mapping each exportable actual fact to the dedicated custom
-# field that the nauto nodeutils ingest job persists.  The exporter reads only
-# these stable fields; adding a fact requires a concrete current consumer, a
-# documented source path, and tests.
+# field that the nauto nodeutils ingest job persists.  Deterministic processing
+# (drift, planning) reads only these stable fields (recommended practice);
+# adding a fact requires a concrete current consumer, a documented source path,
+# and tests.  Display/export paths (e.g. `nctl actual --detail`) may separately
+# pass the raw `inventory_raw_json` store through unchanged.
 ACTUAL_FACT_FIELDS = {
     "observed_system": "host_system",
     "local_ip": "primary_ip_address",
@@ -125,7 +127,9 @@ def read_actual_facts(custom_fields: Mapping[str, Any] | None) -> ActualFacts:
     """Read only the allowlisted actual facts from a realized Device.
 
     Any key outside :data:`ACTUAL_FACT_FIELDS` is ignored, so raw inventory
-    blobs and other observed payloads can never leak into the exported facts.
+    blobs and other observed payloads never enter this deterministic facts
+    structure. That is a boundary on this function, not the whole CLI:
+    display/export paths may read the raw store directly.
     """
 
     data = custom_fields or {}
@@ -180,9 +184,10 @@ class ActualDevice(BaseModel):
 # live schema, since no live Nautobot was reachable in this sandbox -- see report2.6.md).
 # Every nested model uses `extra="forbid"` so an unknown key inside a dedicated `proxmox_*`
 # custom field is a structured read error, not a silent pass-through. Unrelated custom-field
-# keys (e.g. `inventory_raw_json`, the Device fact allowlist above) are never read here --
-# each `_build_*` function below picks only the documented `proxmox_*` keys out of
-# `_custom_field_data` before handing them to these models.
+# keys (e.g. `inventory_raw_json`, the Device fact allowlist above) are never read by these
+# Proxmox readers -- each `_build_*` function below picks only the documented `proxmox_*`
+# keys out of `_custom_field_data` before handing them to these models. (Display/export
+# paths read `inventory_raw_json` through their own passthrough, outside these models.)
 # --------------------------------------------------------------------------------------
 
 
@@ -381,9 +386,10 @@ class ProxmoxFactsReadError(BaseModel):
     message: str
 
 
-# Closed allowlist: only these `proxmox_*` custom-field keys are ever read for each object
-# type. Anything else in `_custom_field_data` (including `inventory_raw_json` and unrelated
-# fields) is never inspected.
+# Closed allowlist: only these `proxmox_*` custom-field keys are read for each object type
+# by the Proxmox readers below. Anything else in `_custom_field_data` (including
+# `inventory_raw_json` and unrelated fields) is never inspected by them; display/export
+# paths consume the raw store separately.
 _CLUSTER_PROXMOX_FIELDS = {
     "scope_key": "proxmox_scope_key",
     "identity_source": "proxmox_identity_source",
