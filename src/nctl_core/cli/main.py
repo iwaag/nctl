@@ -51,6 +51,7 @@ from nctl_core.hosts_intent_render import (
 from nctl_core.lifecycle import LIFECYCLE_STATES, build_lifecycle, render_lifecycle_text
 from nctl_core.retirement_prune import render_prune_text, run_prune
 from nctl_core.desired_apply import apply_document
+from nctl_core.desired_export import build_desired_export, render_desired_export_text
 from nctl_core.desired_write import DesiredWriteError
 from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
@@ -615,6 +616,26 @@ def desired_apply(
     else:
         typer.echo(f"{artifact.get('transaction', {}).get('status', 'unknown')}: {artifact.get('totals', {})}")
     raise typer.Exit(EXIT_OK)
+
+
+@desired_app.command("export")
+def desired_export(
+    config: ConfigOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the nctl.desired.export.v1 envelope as JSON.")] = False,
+) -> None:
+    """Export the complete current desired state as a re-applyable canonical batch document.
+
+    Default output is the raw YAML document on stdout, so
+    `nctl desired export > snapshot.yaml` followed by
+    `nctl desired apply -f snapshot.yaml` (preview) reporting zero changes is
+    the built-in round-trip check. Any unresolved reference, unexportable
+    snapshot field, or decode-time source issue fails the export instead of
+    emitting a partial backup.
+    """
+    cfg = _load_config(config)
+    envelope = build_desired_export(cfg)
+    emit(envelope, json_output, render_desired_export_text)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
 class AuthorshipChoice(str, Enum):

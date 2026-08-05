@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .contract import (
+    COMPUTE_PRIMARY_ENDPOINT_AMBIGUOUS,
     COMPUTE_PRIMARY_ENDPOINT_MISSING,
     ComputeContractError,
     effective_lifecycle,
@@ -156,6 +157,27 @@ def build_compute_collections(
             if consumers:
                 issue.blocked_consumers = sorted(set(issue.blocked_consumers) | set(consumers))
     return list(valid_platforms.values()), ready_instances, issues
+
+
+READINESS_ISSUE_CODES = frozenset({COMPUTE_PRIMARY_ENDPOINT_MISSING, COMPUTE_PRIMARY_ENDPOINT_AMBIGUOUS})
+
+
+def decode_unready_instances(
+    instance_rows: list[dict[str, Any]], issues: list[DesiredSourceIssue]
+) -> list[DesiredComputeInstance]:
+    """Re-decode instances the NIC-readiness policy excluded from the collection.
+
+    These rows validated row-locally but their node lacks a conforming primary
+    endpoint, so they are excluded from actionable compute planning. Their
+    desired data is still complete and writable; `desired_export` consumes
+    them so a backup does not silently lose the row.
+    """
+    unready_ids = {
+        issue.target_id
+        for issue in issues
+        if issue.code in READINESS_ISSUE_CODES and issue.target_kind == "compute_instance"
+    }
+    return [_build_compute_instance(row) for row in instance_rows if row["id"] in unready_ids]
 
 
 def validate_endpoint_macs(rows: list[dict[str, Any]], endpoints: list[DesiredEndpoint]) -> list[DesiredSourceIssue]:

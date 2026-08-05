@@ -12,6 +12,8 @@ below assume `uv run --project nctl` prefixing `nctl`.
 | "What's the current drift on NODE?" | `nctl drift --host NODE` |
 | "What's the drift on a specific service?" | `nctl drift --service SERVICE` |
 | "Give me the overall cluster status" | `nctl status` |
+| "Export the desired state as a re-applyable file" | `nctl desired export > snapshot.yaml` |
+| "Bundle the whole cluster state into one downloadable file" | follow [`state-bundle.md`](state-bundle.md) (`desired export` + `drift`/`actual`/`relations --json` + manifest + `nctl upload DIR --zip`) |
 | "Mark NODE as planned/approved/active/deprecated/retired" | `nctl lifecycle NODE STATE` |
 | "Trust this SSH host key for NODE" | `nctl ssh enroll NODE --from-known-hosts` (add `--yes` to write) |
 | "Render dnsmasq config" | `nctl render dnsmasq` |

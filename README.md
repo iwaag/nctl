@@ -32,6 +32,7 @@ Modules over roughly 300 lines have an explicit owner as well:
 | `ssh_enroll.py` | verified enrollment and managed known-hosts store semantics | SSH probes, artifacts, config | planner policy or CLI parsing |
 | `sources/actual.py` | actual GraphQL query and typed decode | `NautobotClient`, pure models | drift/reconcile decisions |
 | `sources/desired.py` | desired GraphQL query and typed decode | `NautobotClient`, compute decode helpers | drift/reconcile decisions |
+| `desired_export.py` | desired-snapshot-to-batch-document projection and its fidelity policy | desired snapshot models, `NautobotClient`, envelope helpers | drift policy, planning, actuation, batch writes |
 | `drift/endpoint_evaluation.py` | endpoint IPAM/range/interface/MAC evaluation | read models and pure drift helpers | transport, CLI, planning, actuation |
 | `dnsmasq_apply.py` | direct dnsmasq apply boundary and its evidence | render result, SSH/Ansible adapters | drift classification or planner policy |
 | `production/derivation.py` | pure operational-value derivation | production contract models | transport, CLI, execution |
@@ -66,6 +67,8 @@ export NAUTOBOT_TOKEN=...           # or set nautobot.token_file
 
 - [`register a new PC`](docs/register-a-new-pc.md) — new machine to converged, intent-only.
 - [`add a basic service`](docs/add-a-basic-service.md) — place a service on an existing node.
+- [`state bundle`](docs/state-bundle.md) — the cluster's desired/actual state as one downloadable
+  zip (`nctl.bundle.v1` manifest convention and the compose-and-upload recipe).
 
 ## Usage
 
@@ -89,6 +92,10 @@ uv run nctl reconcile agstudio --yes
 uv run nctl reconcile RETIRED_GUEST --allow-destroy
 uv run nctl reconcile RETIRED_GUEST --allow-destroy --yes
 uv run nctl reconcile --yes --max-rounds 1 --json
+uv run nctl desired apply -f .local/desired-state.yaml
+uv run nctl desired apply -f .local/desired-state.yaml --yes
+uv run nctl desired export > snapshot.yaml
+uv run nctl desired export --json
 uv run nctl ops list
 uv run nctl ops list --limit 5 --json
 uv run nctl ops show 01KXPYQRJ8GTNND0PC3KZSMPXC
@@ -370,6 +377,31 @@ change)`; `--json` prints the closed `nctl.lifecycle.v1` envelope (`node_id`, `n
 `invalid_lifecycle` are usage exits (2); a rejected PATCH or confirmation mismatch is a failure exit
 (1) with no success claim. No new drift/reconcile classification code is introduced — promoting a
 node only makes it eligible for whatever findings already applied to `active`/`approved` nodes.
+
+### `desired export`
+
+`nctl desired export` reads the complete current desired state (the same pinned GraphQL snapshot
+every other desired consumer uses) and emits it as one canonical Phase 0 batch document — the
+exact YAML shape `nctl desired apply -f` accepts. There is no second export format: the batch
+document is the desired-state file representation, so an export is a re-applyable, human-readable
+backup, and the built-in acceptance check is
+
+```bash
+uv run nctl desired export > snapshot.yaml
+uv run nctl desired apply -f snapshot.yaml --json   # preview must report every operation unchanged
+```
+
+Default output is the raw YAML document on stdout; `--json` wraps it in the
+`nctl.desired.export.v1` envelope (`document`, per-kind `counts`, `operation_count`). Every
+writable field is explicit (apply is a partial upsert, so an omitted field would be silently
+"preserved" and mask an incomplete export), operations are stable-sorted by the writer's kind
+dependency order then identity, and free-form JSON values are key-sorted, so two exports of
+unchanged state are byte-identical and the document also applies onto an empty database. An
+unresolved reference, a snapshot field the exporter cannot write back, or a decode-time source
+issue that dropped or normalized row data fails the export by name instead of emitting a partial
+backup (NIC-readiness exclusions are re-included from the snapshot's `unready_compute_instances`;
+they and duplicate-MAC flags leave row data intact and do not block export). Export complements —
+does not replace — the PostgreSQL dumps in `.local/backups/`.
 
 ### `ops list` / `ops show`
 

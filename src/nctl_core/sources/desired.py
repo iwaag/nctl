@@ -49,7 +49,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from nctl_core.compute.collection import build_compute_collections, validate_endpoint_macs
+from nctl_core.compute.collection import build_compute_collections, decode_unready_instances, validate_endpoint_macs
 from nctl_core.compute.contract import (
     COMPUTE_LIFECYCLE_CHOICES,
     COMPUTE_PRIMARY_ENDPOINT_AMBIGUOUS,
@@ -312,6 +312,11 @@ class DesiredSnapshot(BaseModel):
     workspaces: list[DesiredWorkspace] = []
     compute_platforms: list[DesiredComputePlatform] = []
     compute_instances: list[DesiredComputeInstance] = []
+    # Valid writable instance rows excluded from `compute_instances` only by
+    # the NIC-readiness policy (their source issue is one of
+    # `collection.READINESS_ISSUE_CODES`). Never planning/actuation input;
+    # `desired_export` reads them so a backup does not silently lose the row.
+    unready_compute_instances: list[DesiredComputeInstance] = []
     source_issues: list[DesiredSourceIssue] = []
 
 
@@ -339,6 +344,9 @@ def fetch_desired_snapshot(client: NautobotClient) -> DesiredSnapshot:
         workspaces=[_build_workspace(row) for row in data.get("desired_workspaces") or []],
         compute_platforms=compute_platforms,
         compute_instances=compute_instances,
+        unready_compute_instances=decode_unready_instances(
+            data.get("desired_compute_instances") or [], source_issues
+        ),
         source_issues=source_issues,
     )
 

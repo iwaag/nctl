@@ -304,6 +304,32 @@ def test_fetch_desired_snapshot_lowercases_choice_fields_and_flattens_relations(
 
 
 @respx.mock
+def test_fetch_desired_snapshot_retains_readiness_excluded_instance_as_unready():
+    """A NIC-readiness exclusion must not lose the row: it moves to
+    `unready_compute_instances` (desired-export fidelity) while planning
+    input `compute_instances` and the source issue stay unchanged."""
+    node = _healthy_node(node_id="node-2", slug="agvm1")
+    node["lifecycle"] = "ACTIVE"
+    platform = _healthy_platform(control_node_id="node-2")
+    platform["lifecycle"] = "ACTIVE"
+    client = _mock_graphql(_base_response(
+        desired_nodes=[node],
+        desired_compute_platforms=[platform],
+        desired_compute_instances=[_healthy_instance()],
+    ))
+
+    snapshot = fetch_desired_snapshot(client)
+
+    assert snapshot.compute_instances == []
+    assert [issue.code for issue in snapshot.source_issues] == ["compute_primary_endpoint_missing"]
+    assert len(snapshot.unready_compute_instances) == 1
+    unready = snapshot.unready_compute_instances[0]
+    assert unready.id == "instance-1"
+    assert unready.desired_node_id == "node-2"
+    assert unready.config == {"template": "local:vztmpl/debian-12.tar.zst", "unprivileged": True}
+
+
+@respx.mock
 def test_fetch_desired_snapshot_defaults_workspaces_when_field_absent():
     client = _mock_graphql(_base_response())
 
