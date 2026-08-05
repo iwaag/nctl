@@ -122,6 +122,6 @@ hasn't observed it, so it can't enter production composition). This is the
 production inventory nctl regenerates": `nctl apply dnsmasq --inventory
 PATH` can target the bootstrap `hosts_intent.yml` inventory for exactly this
 one-time window. See
-[`nctl/README.md`](../README.md#usage)'s "bootstrap escape hatch" section for
+[`apply-dnsmasq.md`](apply-dnsmasq.md)'s "Bootstrap escape hatch" section for
 the full sequence — it is not part of the ordinary service path above and
 `nctl reconcile` never does this automatically.
