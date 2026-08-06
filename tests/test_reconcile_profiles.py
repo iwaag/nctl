@@ -443,3 +443,126 @@ def test_resolve_dnsmasq_records_spec_rejects_more_than_one_dnsmasq_profile(tmp_
 
     with pytest.raises(ProfileReconciliationError):
         resolve_dnsmasq_records_spec(entries)
+
+
+# --- autotask_intent Step 1: explicit `checks` schema ---
+
+
+def test_checks_parse_on_observe_only_profile(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "cron_task": {
+                    "observe_only": True,
+                    "checks": [{"kind": "file_exists", "path_from_config": "script_path"}],
+                },
+                "ollama": {
+                    "observe_only": True,
+                    "checks": [{"kind": "http", "paths": ["/v1/models", "/api/tags"]}],
+                },
+            }
+        },
+    )
+
+    entries = load_profile_reconciliation(playbook_dir, {"cron_task", "ollama"})
+
+    assert entries["cron_task"].checks[0].kind == "file_exists"
+    assert entries["cron_task"].checks[0].path_from_config == "script_path"
+    assert entries["ollama"].checks[0].kind == "http"
+    assert entries["ollama"].checks[0].paths == ["/v1/models", "/api/tags"]
+
+
+def test_checks_on_action_profile_are_rejected(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "grafana": {
+                    "action": {"kind": "playbook", "playbook": "playbooks/monitoring/setup_grafana.yml"},
+                    "checks": [{"kind": "file_exists", "path": "/opt/grafana"}],
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError, match="observe_only"):
+        load_profile_reconciliation(playbook_dir, {"grafana"})
+
+
+def test_file_exists_check_needs_exactly_one_path_source(tmp_path):
+    for bad in (
+        {"kind": "file_exists"},
+        {"kind": "file_exists", "path": "/a", "path_from_config": "b"},
+    ):
+        playbook_dir = _write(
+            tmp_path / str(bool(bad.get("path"))),
+            {"deployment_profile_reconciliation": {"cron_task": {"observe_only": True, "checks": [bad]}}},
+        )
+        with pytest.raises(ProfileReconciliationError, match="exactly one of path or path_from_config"):
+            load_profile_reconciliation(playbook_dir, {"cron_task"})
+
+
+def test_file_exists_literal_path_must_be_absolute_or_home_relative(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "cron_task": {"observe_only": True, "checks": [{"kind": "file_exists", "path": "relative/path"}]}
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError, match="absolute or home-relative"):
+        load_profile_reconciliation(playbook_dir, {"cron_task"})
+
+
+def test_http_check_paths_must_be_non_empty_and_rooted(tmp_path):
+    for bad_paths, match in (([], "at least one path"), (["v1/models"], "must start with"),):
+        playbook_dir = _write(
+            tmp_path / str(len(bad_paths)),
+            {
+                "deployment_profile_reconciliation": {
+                    "ollama": {"observe_only": True, "checks": [{"kind": "http", "paths": bad_paths}]}
+                }
+            },
+        )
+        with pytest.raises(ProfileReconciliationError, match=match):
+            load_profile_reconciliation(playbook_dir, {"ollama"})
+
+
+def test_unknown_check_kind_is_rejected(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "cron_task": {"observe_only": True, "checks": [{"kind": "cron_registered"}]}
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError):
+        load_profile_reconciliation(playbook_dir, {"cron_task"})
+
+
+def test_resolve_check_hints_substitutes_path_from_config(tmp_path):
+    from nctl_core.reconcile.profiles import CheckResolutionError, ProfileReconciliation, resolve_check_hints
+
+    entry = ProfileReconciliation.model_validate(
+        {"observe_only": True, "checks": [{"kind": "file_exists", "path_from_config": "script_path"}]}
+    )
+
+    assert resolve_check_hints(entry, {"script_path": "/home/eiji/mycron/heartbeat.sh"}, "ctx") == [
+        {"kind": "file_exists", "path": "/home/eiji/mycron/heartbeat.sh"}
+    ]
+    assert resolve_check_hints(
+        ProfileReconciliation.model_validate(
+            {"observe_only": True, "checks": [{"kind": "http", "paths": ["/v1/models"]}]}
+        ),
+        {},
+        "ctx",
+    ) == [{"kind": "http", "paths": ["/v1/models"]}]
+
+    for bad_config in ({}, {"script_path": ""}, {"script_path": 3}, {"script_path": "relative/x.sh"}):
+        with pytest.raises(CheckResolutionError, match="ctx"):
+            resolve_check_hints(entry, bad_config, "ctx")

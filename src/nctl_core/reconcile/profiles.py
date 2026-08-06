@@ -24,7 +24,7 @@ of writing `{}` if a profile truly has no reconciliation story yet).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -35,6 +35,91 @@ _KNOWN_ACTION_KINDS = frozenset({"playbook", "dnsmasq_config"})
 
 class ProfileReconciliationError(Exception):
     """The `deployment_profile_reconciliation` section is missing, unparsable, or invalid."""
+
+
+class CheckResolutionError(Exception):
+    """A profile check could not be resolved against a placement's config.
+
+    Raised at probe-hint render time (autotask_intent Step 1): a
+    `path_from_config` check whose placement config lacks the named key, or
+    holds an unusable value, is a validation error for that placement --
+    never a silent skip that would let an unexercised check read as
+    converged (README_DEV lesson 1).
+    """
+
+
+class FileExistsCheckSpec(BaseModel):
+    """One closed existence-proof check: a file must exist on the target node.
+
+    autotask_intent Step 1: the explicit, parameterized replacement for
+    check knowledge that used to be implied by field presence or hard-coded
+    by service name. Exactly one of `path` (a literal, absolute or
+    home-relative) or `path_from_config` (the name of a placement `config`
+    key holding the path) must be set. Resolution against the placement
+    config happens at probe-hint render time (`resolve_check_hints`), so
+    nodeutils only ever sees a fully-resolved path.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["file_exists"] = "file_exists"
+    path: str | None = None
+    path_from_config: str | None = None
+
+    @model_validator(mode="after")
+    def _check_exactly_one_source(self) -> "FileExistsCheckSpec":
+        if bool(self.path) == bool(self.path_from_config):
+            raise ValueError("a file_exists check needs exactly one of path or path_from_config")
+        if self.path is not None and not (self.path.startswith("~/") or Path(self.path).is_absolute()):
+            raise ValueError(
+                f"file_exists path must be absolute or home-relative (~/...): {self.path!r}"
+            )
+        return self
+
+    def resolve_path(self, placement_config: dict[str, Any], context: str) -> str:
+        if self.path is not None:
+            return self.path
+        assert self.path_from_config is not None
+        value = placement_config.get(self.path_from_config)
+        if not isinstance(value, str) or not value.strip():
+            raise CheckResolutionError(
+                f"{context}: file_exists check requires placement config key "
+                f"{self.path_from_config!r} to be a non-empty string, got {value!r}"
+            )
+        if not (value.startswith("~/") or Path(value).is_absolute()):
+            raise CheckResolutionError(
+                f"{context}: file_exists path from config key {self.path_from_config!r} "
+                f"must be absolute or home-relative (~/...): {value!r}"
+            )
+        return value
+
+
+class HttpCheckSpec(BaseModel):
+    """One closed HTTP liveness check against the placement's declared endpoint.
+
+    autotask_intent Step 1: absorbs the paths that nodeutils'
+    `HTTP_PROBE_SPECS` used to hard-code by service name. nodeutils probes
+    `<endpoint><path>` for each path in order and reports the first bounded
+    HTTP status; the endpoint itself still comes from the placement's
+    declared `DesiredEndpoint` hint, never from this spec.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["http"] = "http"
+    paths: list[str]
+
+    @model_validator(mode="after")
+    def _check_paths(self) -> "HttpCheckSpec":
+        if not self.paths:
+            raise ValueError("an http check needs at least one path")
+        for path in self.paths:
+            if not path.startswith("/"):
+                raise ValueError(f"http check paths must start with '/': {path!r}")
+        return self
+
+
+ProfileCheckSpec = FileExistsCheckSpec | HttpCheckSpec
 
 
 class ManagedFileSpec(BaseModel):
@@ -139,6 +224,12 @@ class ProfileReconciliation(BaseModel):
     # allowed for the same reason as `BindingSlotSpec.config_file`: these
     # tools live under the login user's home and nodeutils runs as that user.
     install_path: str | None = None
+    # autotask_intent Step 1: the explicit, closed, parameterized check list
+    # replacing implicit field-presence check knowledge. Only kinds with a
+    # current consumer exist (`file_exists`, `http`). Restricted to
+    # observe_only profiles in this phase -- every consumer is existence
+    # proof, and action profiles keep their managed_files/bindings contracts.
+    checks: list[Annotated[ProfileCheckSpec, Field(discriminator="kind")]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_action_or_exemption(self) -> "ProfileReconciliation":
@@ -146,6 +237,8 @@ class ProfileReconciliation(BaseModel):
             raise ValueError("a profile cannot declare both an action and observe_only")
         if self.action is None and not self.observe_only:
             raise ValueError("a profile entry must declare an action or observe_only=true")
+        if self.checks and not self.observe_only:
+            raise ValueError("checks are only supported for observe_only profiles in this phase")
         if self.install_path is not None:
             if not self.observe_only:
                 raise ValueError("install_path is only supported for observe_only profiles")
@@ -245,6 +338,27 @@ def resolve_dnsmasq_records_spec(entries: dict[str, ProfileReconciliation]) -> M
             f"got {sorted(action.managed_files)}"
         )
     return action.managed_files["records"]
+
+
+def resolve_check_hints(
+    entry: ProfileReconciliation, placement_config: dict[str, Any], context: str
+) -> list[dict[str, Any]]:
+    """Resolve a profile's `checks` against one placement's config into hint rows.
+
+    The profile layer owns check semantics; the returned rows are fully
+    resolved (`path_from_config` already substituted), so nodeutils and the
+    drift evaluator consume them verbatim and never read placement config.
+    Raises `CheckResolutionError` when a `path_from_config` key is missing,
+    empty, or not an absolute/home-relative path.
+    """
+
+    hint_rows: list[dict[str, Any]] = []
+    for check in entry.checks:
+        if isinstance(check, FileExistsCheckSpec):
+            hint_rows.append({"kind": "file_exists", "path": check.resolve_path(placement_config, context)})
+        else:
+            hint_rows.append({"kind": "http", "paths": list(check.paths)})
+    return hint_rows
 
 
 def is_supported(entries: dict[str, ProfileReconciliation], profile_name: str) -> bool:

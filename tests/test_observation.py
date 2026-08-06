@@ -509,3 +509,59 @@ def test_run_observation_rejects_unenrolled_host_before_any_ansible_call(tmp_pat
         )
 
     assert commands.calls == []
+
+
+def test_probe_hints_resolve_profile_checks_against_placement_config() -> None:
+    # autotask_intent Step 1: a cron_task-style observe_only profile with a
+    # `path_from_config` check renders a fully-resolved `checks` hint, so
+    # nodeutils never needs to understand placement config.
+    from nctl_core.reconcile.profiles import ProfileReconciliation
+
+    snapshot = _snapshot("node-a")
+    snapshot.services = [DesiredService(id="svc-hb", slug="heartbeat-cron", name="heartbeat-cron", lifecycle="active")]
+    snapshot.placements = [
+        DesiredServicePlacement(
+            id="p1", service_id="svc-hb", node_id=_node_id("node-a"), instance_name="heartbeat",
+            deployment_profile="cron_task", config_schema_version="1",
+            config={"script_path": "/home/eiji/mycron/heartbeat.sh"},
+        )
+    ]
+    profile_reconciliation = {
+        "cron_task": ProfileReconciliation.model_validate(
+            {"observe_only": True, "checks": [{"kind": "file_exists", "path_from_config": "script_path"}]}
+        ),
+    }
+
+    rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"), profile_reconciliation))
+
+    assert rendered == {
+        "service_probe_hints": {
+            "heartbeat-cron": {
+                "checks": [{"kind": "file_exists", "path": "/home/eiji/mycron/heartbeat.sh"}],
+            }
+        },
+        "workspace_probe_hints": {},
+    }
+
+
+def test_probe_hints_missing_check_config_key_is_a_render_error() -> None:
+    # A missing/empty config key at render time is a validation error for
+    # that placement, not a silent skip (README_DEV lesson 1).
+    from nctl_core.reconcile.profiles import CheckResolutionError, ProfileReconciliation
+
+    snapshot = _snapshot("node-a")
+    snapshot.services = [DesiredService(id="svc-hb", slug="heartbeat-cron", name="heartbeat-cron", lifecycle="active")]
+    snapshot.placements = [
+        DesiredServicePlacement(
+            id="p1", service_id="svc-hb", node_id=_node_id("node-a"), instance_name="heartbeat",
+            deployment_profile="cron_task", config_schema_version="1", config={},
+        )
+    ]
+    profile_reconciliation = {
+        "cron_task": ProfileReconciliation.model_validate(
+            {"observe_only": True, "checks": [{"kind": "file_exists", "path_from_config": "script_path"}]}
+        ),
+    }
+
+    with pytest.raises(CheckResolutionError, match="script_path"):
+        render_probe_hints(snapshot, _node_id("node-a"), profile_reconciliation)

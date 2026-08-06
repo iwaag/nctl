@@ -22,7 +22,12 @@ from nctl_core.jobs import NautobotJobResult, NautobotJobRunner
 from nctl_core.names import canonical_node_name
 from nctl_core.nautobot import NautobotClient
 from nctl_core.production.profiles import DeploymentProfilesError, load_deployment_profiles
-from nctl_core.reconcile.profiles import ProfileReconciliation, ProfileReconciliationError, load_profile_reconciliation
+from nctl_core.reconcile.profiles import (
+    ProfileReconciliation,
+    ProfileReconciliationError,
+    load_profile_reconciliation,
+    resolve_check_hints,
+)
 from nctl_core.reconcile.ssh_preflight import STATUS_READY, check_ssh_enrollment
 from nctl_core.repo_versions import resolve_nodeutils_version
 from nctl_core.sources.desired import DesiredSnapshot
@@ -93,12 +98,16 @@ def render_probe_hints(
     """
 
     service_names = {service.id: service.name for service in snapshot.services}
-    active_by_service: dict[str, tuple[str, str | None, str]] = {
-        placement.service_id: (placement.deployment_profile, placement.endpoint_id, placement.management_mode)
+    active_placements = [
+        placement
         for placement in snapshot.placements
         if placement.node_id == node_id
         and placement.desired_state == "active"
         and placement.service_id in service_names
+    ]
+    active_by_service: dict[str, tuple[str, str | None, str]] = {
+        placement.service_id: (placement.deployment_profile, placement.endpoint_id, placement.management_mode)
+        for placement in active_placements
     }
     endpoints_by_id = {endpoint.id: endpoint for endpoint in snapshot.endpoints}
     hints: dict[str, dict[str, Any]] = {service_names[sid]: {} for sid in active_by_service}
@@ -139,6 +148,21 @@ def render_probe_hints(
                 key: {"config_file": spec.config_file, "json_path": spec.json_path}
                 for key, spec in entry.action.bindings.items()
             }
+    if profile_reconciliation:
+        # autotask_intent Step 1: explicit profile checks, resolved against the
+        # placement's own config here so nodeutils only ever sees final paths.
+        # A missing/empty `path_from_config` key raises CheckResolutionError --
+        # a validation error for that placement, never a silent skip.
+        for placement in active_placements:
+            entry = profile_reconciliation.get(placement.deployment_profile)
+            if entry is None or not entry.checks:
+                continue
+            hints[service_names[placement.service_id]]["checks"] = resolve_check_hints(
+                entry,
+                placement.config,
+                f"service {service_names[placement.service_id]!r} "
+                f"profile {placement.deployment_profile!r} placement {placement.id}",
+            )
     workspace_hints: dict[str, dict[str, Any]] = {
         workspace.slug: {"path": workspace.expected_path}
         for workspace in snapshot.workspaces
