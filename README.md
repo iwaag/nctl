@@ -99,6 +99,7 @@ uv run nctl reconcile --yes --max-rounds 1 --json
 uv run nctl desired apply -f .local/desired-state.yaml
 uv run nctl desired apply -f .local/desired-state.yaml --yes
 uv run nctl desired export > snapshot.yaml
+uv run nctl desired export -o .local/desired-state.yaml
 uv run nctl desired export --json
 uv run nctl ops list
 uv run nctl ops list --limit 5 --json

@@ -61,6 +61,32 @@ def test_json_mode_wraps_the_document_in_the_versioned_envelope(monkeypatch):
     assert payload["data"]["operation_count"] == 1
 
 
+def test_out_writes_the_document_only_on_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "_load_config", lambda path: object())
+    monkeypatch.setattr(main, "build_desired_export", _ok_envelope)
+    target = tmp_path / "desired-state.yaml"
+
+    result = runner.invoke(main.app, ["desired", "export", "--out", str(target)])
+
+    assert result.exit_code == 0
+    assert yaml.safe_load(target.read_text()) == DOCUMENT
+    assert "wrote 1 operations" in result.stdout
+    assert "operations:" not in result.stdout  # document goes to the file, not stdout
+
+
+def test_out_leaves_an_existing_file_untouched_on_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "_load_config", lambda path: object())
+    monkeypatch.setattr(main, "build_desired_export", _error_envelope)
+    target = tmp_path / "desired-state.yaml"
+    target.write_text("previous contents\n")
+
+    result = runner.invoke(main.app, ["desired", "export", "--out", str(target)])
+
+    assert result.exit_code == 1
+    assert target.read_text() == "previous contents\n"
+    assert list(tmp_path.iterdir()) == [target]  # no temp file left behind
+
+
 def test_failure_exits_nonzero_and_emits_no_partial_document(monkeypatch):
     monkeypatch.setattr(main, "_load_config", lambda path: object())
     monkeypatch.setattr(main, "build_desired_export", _error_envelope)

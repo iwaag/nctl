@@ -51,7 +51,7 @@ from nctl_core.hosts_intent_render import (
 from nctl_core.lifecycle import LIFECYCLE_STATES, build_lifecycle, render_lifecycle_text
 from nctl_core.retirement_prune import render_prune_text, run_prune
 from nctl_core.desired_apply import apply_document
-from nctl_core.desired_export import build_desired_export, render_desired_export_text
+from nctl_core.desired_export import build_desired_export, document_to_yaml, render_desired_export_text
 from nctl_core.desired_write import DesiredWriteError
 from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
@@ -637,6 +637,14 @@ def desired_apply(
 @desired_app.command("export")
 def desired_export(
     config: ConfigOption = None,
+    out: Annotated[
+        Optional[str],
+        typer.Option(
+            "--out", "-o",
+            help="Write the YAML document to this path atomically, only on a fully successful "
+                 "export (e.g. -o .local/desired-state.yaml to re-sync the operator file).",
+        ),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Print the nctl.desired.export.v1 envelope as JSON.")] = False,
 ) -> None:
     """Export the complete current desired state as a re-applyable canonical batch document.
@@ -646,10 +654,33 @@ def desired_export(
     `nctl desired apply -f snapshot.yaml` (preview) reporting zero changes is
     the built-in round-trip check. Any unresolved reference, unexportable
     snapshot field, or decode-time source issue fails the export instead of
-    emitting a partial backup.
+    emitting a partial backup. Unlike shell redirection, --out never leaves a
+    partial or error-text file behind: the target is replaced atomically and
+    only after the export succeeded.
     """
     cfg = _load_config(config)
     envelope = build_desired_export(cfg)
+    if out is not None and envelope.ok:
+        import os
+        import tempfile
+
+        target = Path(out)
+        handle = tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=target.parent,
+            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+        )
+        try:
+            with handle:
+                handle.write(document_to_yaml(envelope.data.document))
+            os.replace(handle.name, target)
+        except BaseException:
+            Path(handle.name).unlink(missing_ok=True)
+            raise
+        if json_output:
+            emit(envelope, True, render_desired_export_text)
+        else:
+            typer.echo(f"wrote {envelope.data.operation_count} operations to {target}")
+        raise typer.Exit(EXIT_OK)
     emit(envelope, json_output, render_desired_export_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
