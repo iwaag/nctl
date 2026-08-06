@@ -92,7 +92,8 @@ _HANDLED_MODEL_FIELDS: dict[str, tuple[type[BaseModel], frozenset[str]]] = {
     "desired_service": (DesiredService, frozenset({"id", "slug", "name", "lifecycle"})),
     "desired_service_placement": (DesiredServicePlacement, frozenset({
         "id", "service_id", "node_id", "endpoint_id", "instance_name",
-        "desired_state", "deployment_profile", "config_schema_version", "config"})),
+        "desired_state", "deployment_profile", "management_mode",
+        "config_schema_version", "config"})),
     "desired_service_binding": (DesiredServiceBinding, frozenset({
         "id", "binding_name", "consumer_placement_id", "provider_service_id",
         "provider_service_slug"})),
@@ -303,6 +304,7 @@ def export_document(snapshot: DesiredSnapshot) -> tuple[dict[str, Any], list[Env
                 "instance_name": placement.instance_name,
                 "desired_state": placement.desired_state,
                 "deployment_profile": placement.deployment_profile,
+                "management_mode": placement.management_mode,
                 "config_schema_version": placement.config_schema_version,
                 "config": _canonical_free_form(placement.config),
             })

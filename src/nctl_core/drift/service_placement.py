@@ -119,12 +119,18 @@ def evaluate_active_placement(
 ) -> dict[str, Any]:
     device_id = placement.get("realized_device_id")
     policy = placement.get("actual_state_policy")
+    # manual_service: a `manual` placement is converged on presence alone --
+    # run state, managed-file content, and binding evidence are all skipped;
+    # only a missing observed entry (the tool is gone from the node) and
+    # observation-quality gaps remain reportable.
+    manual = placement.get("management_mode") == "manual"
     report = {
         "placement_id": placement.get("placement_id"),
         "instance_name": placement.get("instance_name"),
         "node_id": placement.get("node_id"),
         "node_slug": placement.get("node_slug"),
         "deployment_profile": placement.get("deployment_profile"),
+        "management_mode": placement.get("management_mode"),
         "realized_device_id": device_id,
         "actual_state_policy": policy,
         "host_os": placement.get("host_os"),
@@ -159,12 +165,12 @@ def evaluate_active_placement(
         report["observed_source"] = entry.get("source")
         report["observed_endpoint"] = entry.get("endpoint")
         report["observed_checked_at"] = entry.get("checked_at") or observed_at
-        if state not in RUNNING_STATES:
+        if state not in RUNNING_STATES and not manual:
             report["gaps"].append({"code": "service_not_running", "observed_state": entry.get("state")})
 
-    if content_spec is not None:
+    if content_spec is not None and not manual:
         _evaluate_content_drift(report, entry, content_spec)
-    if binding_checks:
+    if binding_checks and not manual:
         _evaluate_bindings(report, entry, binding_checks, now=now, stale_after_hours=stale_after_hours)
     return report
 

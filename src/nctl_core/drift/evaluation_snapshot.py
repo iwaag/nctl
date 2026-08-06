@@ -127,6 +127,7 @@ def evaluate_all_services(
                 "node_slug": node.slug if node else None,
                 "instance_name": placement.instance_name,
                 "deployment_profile": placement.deployment_profile,
+                "management_mode": placement.management_mode,
                 "realized_device_id": node.realized_device_id if node else None,
                 "actual_state_policy": effective.actual_state_policy.value if effective else None,
                 "host_os": effective.host_os.value if effective else None,

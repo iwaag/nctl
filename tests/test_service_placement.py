@@ -49,6 +49,25 @@ def test_missing_stopped_and_stale_are_distinct():
     assert "service_observation_stale" in gap_codes(evaluate(devices={"d1": device(service_inventory_updated_at="2026-07-14T00:00:00+00:00")}))
 
 
+def test_manual_placement_is_converged_on_presence_alone():
+    # manual_service: any observed entry (installed / stopped / running)
+    # satisfies a manual placement; only its absence remains drift.
+    manual = [placement(management_mode="manual")]
+    installed = {"d1": device(observed_services={"nomad": {"state": "installed", "source": "install_path"}})}
+    stopped = {"d1": device(observed_services={"nomad": {"state": "failed"}})}
+    assert evaluate(placements=manual, devices=installed)["status"] == "satisfied"
+    assert evaluate(placements=manual, devices=stopped)["status"] == "satisfied"
+    assert gap_codes(evaluate(placements=manual, devices={"d1": device(observed_services={})})) == {"service_missing"}
+
+
+def test_manual_placement_skips_content_and_reports_no_content_codes():
+    manual = [placement(management_mode="manual")]
+    devices = {"d1": device(observed_services={"nomad": {"state": "installed"}})}
+    spec = ContentSpec(managed_file_key="records", desired_digest="a" * 64, expected_path="/etc/x.conf")
+    report = evaluate(placements=manual, devices=devices, content_spec_by_service_id={"s1": spec})
+    assert report["status"] == "satisfied"
+
+
 def test_missing_device_and_missing_timestamp_are_insufficient_observation():
     assert gap_codes(evaluate(devices={})) == {"service_observation_missing"}
     assert "service_observation_missing" in gap_codes(evaluate(devices={"d1": device(service_inventory_updated_at=None)}))

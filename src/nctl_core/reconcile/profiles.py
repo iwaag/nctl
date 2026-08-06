@@ -132,6 +132,13 @@ class ProfileReconciliation(BaseModel):
     action: ProfileAction | None = None
     observe_only: bool = False
     dependencies: list[str] = Field(default_factory=list)
+    # manual_service: an observe-only profile may declare where its
+    # installation lives on the target node. Copied verbatim into the
+    # nodeutils probe config (`observation.render_probe_hints`) so on-disk
+    # presence is observable even when nothing is running. `~`-relative is
+    # allowed for the same reason as `BindingSlotSpec.config_file`: these
+    # tools live under the login user's home and nodeutils runs as that user.
+    install_path: str | None = None
 
     @model_validator(mode="after")
     def _check_action_or_exemption(self) -> "ProfileReconciliation":
@@ -139,6 +146,13 @@ class ProfileReconciliation(BaseModel):
             raise ValueError("a profile cannot declare both an action and observe_only")
         if self.action is None and not self.observe_only:
             raise ValueError("a profile entry must declare an action or observe_only=true")
+        if self.install_path is not None:
+            if not self.observe_only:
+                raise ValueError("install_path is only supported for observe_only profiles")
+            if not (self.install_path.startswith("~/") or Path(self.install_path).is_absolute()):
+                raise ValueError(
+                    f"install_path must be absolute or home-relative (~/...): {self.install_path!r}"
+                )
         return self
 
 

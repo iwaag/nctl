@@ -93,8 +93,8 @@ def render_probe_hints(
     """
 
     service_names = {service.id: service.name for service in snapshot.services}
-    active_by_service: dict[str, tuple[str, str | None]] = {
-        placement.service_id: (placement.deployment_profile, placement.endpoint_id)
+    active_by_service: dict[str, tuple[str, str | None, str]] = {
+        placement.service_id: (placement.deployment_profile, placement.endpoint_id, placement.management_mode)
         for placement in snapshot.placements
         if placement.node_id == node_id
         and placement.desired_state == "active"
@@ -102,7 +102,11 @@ def render_probe_hints(
     }
     endpoints_by_id = {endpoint.id: endpoint for endpoint in snapshot.endpoints}
     hints: dict[str, dict[str, Any]] = {service_names[sid]: {} for sid in active_by_service}
-    for service_id, (_profile_name, endpoint_id) in active_by_service.items():
+    for service_id, (_profile_name, endpoint_id, management_mode) in active_by_service.items():
+        # manual_service: a manual placement is never reachability-probed --
+        # presence on disk (install_path below) is its only observation.
+        if management_mode == "manual":
+            continue
         endpoint = endpoints_by_id.get(endpoint_id or "")
         if endpoint is None:
             continue
@@ -113,7 +117,13 @@ def render_probe_hints(
             f"{str(endpoint.protocol).lower()}://{str(address).split('/', 1)[0]}:{endpoint.port}"
         )
     if profile_reconciliation:
-        for service_id, (profile_name, _endpoint_id) in active_by_service.items():
+        for service_id, (profile_name, _endpoint_id, _management_mode) in active_by_service.items():
+            entry = profile_reconciliation.get(profile_name)
+            if entry is None or entry.install_path is None:
+                continue
+            hints[service_names[service_id]]["install_path"] = entry.install_path
+    if profile_reconciliation:
+        for service_id, (profile_name, _endpoint_id, _management_mode) in active_by_service.items():
             entry = profile_reconciliation.get(profile_name)
             if entry is None or entry.action is None or not entry.action.managed_files:
                 continue
@@ -121,7 +131,7 @@ def render_probe_hints(
                 key: {"path": spec.path, "digest": spec.digest} for key, spec in entry.action.managed_files.items()
             }
     if profile_reconciliation:
-        for service_id, (profile_name, _endpoint_id) in active_by_service.items():
+        for service_id, (profile_name, _endpoint_id, _management_mode) in active_by_service.items():
             entry = profile_reconciliation.get(profile_name)
             if entry is None or entry.action is None or not entry.action.bindings:
                 continue

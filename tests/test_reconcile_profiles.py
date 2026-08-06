@@ -142,6 +142,48 @@ def test_entry_with_neither_action_nor_observe_only_is_rejected(tmp_path):
         load_profile_reconciliation(playbook_dir, {"grafana"})
 
 
+def test_install_path_accepts_home_relative_on_observe_only(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "swarmui": {"observe_only": True, "install_path": "~/StabilityMatrix/Packages/SwarmUI"}
+            }
+        },
+    )
+
+    entries = load_profile_reconciliation(playbook_dir, {"swarmui"})
+    assert entries["swarmui"].install_path == "~/StabilityMatrix/Packages/SwarmUI"
+
+
+def test_install_path_on_action_profile_is_rejected(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "grafana": {"action": {"kind": "dnsmasq_config"}, "install_path": "/opt/grafana"}
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError, match="observe_only"):
+        load_profile_reconciliation(playbook_dir, {"grafana"})
+
+
+def test_relative_install_path_is_rejected(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "swarmui": {"observe_only": True, "install_path": "StabilityMatrix/Packages"}
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError, match="install_path"):
+        load_profile_reconciliation(playbook_dir, {"swarmui"})
+
+
 def test_playbook_path_must_be_relative(tmp_path):
     playbook_dir = _write(
         tmp_path,

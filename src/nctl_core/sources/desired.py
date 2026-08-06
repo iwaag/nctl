@@ -138,6 +138,7 @@ DESIRED_QUERY = """
     instance_name
     desired_state
     deployment_profile
+    management_mode
     config_schema_version
     config
   }
@@ -265,6 +266,7 @@ class DesiredServicePlacement(BaseModel):
     instance_name: str
     desired_state: str = "active"
     deployment_profile: str
+    management_mode: str = "nctl_managed"
     config_schema_version: str
     config: dict[str, Any] = {}
 
@@ -441,6 +443,7 @@ def _build_placement(row: dict[str, Any]) -> DesiredServicePlacement:
         instance_name=row["instance_name"],
         desired_state=_lower(row.get("desired_state")) or "active",
         deployment_profile=row["deployment_profile"],
+        management_mode=_lower(row.get("management_mode")) or "nctl_managed",
         config_schema_version=row["config_schema_version"],
         config=row.get("config") or {},
     )
