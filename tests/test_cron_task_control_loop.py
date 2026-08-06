@@ -6,12 +6,15 @@ through the transition a `cron_task` placement claims to support:
     placement with config.script_path
       -> hints rendered (real repo deployment_profiles.yml metadata)
       -> simulated observation without the file -> service_missing
-      -> simulated observation with the file -> satisfied, no planned action
+      -> simulated observation with file + crontab entry -> satisfied,
+         no planned action
 
-The observed entries mirror the exact shape nodeutils'
-`normalize_observed_services` emits for a hinted `file_exists` check
-(covered by nodeutils' own suite), so the two suites pin the same contract
-from both sides.
+autotask_intent ex1 extends the profile with a `cron_registered` check:
+existence of the script alone no longer converges -- registration proof
+must also pass. The observed entries mirror the exact shape nodeutils'
+`normalize_observed_services` emits for hinted state-proof checks (covered
+by nodeutils' own suite), so the two suites pin the same contract from
+both sides.
 """
 
 from __future__ import annotations
@@ -101,20 +104,27 @@ def test_cron_task_round_trip_missing_then_converged_with_no_planned_action():
     reconciliation = _real_reconciliation()
     desired = _desired()
 
-    # Round 0: the real repo metadata renders the config-resolved hint.
+    # Round 0: the real repo metadata renders the config-resolved hints --
+    # ex1: existence proof and registration proof, both from script_path.
     hints = yaml.safe_load(render_probe_hints(desired, NODE_ID, reconciliation))
     assert hints["service_probe_hints"]["heartbeat-cron"] == {
-        "checks": [{"kind": "file_exists", "path": SCRIPT_PATH}]
+        "checks": [
+            {"kind": "file_exists", "path": SCRIPT_PATH},
+            {"kind": "cron_registered", "path": SCRIPT_PATH},
+        ]
     }
 
-    # Round 1: observation ran, file absent -- the entry is positive evidence
-    # the check executed, and drift must say service_missing.
+    # Round 1: observation ran, file absent and crontab empty -- the entry is
+    # positive evidence the checks executed, and drift must say service_missing.
     missing_entry = {
         "heartbeat-cron": {
             "state": "missing",
-            "source": "check:file_exists",
+            "source": "check:cron_registered+file_exists",
             "checked_at": "2026-08-06T23:00:00+00:00",
-            "checks": [{"kind": "file_exists", "path": SCRIPT_PATH, "status": "missing"}],
+            "checks": [
+                {"kind": "file_exists", "path": SCRIPT_PATH, "status": "missing"},
+                {"kind": "cron_registered", "path": SCRIPT_PATH, "status": "missing"},
+            ],
         }
     }
     report = _evaluate(missing_entry)
@@ -139,20 +149,61 @@ def test_cron_task_round_trip_missing_then_converged_with_no_planned_action():
     assert plan.actions == []
     assert plan.unsupported[0].reason.startswith("deployment profile 'cron_task' is observe_only")
 
-    # Round 2: file placed, fresh observation -- existence proof satisfied,
-    # no gap, and (observe-only) still nothing to plan.
+    # Round 2 (ex1): file placed but crontab not yet registered -- existence
+    # proof alone must NOT converge; the failed registration proof keeps the
+    # placement service_missing.
+    unregistered_entry = {
+        "heartbeat-cron": {
+            "state": "missing",
+            "source": "check:cron_registered+file_exists",
+            "checked_at": "2026-08-06T23:15:00+00:00",
+            "checks": [
+                {"kind": "file_exists", "path": SCRIPT_PATH, "status": "present"},
+                {"kind": "cron_registered", "path": SCRIPT_PATH, "status": "missing"},
+            ],
+        }
+    }
+    report = _evaluate(unregistered_entry)
+    assert report["status"] == "drift"
+    [placement_report] = report["placements"]
+    assert [gap["code"] for gap in placement_report["gaps"]] == ["service_missing"]
+
+    # Round 3: file placed and crontab registered, fresh observation -- both
+    # state proofs satisfied, no gap, and (observe-only) still nothing to plan.
     present_entry = {
         "heartbeat-cron": {
             "state": "present",
-            "source": "check:file_exists",
+            "source": "check:cron_registered+file_exists",
             "checked_at": "2026-08-06T23:30:00+00:00",
-            "checks": [{"kind": "file_exists", "path": SCRIPT_PATH, "status": "present"}],
+            "checks": [
+                {"kind": "file_exists", "path": SCRIPT_PATH, "status": "present"},
+                {"kind": "cron_registered", "path": SCRIPT_PATH, "status": "present"},
+            ],
         }
     }
     report = _evaluate(present_entry)
     assert report["status"] == "satisfied"
     [placement_report] = report["placements"]
     assert placement_report["gaps"] == []
+
+
+def test_cron_registered_error_status_fails_closed():
+    # An unusable crontab tool reports status "error" -- never proof either
+    # way, so even beside richer running-state evidence the errored
+    # registration proof must stay service_missing, not read as converged.
+    entry = {
+        "heartbeat-cron": {
+            "state": "active",
+            "source": "process",
+            "checked_at": "2026-08-06T23:00:00+00:00",
+            "checks": [
+                {"kind": "file_exists", "path": SCRIPT_PATH, "status": "present"},
+                {"kind": "cron_registered", "path": SCRIPT_PATH, "status": "error"},
+            ],
+        }
+    }
+    report = _evaluate(entry)
+    assert [gap["code"] for gap in report["placements"][0]["gaps"]] == ["service_missing"]
 
 
 def test_running_entry_with_failed_existence_check_is_service_missing():

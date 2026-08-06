@@ -10,6 +10,10 @@ from typing import Any
 from .binding_evaluation import BindingCheck, evaluate_binding_state
 
 RUNNING_STATES = frozenset({"running", "active"})
+# State-proof check kinds whose non-`present` result is a `service_missing`
+# gap. Mirror of `reconcile.profiles.EXISTENCE_PROOF_CHECK_KINDS` (this
+# module stays import-pure); nodeutils holds the executor-side copy.
+_EXISTENCE_PROOF_CHECK_KINDS = frozenset({"file_exists", "cron_registered"})
 _OBSERVED_SYSTEM_MAP = {"Linux": "linux", "Darwin": "macos"}
 _MANAGED_FILE_UNREADABLE_STATUSES = frozenset({"unreadable", "too_large"})
 
@@ -172,13 +176,18 @@ def evaluate_active_placement(
         # read as presence. `state == "present"` (all existence checks
         # passed) is convergence for the observe-only profiles that produce
         # it; profiles with an action never emit check-only states.
+        # autotask_intent ex1: `cron_registered` joins `file_exists` as a
+        # state proof -- an unregistered task fails the same way as a
+        # missing script, including its `error` status (fail closed).
         check_results = entry.get("checks")
         if isinstance(check_results, list) and check_results:
             report["observed_checks"] = check_results
         failed_existence = state == "missing" or (
             isinstance(check_results, list)
             and any(
-                isinstance(row, dict) and row.get("kind") == "file_exists" and row.get("status") != "present"
+                isinstance(row, dict)
+                and row.get("kind") in _EXISTENCE_PROOF_CHECK_KINDS
+                and row.get("status") != "present"
                 for row in check_results
             )
         )

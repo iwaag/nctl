@@ -48,6 +48,39 @@ class CheckResolutionError(Exception):
     """
 
 
+def _validate_single_path_source(kind: str, path: str | None, path_from_config: str | None) -> None:
+    if bool(path) == bool(path_from_config):
+        raise ValueError(f"a {kind} check needs exactly one of path or path_from_config")
+    if path is not None and not (path.startswith("~/") or Path(path).is_absolute()):
+        raise ValueError(
+            f"{kind} path must be absolute or home-relative (~/...): {path!r}"
+        )
+
+
+def _resolve_check_path(
+    kind: str,
+    path: str | None,
+    path_from_config: str | None,
+    placement_config: dict[str, Any],
+    context: str,
+) -> str:
+    if path is not None:
+        return path
+    assert path_from_config is not None
+    value = placement_config.get(path_from_config)
+    if not isinstance(value, str) or not value.strip():
+        raise CheckResolutionError(
+            f"{context}: {kind} check requires placement config key "
+            f"{path_from_config!r} to be a non-empty string, got {value!r}"
+        )
+    if not (value.startswith("~/") or Path(value).is_absolute()):
+        raise CheckResolutionError(
+            f"{context}: {kind} path from config key {path_from_config!r} "
+            f"must be absolute or home-relative (~/...): {value!r}"
+        )
+    return value
+
+
 class FileExistsCheckSpec(BaseModel):
     """One closed existence-proof check: a file must exist on the target node.
 
@@ -68,30 +101,42 @@ class FileExistsCheckSpec(BaseModel):
 
     @model_validator(mode="after")
     def _check_exactly_one_source(self) -> "FileExistsCheckSpec":
-        if bool(self.path) == bool(self.path_from_config):
-            raise ValueError("a file_exists check needs exactly one of path or path_from_config")
-        if self.path is not None and not (self.path.startswith("~/") or Path(self.path).is_absolute()):
-            raise ValueError(
-                f"file_exists path must be absolute or home-relative (~/...): {self.path!r}"
-            )
+        _validate_single_path_source(self.kind, self.path, self.path_from_config)
         return self
 
     def resolve_path(self, placement_config: dict[str, Any], context: str) -> str:
-        if self.path is not None:
-            return self.path
-        assert self.path_from_config is not None
-        value = placement_config.get(self.path_from_config)
-        if not isinstance(value, str) or not value.strip():
-            raise CheckResolutionError(
-                f"{context}: file_exists check requires placement config key "
-                f"{self.path_from_config!r} to be a non-empty string, got {value!r}"
-            )
-        if not (value.startswith("~/") or Path(value).is_absolute()):
-            raise CheckResolutionError(
-                f"{context}: file_exists path from config key {self.path_from_config!r} "
-                f"must be absolute or home-relative (~/...): {value!r}"
-            )
-        return value
+        return _resolve_check_path(
+            self.kind, self.path, self.path_from_config, placement_config, context
+        )
+
+
+class CronRegisteredCheckSpec(BaseModel):
+    """One closed registration-proof check: the login user's crontab must
+    reference a script path on the target node.
+
+    autotask_intent ex1: the deferred `cron_registered` kind, built now that
+    `cron_task` is its first consumer (build-on-consumer rule from Step 1).
+    Same state-proof family as `file_exists` -- it proves the recurring task
+    is *registered*, never that it recently ran (output freshness stays out
+    of scope by the Step 1 ceiling decision). Path semantics and resolution
+    are identical to `file_exists`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["cron_registered"] = "cron_registered"
+    path: str | None = None
+    path_from_config: str | None = None
+
+    @model_validator(mode="after")
+    def _check_exactly_one_source(self) -> "CronRegisteredCheckSpec":
+        _validate_single_path_source(self.kind, self.path, self.path_from_config)
+        return self
+
+    def resolve_path(self, placement_config: dict[str, Any], context: str) -> str:
+        return _resolve_check_path(
+            self.kind, self.path, self.path_from_config, placement_config, context
+        )
 
 
 class HttpCheckSpec(BaseModel):
@@ -119,7 +164,13 @@ class HttpCheckSpec(BaseModel):
         return self
 
 
-ProfileCheckSpec = FileExistsCheckSpec | HttpCheckSpec
+ProfileCheckSpec = FileExistsCheckSpec | CronRegisteredCheckSpec | HttpCheckSpec
+
+# The check kinds whose failed result is an existence/registration proof
+# failure (drift: `service_missing`). `nctl_core.drift.service_placement`
+# mirrors this set (it stays import-pure); nodeutils holds the executor-side
+# copy. Keep the three in sync when adding a state-proof kind.
+EXISTENCE_PROOF_CHECK_KINDS = frozenset({"file_exists", "cron_registered"})
 
 
 class ManagedFileSpec(BaseModel):
@@ -219,7 +270,8 @@ class ProfileReconciliation(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     # autotask_intent Step 1: the explicit, closed, parameterized check list
     # replacing implicit field-presence check knowledge. Only kinds with a
-    # current consumer exist (`file_exists`, `http`). Restricted to
+    # current consumer exist (`file_exists`, `cron_registered`, `http`).
+    # Restricted to
     # observe_only profiles in this phase -- every consumer is existence
     # proof, and action profiles keep their managed_files/bindings contracts.
     checks: list[Annotated[ProfileCheckSpec, Field(discriminator="kind")]] = Field(default_factory=list)
@@ -340,8 +392,8 @@ def resolve_check_hints(
 
     hint_rows: list[dict[str, Any]] = []
     for check in entry.checks:
-        if isinstance(check, FileExistsCheckSpec):
-            hint_rows.append({"kind": "file_exists", "path": check.resolve_path(placement_config, context)})
+        if isinstance(check, (FileExistsCheckSpec, CronRegisteredCheckSpec)):
+            hint_rows.append({"kind": check.kind, "path": check.resolve_path(placement_config, context)})
         else:
             hint_rows.append({"kind": "http", "paths": list(check.paths)})
     return hint_rows

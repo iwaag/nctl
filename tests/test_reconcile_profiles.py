@@ -65,8 +65,9 @@ def test_real_repo_file_validates(tmp_path):
     assert entries["node_agent"].action.bindings["llm_provider"].json_path == "provider.ollama.options.baseURL"
     assert entries["ollama"].observe_only is True
     assert entries["cron_task"].observe_only is True
-    assert [check.kind for check in entries["cron_task"].checks] == ["file_exists"]
+    assert [check.kind for check in entries["cron_task"].checks] == ["file_exists", "cron_registered"]
     assert entries["cron_task"].checks[0].path_from_config == "script_path"
+    assert entries["cron_task"].checks[1].path_from_config == "script_path"
 
 
 def test_profile_absent_from_reconciliation_is_simply_not_present(tmp_path):
@@ -519,13 +520,91 @@ def test_unknown_check_kind_is_rejected(tmp_path):
         tmp_path,
         {
             "deployment_profile_reconciliation": {
-                "cron_task": {"observe_only": True, "checks": [{"kind": "cron_registered"}]}
+                "cron_task": {"observe_only": True, "checks": [{"kind": "systemd_registered", "path": "/x"}]}
             }
         },
     )
 
     with pytest.raises(ProfileReconciliationError):
         load_profile_reconciliation(playbook_dir, {"cron_task"})
+
+
+# --- autotask_intent ex1: `cron_registered` check kind ---
+
+
+def test_cron_registered_check_parses_and_shares_path_rules(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "cron_task": {
+                    "observe_only": True,
+                    "checks": [
+                        {"kind": "file_exists", "path_from_config": "script_path"},
+                        {"kind": "cron_registered", "path_from_config": "script_path"},
+                    ],
+                }
+            }
+        },
+    )
+
+    entries = load_profile_reconciliation(playbook_dir, {"cron_task"})
+
+    assert [check.kind for check in entries["cron_task"].checks] == ["file_exists", "cron_registered"]
+    assert entries["cron_task"].checks[1].path_from_config == "script_path"
+
+
+def test_cron_registered_check_needs_exactly_one_path_source(tmp_path):
+    for bad in (
+        {"kind": "cron_registered"},
+        {"kind": "cron_registered", "path": "/a", "path_from_config": "b"},
+    ):
+        playbook_dir = _write(
+            tmp_path / str(bool(bad.get("path"))),
+            {"deployment_profile_reconciliation": {"cron_task": {"observe_only": True, "checks": [bad]}}},
+        )
+        with pytest.raises(ProfileReconciliationError, match="exactly one of path or path_from_config"):
+            load_profile_reconciliation(playbook_dir, {"cron_task"})
+
+
+def test_cron_registered_literal_path_must_be_absolute_or_home_relative(tmp_path):
+    playbook_dir = _write(
+        tmp_path,
+        {
+            "deployment_profile_reconciliation": {
+                "cron_task": {
+                    "observe_only": True,
+                    "checks": [{"kind": "cron_registered", "path": "relative/path"}],
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ProfileReconciliationError, match="absolute or home-relative"):
+        load_profile_reconciliation(playbook_dir, {"cron_task"})
+
+
+def test_resolve_check_hints_renders_cron_registered_with_resolved_path(tmp_path):
+    from nctl_core.reconcile.profiles import CheckResolutionError, ProfileReconciliation, resolve_check_hints
+
+    entry = ProfileReconciliation.model_validate(
+        {
+            "observe_only": True,
+            "checks": [
+                {"kind": "file_exists", "path_from_config": "script_path"},
+                {"kind": "cron_registered", "path_from_config": "script_path"},
+            ],
+        }
+    )
+
+    assert resolve_check_hints(entry, {"script_path": "~/mycron/heartbeat.sh"}, "ctx") == [
+        {"kind": "file_exists", "path": "~/mycron/heartbeat.sh"},
+        {"kind": "cron_registered", "path": "~/mycron/heartbeat.sh"},
+    ]
+
+    for bad_config in ({}, {"script_path": ""}, {"script_path": "relative/x.sh"}):
+        with pytest.raises(CheckResolutionError, match="cron_registered|file_exists"):
+            resolve_check_hints(entry, bad_config, "ctx")
 
 
 def test_resolve_check_hints_substitutes_path_from_config(tmp_path):
