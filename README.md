@@ -71,6 +71,8 @@ export NAUTOBOT_TOKEN=...           # or set nautobot.token_file
   creation and destruction workflow.
 - [`state bundle`](docs/state-bundle.md) — the cluster's desired/actual state as one downloadable
   zip (`nctl.bundle.v1` manifest convention and the compose-and-upload recipe).
+- [`hand-write a partial batch`](docs/desired-partial-batch.md) — minimal `desired apply`
+  document template and the identity-key members per kind.
 
 ## Usage
 
