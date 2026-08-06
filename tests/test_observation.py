@@ -196,9 +196,9 @@ def test_probe_hints_include_an_active_service_endpoint() -> None:
     }
 
 
-def test_probe_hints_manual_placement_gets_install_path_and_no_endpoint() -> None:
+def test_probe_hints_manual_placement_gets_checks_and_no_endpoint() -> None:
     # manual_service: a manual placement is never reachability-probed; its
-    # observe-only profile's install_path is the only observation hint.
+    # observe-only profile's file_exists check is the only observation hint.
     from nctl_core.reconcile.profiles import ProfileReconciliation
 
     snapshot = _snapshot("node-a")
@@ -217,13 +217,20 @@ def test_probe_hints_manual_placement_gets_install_path_and_no_endpoint() -> Non
         )
     ]
     profile_reconciliation = {
-        "swarmui": ProfileReconciliation(observe_only=True, install_path="~/StabilityMatrix/Packages/SwarmUI"),
+        "swarmui": ProfileReconciliation.model_validate(
+            {
+                "observe_only": True,
+                "checks": [{"kind": "file_exists", "path": "~/StabilityMatrix/Packages/SwarmUI"}],
+            }
+        ),
     }
 
     rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a"), profile_reconciliation))
 
     assert rendered == {
-        "service_probe_hints": {"swarmui": {"install_path": "~/StabilityMatrix/Packages/SwarmUI"}},
+        "service_probe_hints": {
+            "swarmui": {"checks": [{"kind": "file_exists", "path": "~/StabilityMatrix/Packages/SwarmUI"}]}
+        },
         "workspace_probe_hints": {},
     }
 

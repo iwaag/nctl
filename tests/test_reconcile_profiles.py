@@ -46,7 +46,12 @@ def test_real_repo_file_validates(tmp_path):
     assert entries["dnsmasq"].action.managed_files["records"].digest == "sha256"
     assert entries["manual_toolchain"].observe_only is True
     assert entries["swarmui"].observe_only is True
+    assert [check.kind for check in entries["swarmui"].checks] == ["http", "file_exists"]
+    assert entries["swarmui"].checks[1].path == "~/StabilityMatrix/Packages/SwarmUI"
     assert entries["comfyui"].observe_only is True
+    assert [check.kind for check in entries["comfyui"].checks] == ["http", "file_exists"]
+    assert entries["comfyui"].checks[1].path == "~/StabilityMatrix/Packages/ComfyUI"
+    assert entries["ollama"].checks[0].paths == ["/v1/models", "/api/tags"]
     assert entries["nomad_client"].dependencies == ["nomad_server"]
     assert entries["prometheus_node_exporter"].dependencies == ["prometheus"]
     assert entries["nomad_server"].action.kind == "playbook"
@@ -142,7 +147,9 @@ def test_entry_with_neither_action_nor_observe_only_is_rejected(tmp_path):
         load_profile_reconciliation(playbook_dir, {"grafana"})
 
 
-def test_install_path_accepts_home_relative_on_observe_only(tmp_path):
+def test_removed_install_path_key_is_rejected(tmp_path):
+    # autotask_intent Step 2: install_path migrated into explicit
+    # `checks: [{kind: file_exists, ...}]`; the old key must not silently load.
     playbook_dir = _write(
         tmp_path,
         {
@@ -152,35 +159,7 @@ def test_install_path_accepts_home_relative_on_observe_only(tmp_path):
         },
     )
 
-    entries = load_profile_reconciliation(playbook_dir, {"swarmui"})
-    assert entries["swarmui"].install_path == "~/StabilityMatrix/Packages/SwarmUI"
-
-
-def test_install_path_on_action_profile_is_rejected(tmp_path):
-    playbook_dir = _write(
-        tmp_path,
-        {
-            "deployment_profile_reconciliation": {
-                "grafana": {"action": {"kind": "dnsmasq_config"}, "install_path": "/opt/grafana"}
-            }
-        },
-    )
-
-    with pytest.raises(ProfileReconciliationError, match="observe_only"):
-        load_profile_reconciliation(playbook_dir, {"grafana"})
-
-
-def test_relative_install_path_is_rejected(tmp_path):
-    playbook_dir = _write(
-        tmp_path,
-        {
-            "deployment_profile_reconciliation": {
-                "swarmui": {"observe_only": True, "install_path": "StabilityMatrix/Packages"}
-            }
-        },
-    )
-
-    with pytest.raises(ProfileReconciliationError, match="install_path"):
+    with pytest.raises(ProfileReconciliationError):
         load_profile_reconciliation(playbook_dir, {"swarmui"})
 
 

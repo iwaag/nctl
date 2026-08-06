@@ -113,7 +113,7 @@ def render_probe_hints(
     hints: dict[str, dict[str, Any]] = {service_names[sid]: {} for sid in active_by_service}
     for service_id, (_profile_name, endpoint_id, management_mode) in active_by_service.items():
         # manual_service: a manual placement is never reachability-probed --
-        # presence on disk (install_path below) is its only observation.
+        # presence on disk (a file_exists check below) is its only observation.
         if management_mode == "manual":
             continue
         endpoint = endpoints_by_id.get(endpoint_id or "")
@@ -125,12 +125,6 @@ def render_probe_hints(
         hints[service_names[service_id]]["endpoint"] = (
             f"{str(endpoint.protocol).lower()}://{str(address).split('/', 1)[0]}:{endpoint.port}"
         )
-    if profile_reconciliation:
-        for service_id, (profile_name, _endpoint_id, _management_mode) in active_by_service.items():
-            entry = profile_reconciliation.get(profile_name)
-            if entry is None or entry.install_path is None:
-                continue
-            hints[service_names[service_id]]["install_path"] = entry.install_path
     if profile_reconciliation:
         for service_id, (profile_name, _endpoint_id, _management_mode) in active_by_service.items():
             entry = profile_reconciliation.get(profile_name)
