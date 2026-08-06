@@ -165,7 +165,26 @@ def evaluate_active_placement(
         report["observed_source"] = entry.get("source")
         report["observed_endpoint"] = entry.get("endpoint")
         report["observed_checked_at"] = entry.get("checked_at") or observed_at
-        if state not in RUNNING_STATES and not manual:
+        # autotask_intent Step 3: check-observed services (observe-only
+        # profiles) reuse the existing gap vocabulary. A failed existence
+        # proof is `service_missing` even for manual placements -- the entry
+        # itself is positive evidence the check ran, so its failure must not
+        # read as presence. `state == "present"` (all existence checks
+        # passed) is convergence for the observe-only profiles that produce
+        # it; profiles with an action never emit check-only states.
+        check_results = entry.get("checks")
+        if isinstance(check_results, list) and check_results:
+            report["observed_checks"] = check_results
+        failed_existence = state == "missing" or (
+            isinstance(check_results, list)
+            and any(
+                isinstance(row, dict) and row.get("kind") == "file_exists" and row.get("status") != "present"
+                for row in check_results
+            )
+        )
+        if failed_existence:
+            report["gaps"].append({"code": "service_missing"})
+        elif state not in RUNNING_STATES and state != "present" and not manual:
             report["gaps"].append({"code": "service_not_running", "observed_state": entry.get("state")})
 
     if content_spec is not None and not manual:

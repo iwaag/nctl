@@ -12,6 +12,7 @@ from nctl_core.reconcile.profiles import (
 )
 
 _REPO_PROFILE_NAMES = {
+    "cron_task",
     "dnsmasq",
     "grafana",
     "manual_toolchain",
@@ -63,6 +64,9 @@ def test_real_repo_file_validates(tmp_path):
     assert entries["node_agent"].action.bindings["llm_provider"].config_file == "~/.config/opencode/opencode.json"
     assert entries["node_agent"].action.bindings["llm_provider"].json_path == "provider.ollama.options.baseURL"
     assert entries["ollama"].observe_only is True
+    assert entries["cron_task"].observe_only is True
+    assert [check.kind for check in entries["cron_task"].checks] == ["file_exists"]
+    assert entries["cron_task"].checks[0].path_from_config == "script_path"
 
 
 def test_profile_absent_from_reconciliation_is_simply_not_present(tmp_path):
