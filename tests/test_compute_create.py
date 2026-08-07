@@ -14,12 +14,20 @@ from nctl_core.reconcile.model import ReconcileAction
 
 
 PARAMETERS = {
-    "host_slugs": ["aghub"], "vmid": 109,
+    "guest_type": "lxc", "host_slugs": ["aghub"], "vmid": 109,
     "template": "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst",
     "storage": "local-lvm", "bridge": "vmbr0", "unprivileged": True,
     "vcpus": 1, "memory_mb": 512, "root_disk_gb": 8,
     "hostname": "agfixture", "mac_address": "bc:24:11:00:01:09",
     "ipv4_cidr": "192.168.0.9/24", "gateway_ipv4": "192.168.0.1",
+}
+
+QEMU_PARAMETERS = {
+    "guest_type": "qemu", "host_slugs": ["aghub"], "vmid": 209,
+    "template": "local:iso/ubuntu-24.04.2-live-server-amd64.iso",
+    "storage": "local-lvm", "bridge": "vmbr0",
+    "vcpus": 2, "memory_mb": 2048, "root_disk_gb": 32,
+    "hostname": "agvmfixture", "mac_address": "bc:24:11:00:02:09",
 }
 
 
@@ -127,6 +135,47 @@ def test_create_handler_treats_missing_or_untruthful_result_as_mutated_failure(t
     assert result.mutated is True
 
 
+def test_create_handler_selects_qemu_playbook_for_virtual_machine_parameters(tmp_path, monkeypatch):
+    """Tier A: a pinned qemu creation runs create_qemu.yml, never the LXC playbook."""
+    context = _context(tmp_path)
+    _install_creation(monkeypatch, _creation(QEMU_PARAMETERS))
+    seen = {}
+
+    class Runner:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, command, **_kwargs):
+            seen["command"] = command
+            result_path = context.artifacts.path("round-01/compute/create_compute_instance:agfixture.result.json")
+            result_path.write_text(json.dumps({"created": True, "started": True}))
+            return SimpleNamespace(command=command, exit_code=0)
+
+    monkeypatch.setattr(compute_create, "AnsibleRunner", Runner)
+    executed = compute_create.execute(context, _action(QEMU_PARAMETERS))
+
+    assert executed.result.success is True
+    assert seen["command"][3] == str(tmp_path / "ansible_agdev/playbooks/proxmox/create_qemu.yml")
+    assert json.loads(seen["command"][7])["guest_type"] == "qemu"
+
+
+def test_create_handler_refuses_unknown_guest_type_before_runner(tmp_path, monkeypatch):
+    """Tier A: an unmapped guest_type stops before any playbook, instead of defaulting to LXC."""
+    context = _context(tmp_path)
+    parameters = {**PARAMETERS, "guest_type": "openvz"}
+    _install_creation(monkeypatch, _creation(parameters))
+
+    class Runner:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("runner must not start without a mapped create playbook")
+
+    monkeypatch.setattr(compute_create, "AnsibleRunner", Runner)
+    result = compute_create.execute(context, _action(parameters)).result
+    assert result.success is False
+    assert result.mutated is False
+    assert "no create playbook for guest_type" in result.error
+
+
 def test_create_handler_refuses_parameter_drift_before_runner(tmp_path, monkeypatch):
     context = _context(tmp_path)
     _install_creation(monkeypatch, _creation({**PARAMETERS, "vmid": 110}))
@@ -153,4 +202,18 @@ def test_create_playbook_has_only_create_start_and_local_result_transport():
     assert "argv: [\"{{ pct_binary }}\", start" in content
     assert "- \"{{ pct_binary }}\"\n          - create" in content
     for forbidden in (" pct stop", " pct destroy", " pct set", " pct resize", " pct migrate", " pct clone", " qm "):
+        assert forbidden not in content
+
+
+def test_create_qemu_playbook_has_only_create_start_and_local_result_transport():
+    playbook = (compute_create.__file__.replace("nctl/src/nctl_core/reconcile/actions/compute_create.py", "ansible_agdev/playbooks/proxmox/create_qemu.yml"))
+    from pathlib import Path
+    content = Path(playbook).read_text()
+    assert "delegate_to: localhost" in content
+    assert "delegate_to: localhost\n      # This is controller-owned evidence" in content
+    assert "become: false" in content
+    assert "qm_binary: /usr/sbin/qm" in content
+    assert "argv: [\"{{ qm_binary }}\", start" in content
+    assert "- \"{{ qm_binary }}\"\n          - create" in content
+    for forbidden in (" qm stop", " qm destroy", " qm set", " qm resize", " qm migrate", " qm clone", " pct "):
         assert forbidden not in content

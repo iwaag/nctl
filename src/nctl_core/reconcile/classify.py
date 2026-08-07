@@ -153,6 +153,7 @@ _MANUAL_REVIEW_CODES = frozenset(
         "compute_platform_missing",
         "compute_platform_observation_stale",
         "compute_platform_ambiguous",
+        "compute_instance_kind_not_creatable",
         "compute_template_unavailable", "compute_storage_unavailable", "compute_bridge_unavailable",
         "compute_vmid_conflict", "compute_endpoint_ip_conflict", "compute_control_node_not_actionable",
         "compute_instance_candidate_ambiguous",

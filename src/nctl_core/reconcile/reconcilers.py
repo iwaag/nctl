@@ -183,7 +183,7 @@ def plan_create_compute_instance(target: Target, snapshot: SourceSnapshot, *, ge
     return ReconcileAction(
         id=f"create_compute_instance:{creation.node.slug}", reconciler_id=CREATE_COMPUTE_INSTANCE.id,
         action_kind=CREATE_COMPUTE_INSTANCE.action_kind, targets=[target], claimed_diff_codes=["compute_instance_missing"],
-        reason="One absent LXC instance passed the pinned create preflight.",
+        reason="One absent compute instance passed the pinned create preflight.",
         evidence={"platform_slug": creation.platform.slug, "cluster_id": creation.cluster.id, "control_node_slug": creation.control_node.slug, "generated_at": generated_at},
         mutates=CREATE_COMPUTE_INSTANCE.mutates, requires_observation=CREATE_COMPUTE_INSTANCE.requires_observation,
         parameters=creation.parameters,

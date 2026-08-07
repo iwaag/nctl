@@ -1,4 +1,4 @@
-"""Bounded LXC creation handler; this is the sole Phase 3 Proxmox write seam."""
+"""Bounded LXC/QEMU creation handler; this is the sole Phase 3 Proxmox write seam."""
 from __future__ import annotations
 import json
 from nctl_core.ansible import AnsibleRunner
@@ -7,11 +7,20 @@ from ..model import ReconcileAction
 from .contract import ActionContext, ExecutedAction, actuation_result, failed_action_result
 
 
+CREATE_PLAYBOOKS = {"lxc": "playbooks/proxmox/create_lxc.yml", "qemu": "playbooks/proxmox/create_qemu.yml"}
+
+
 def execute(context: ActionContext, action: ReconcileAction) -> ExecutedAction:
     target_slugs = [target.slug for target in action.targets if target.slug]
     creation = derive_compute_creations(context.snapshot, generated_at=context.generated_at).get(action.targets[0].id or "")
     if creation is None or creation.failures or creation.parameters != action.parameters:
         return ExecutedAction(result=failed_action_result(context, action, target_slugs, {}, "create parameters no longer match the pinned preflight"))
+    playbook = CREATE_PLAYBOOKS.get(action.parameters.get("guest_type"))
+    if playbook is None:
+        return ExecutedAction(result=failed_action_result(
+            context, action, target_slugs, {},
+            f"no create playbook for guest_type={action.parameters.get('guest_type')!r}",
+        ))
     result_path = context.artifacts.path(f"round-{context.round_index:02d}/compute/{action.id}.result.json")
     # The playbook returns this controller-owned artifact with delegate_to:
     # localhost.  Create its parent before starting any irreversible command.
@@ -20,7 +29,7 @@ def execute(context: ActionContext, action: ReconcileAction) -> ExecutedAction:
     directory = context.cfg.ansible.resolved_playbook_dir(context.cfg.source_path.parent)
     inventory = context.cfg.ansible.resolved_inventory(context.cfg.source_path.parent)
     runner = AnsibleRunner(directory, timeout_seconds=context.cfg.reconcile.ansible_timeout_seconds, artifacts=context.artifacts, command_runner=context.command_runner)
-    command = ["ansible-playbook", "-i", str(inventory), str(directory / "playbooks/proxmox/create_lxc.yml"), "--limit", creation.control_node.slug, "--extra-vars", json.dumps(variables, sort_keys=True)]
+    command = ["ansible-playbook", "-i", str(inventory), str(directory / playbook), "--limit", creation.control_node.slug, "--extra-vars", json.dumps(variables, sort_keys=True)]
     run = runner.run(command, mode="apply", artifact_stem=f"round-{context.round_index:02d}/ansible/{action.id}")
     detail = {"command": run.command, "exit_code": run.exit_code, "result_path": str(result_path)}
     if run.exit_code != 0:
