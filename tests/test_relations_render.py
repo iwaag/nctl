@@ -211,6 +211,19 @@ def test_unreferenced_service_listed_informational():
     assert data.unreferenced == ["node-agent", "orphan"]
 
 
+def test_services_project_active_placements_and_state():
+    desired = _base_desired()
+    snapshot = _snapshot(desired, _device({}))
+
+    data = render_relations_data(snapshot, _drift_result(), GENERATED_AT)
+
+    node_agent = next(row for row in data.services if row.service == "node-agent")
+    assert node_agent.state == "converged"
+    assert [(row.node, row.instance_name, row.state) for row in node_agent.placements] == [
+        ("aghub", "node-agent", "satisfied")
+    ]
+
+
 def test_edges_sorted_deterministically():
     device = _device({})
     # No bindings observed -> unknown state, but ordering is what's under test.

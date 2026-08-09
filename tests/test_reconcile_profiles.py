@@ -12,6 +12,7 @@ from nctl_core.reconcile.profiles import (
 )
 
 _REPO_PROFILE_NAMES = {
+    "autolab_node",
     "cron_task",
     "dnsmasq",
     "grafana",
@@ -75,6 +76,9 @@ def test_real_repo_file_validates(tmp_path):
     }
     assert entries["static_web_app"].checks[0].kind == "http"
     assert entries["static_web_app"].run_state_from_config == "run_state"
+    assert entries["autolab_node"].action.playbook == "playbooks/agent/setup_autolab_node.yml"
+    assert entries["autolab_node"].checks[0].path_from_config == "repo_dest"
+    assert entries["autolab_node"].checks[1].paths == ["/healthz"]
 
 
 def test_profile_absent_from_reconciliation_is_simply_not_present(tmp_path):

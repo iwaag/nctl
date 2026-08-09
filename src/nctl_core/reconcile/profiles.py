@@ -272,9 +272,8 @@ class ProfileReconciliation(BaseModel):
     # autotask_intent Step 1: the explicit, closed, parameterized check list
     # replacing implicit field-presence check knowledge. Only kinds with a
     # current consumer exist (`file_exists`, `cron_registered`, `http`).
-    # Restricted to
-    # observe_only profiles in this phase -- every consumer is existence
-    # proof, and action profiles keep their managed_files/bindings contracts.
+    # Both observe-only and actionable profiles may add checks: action
+    # profiles use them for post-actuation convergence evidence.
     checks: list[Annotated[ProfileCheckSpec, Field(discriminator="kind")]] = Field(default_factory=list)
     # Optional generic desired process-state knob. The drift evaluator reads
     # this placement config key as started|stopped instead of assuming every

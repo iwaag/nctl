@@ -118,6 +118,7 @@ def _service_profile_inputs(
             nodes_by_id[placement.node_id].slug
             for placement in active
             if placement.node_id in nodes_by_id
+            and placement.management_mode == "nctl_managed"
         }
     )
     return next(iter(profiles)), host_slugs

@@ -456,6 +456,35 @@ def test_node_agent_profile_plans_only_the_scoped_placement_host():
     assert action.parameters["host_slugs"] == ["agpc"]
 
 
+def test_service_profile_action_excludes_manual_placement_hosts():
+    agstudio = _node("n1", "agstudio")
+    agautolab1 = _node("n2", "agautolab1")
+    svc = _service("s1", "agautolab")
+    placements = [
+        _placement(
+            "p1", service_id="s1", node_id="n1", deployment_profile="autolab_node"
+        ).model_copy(update={"management_mode": "manual"}),
+        _placement("p2", service_id="s1", node_id="n2", deployment_profile="autolab_node"),
+    ]
+    snapshot = _snapshot(nodes=[agstudio, agautolab1], services=[svc], placements=placements)
+    reconciliation = {
+        "autolab_node": ProfileReconciliation(
+            action=ProfileAction(
+                kind="playbook", playbook="playbooks/agent/setup_autolab_node.yml"
+            )
+        )
+    }
+
+    plan = _build(
+        snapshot,
+        [_service_diff(svc, "service_missing")],
+        profile_reconciliation=reconciliation,
+    )
+
+    [action] = plan.actions
+    assert action.parameters["host_slugs"] == ["agautolab1"]
+
+
 def test_service_profile_dnsmasq_config_action():
     node = _node("n1", "agdnsmasq")
     svc = _service("s1", "dnsmasq")

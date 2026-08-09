@@ -63,9 +63,25 @@ class RelationsEdge(BaseModel):
     evidence: dict[str, Any] = {}
 
 
+class RelationsServicePlacement(BaseModel):
+    placement_id: str
+    instance_name: str
+    node: str
+    management_mode: str
+    state: str
+    gap_codes: list[str] = []
+
+
+class RelationsService(BaseModel):
+    service: str
+    state: str
+    placements: list[RelationsServicePlacement] = []
+
+
 class RelationsData(BaseModel):
     generated_at: str = ""
     edges: list[RelationsEdge] = []
+    services: list[RelationsService] = []
     unreferenced: list[str] = []
     summary: dict[str, int] = {}
 
@@ -89,13 +105,17 @@ def render_relations_data(
     stale_after_hours: int = 24,
 ) -> RelationsData:
     """Pure projection: takes a `SourceSnapshot` plus its already-computed
-    `DriftResult` (both from `fetch_and_compute_drift`) and derives the edge
-    list and `unreferenced` list. Never touches Nautobot itself."""
+    `DriftResult` (both from `fetch_and_compute_drift`) and derives the edge,
+    active-service placement, and `unreferenced` projections. Never touches
+    Nautobot itself."""
 
     node_inputs = build_production_node_inputs(snapshot)
     services_by_id = {s.id: s for s in snapshot.desired.services}
     node_slug_by_placement_id = {
         placement.id: node.slug for node in node_inputs for placement in node.placements
+    }
+    management_mode_by_placement_id = {
+        placement.id: placement.management_mode for placement in snapshot.desired.placements
     }
     endpoint_name_by_id = {
         endpoint.id: endpoint.name for node in node_inputs for endpoint in node.endpoints
@@ -135,6 +155,54 @@ def render_relations_data(
     edges.sort(key=lambda e: (e.consumer.node, e.consumer.service, e.binding_name))
     edges = _filter_edges(edges, host=host, service=service)
 
+    service_targets = {
+        target_status.target.id: target_status
+        for target_status in result.targets
+        if target_status.target.kind == "service" and target_status.target.id
+    }
+    service_rows: list[RelationsService] = []
+    for service_id, desired_service in sorted(
+        services_by_id.items(), key=lambda item: item[1].slug
+    ):
+        if service is not None and desired_service.slug != service:
+            continue
+        target_status = service_targets.get(service_id)
+        placement_gap_codes: dict[str, list[str]] = {}
+        if target_status is not None:
+            for diff in target_status.diffs:
+                expected = diff.desired.get("expected") if isinstance(diff.desired, dict) else None
+                placement_id = expected.get("placement_id") if isinstance(expected, dict) else None
+                if placement_id:
+                    placement_gap_codes.setdefault(str(placement_id), []).append(diff.code)
+        placements: list[RelationsServicePlacement] = []
+        for node in node_inputs:
+            if host is not None and node.slug != host:
+                continue
+            for placement in node.placements:
+                if placement.service_id != service_id or placement.desired_state != "active":
+                    continue
+                gaps = sorted(set(placement_gap_codes.get(placement.id, [])))
+                placements.append(
+                    RelationsServicePlacement(
+                        placement_id=placement.id,
+                        instance_name=placement.instance_name,
+                        node=node.slug,
+                        management_mode=management_mode_by_placement_id.get(
+                            placement.id, "nctl_managed"
+                        ),
+                        state="drifting" if gaps else "satisfied",
+                        gap_codes=gaps,
+                    )
+                )
+        if placements:
+            service_rows.append(
+                RelationsService(
+                    service=desired_service.slug,
+                    state=target_status.status.value if target_status is not None else "unknown",
+                    placements=sorted(placements, key=lambda row: (row.node, row.instance_name)),
+                )
+            )
+
     reverse = reverse_service_bindings(node_inputs)
     active_service_ids = {
         placement.service_id
@@ -151,6 +219,7 @@ def render_relations_data(
     return RelationsData(
         generated_at=generated_at,
         edges=edges,
+        services=service_rows,
         unreferenced=unreferenced,
         summary=_summary(edges),
     )
