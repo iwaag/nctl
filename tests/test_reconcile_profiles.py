@@ -24,6 +24,7 @@ _REPO_PROFILE_NAMES = {
     "prometheus_node_exporter",
     "swarmui",
     "comfyui",
+    "static_web_app",
 }
 
 
@@ -68,6 +69,12 @@ def test_real_repo_file_validates(tmp_path):
     assert [check.kind for check in entries["cron_task"].checks] == ["file_exists", "cron_registered"]
     assert entries["cron_task"].checks[0].path_from_config == "script_path"
     assert entries["cron_task"].checks[1].path_from_config == "script_path"
+    assert entries["static_web_app"].action.playbook_by_os == {
+        "linux": "playbooks/services/setup_static_web_app.yml",
+        "macos": "playbooks/services/setup_static_web_app_macos.yml",
+    }
+    assert entries["static_web_app"].checks[0].kind == "http"
+    assert entries["static_web_app"].run_state_from_config == "run_state"
 
 
 def test_profile_absent_from_reconciliation_is_simply_not_present(tmp_path):
@@ -457,7 +464,7 @@ def test_checks_parse_on_observe_only_profile(tmp_path):
     assert entries["ollama"].checks[0].paths == ["/v1/models", "/api/tags"]
 
 
-def test_checks_on_action_profile_are_rejected(tmp_path):
+def test_checks_and_run_state_parse_on_action_profile(tmp_path):
     playbook_dir = _write(
         tmp_path,
         {
@@ -465,13 +472,15 @@ def test_checks_on_action_profile_are_rejected(tmp_path):
                 "grafana": {
                     "action": {"kind": "playbook", "playbook": "playbooks/monitoring/setup_grafana.yml"},
                     "checks": [{"kind": "file_exists", "path": "/opt/grafana"}],
+                    "run_state_from_config": "run_state",
                 }
             }
         },
     )
 
-    with pytest.raises(ProfileReconciliationError, match="observe_only"):
-        load_profile_reconciliation(playbook_dir, {"grafana"})
+    entries = load_profile_reconciliation(playbook_dir, {"grafana"})
+    assert entries["grafana"].checks[0].kind == "file_exists"
+    assert entries["grafana"].run_state_from_config == "run_state"
 
 
 def test_file_exists_check_needs_exactly_one_path_source(tmp_path):

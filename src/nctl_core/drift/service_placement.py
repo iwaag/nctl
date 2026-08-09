@@ -138,6 +138,7 @@ def evaluate_active_placement(
         "realized_device_id": device_id,
         "actual_state_policy": policy,
         "host_os": placement.get("host_os"),
+        "desired_run_state": placement.get("desired_run_state", "started"),
         "observed_key": observed_key,
         "observed_state": None,
         "observed_at": None,
@@ -162,7 +163,12 @@ def evaluate_active_placement(
 
     entry = observed_service_entry(facts, observed_key)
     if entry is None:
-        report["gaps"].append({"code": "service_missing"})
+        # Absence is positive convergence evidence when the profile's
+        # requested run state is stopped.  Check-based observations may
+        # instead retain an explicit `state: missing` entry; both forms
+        # describe the same stopped outcome.
+        if placement.get("desired_run_state", "started") != "stopped" or manual:
+            report["gaps"].append({"code": "service_missing"})
     else:
         state = str(entry.get("state") or "").lower()
         report["observed_state"] = entry.get("state")
@@ -191,7 +197,13 @@ def evaluate_active_placement(
                 for row in check_results
             )
         )
-        if failed_existence:
+        desired_run_state = placement.get("desired_run_state", "started")
+        if desired_run_state == "stopped" and not manual:
+            if state in RUNNING_STATES:
+                report["gaps"].append(
+                    {"code": "service_should_be_stopped", "observed_state": entry.get("state")}
+                )
+        elif failed_existence:
             report["gaps"].append({"code": "service_missing"})
         elif state not in RUNNING_STATES and state != "present" and not manual:
             report["gaps"].append({"code": "service_not_running", "observed_state": entry.get("state")})

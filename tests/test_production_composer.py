@@ -473,6 +473,38 @@ def test_conflicting_placement_variables_skip_only_that_node():
     assert error["stage"] == "host_merge"
 
 
+def test_placement_list_profile_aggregates_multiple_instances():
+    profiles = {
+        **PROFILES,
+        "apps": {
+            "group": "app_hosts",
+            "config_schema_version": "1",
+            "placement_list_variable": "app_instances",
+            "variables": {
+                "port": {"ansible_variable": "app_port", "type": "integer", "required": True},
+            },
+        },
+    }
+    node = linux_node(
+        "agapps",
+        placements=[
+            PlacementInput("p1", "one", "apps", "1", config={"port": 8101}, service_slug="one"),
+            PlacementInput("p2", "two", "apps", "1", config={"port": 8102}, service_slug="two"),
+        ],
+    )
+
+    result = compose_production_inventory(
+        [node], profiles, generation_id=GENERATION_ID, generated_at=GENERATED_AT,
+        deployment_profile_digest=DIGEST,
+    )
+
+    host_vars = result.inventory["all"]["children"]["ssh_hosts"]["hosts"]["agapps"]
+    assert host_vars["app_instances"] == [
+        {"placement_id": "p1", "service_slug": "one", "instance_name": "one", "app_port": 8101},
+        {"placement_id": "p2", "service_slug": "two", "instance_name": "two", "app_port": 8102},
+    ]
+
+
 def test_unknown_profile_skips_only_that_node():
     node = linux_node("agunk", placements=[PlacementInput("p1", "primary", "missing", "1", config={})])
     result = compose([node])

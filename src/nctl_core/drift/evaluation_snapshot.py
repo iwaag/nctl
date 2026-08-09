@@ -119,6 +119,17 @@ def evaluate_all_services(
             continue
         node = nodes_by_id.get(placement.node_id)
         effective = effective_by_node.get(placement.node_id)
+        reconciliation = (
+            profile_reconciliation.get(placement.deployment_profile)
+            if profile_reconciliation
+            else None
+        )
+        run_state_key = reconciliation.run_state_from_config if reconciliation else None
+        desired_run_state = (
+            str(placement.config.get(run_state_key, "started")).lower()
+            if run_state_key
+            else "started"
+        )
         placement_rows.append(
             {
                 "placement_id": placement.id,
@@ -131,6 +142,7 @@ def evaluate_all_services(
                 "realized_device_id": node.realized_device_id if node else None,
                 "actual_state_policy": effective.actual_state_policy.value if effective else None,
                 "host_os": effective.host_os.value if effective else None,
+                "desired_run_state": desired_run_state,
             }
         )
     device_facts = {

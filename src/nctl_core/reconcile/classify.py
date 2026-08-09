@@ -91,6 +91,7 @@ _SERVICE_PROFILE_CODES = frozenset(
     {
         "service_missing",
         "service_not_running",
+        "service_should_be_stopped",
         "service_config_missing",
         "service_config_unreadable",
         "service_config_mismatch",

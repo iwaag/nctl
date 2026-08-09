@@ -49,6 +49,14 @@ def test_missing_stopped_and_stale_are_distinct():
     assert "service_observation_stale" in gap_codes(evaluate(devices={"d1": device(service_inventory_updated_at="2026-07-14T00:00:00+00:00")}))
 
 
+def test_desired_stopped_accepts_missing_and_rejects_running():
+    stopped = [placement(desired_run_state="stopped")]
+    missing = {"d1": device(observed_services={"nomad": {"state": "missing", "checks": [{"kind": "http", "status": "missing"}]}})}
+    assert evaluate(placements=stopped, devices=missing)["status"] == "satisfied"
+    assert evaluate(placements=stopped, devices={"d1": device(observed_services={})})["status"] == "satisfied"
+    assert gap_codes(evaluate(placements=stopped)) == {"service_should_be_stopped"}
+
+
 def test_manual_placement_is_converged_on_presence_alone():
     # manual_service: any observed entry (installed / stopped / running)
     # satisfies a manual placement; only its absence remains drift.

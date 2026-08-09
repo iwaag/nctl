@@ -24,6 +24,7 @@ of writing `{}` if a profile truly has no reconciliation story yet).
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Annotated, Any, Literal
 
 import yaml
@@ -275,6 +276,10 @@ class ProfileReconciliation(BaseModel):
     # observe_only profiles in this phase -- every consumer is existence
     # proof, and action profiles keep their managed_files/bindings contracts.
     checks: list[Annotated[ProfileCheckSpec, Field(discriminator="kind")]] = Field(default_factory=list)
+    # Optional generic desired process-state knob. The drift evaluator reads
+    # this placement config key as started|stopped instead of assuming every
+    # active placement must be running.
+    run_state_from_config: str | None = None
 
     @model_validator(mode="after")
     def _check_action_or_exemption(self) -> "ProfileReconciliation":
@@ -282,8 +287,10 @@ class ProfileReconciliation(BaseModel):
             raise ValueError("a profile cannot declare both an action and observe_only")
         if self.action is None and not self.observe_only:
             raise ValueError("a profile entry must declare an action or observe_only=true")
-        if self.checks and not self.observe_only:
-            raise ValueError("checks are only supported for observe_only profiles in this phase")
+        if self.run_state_from_config is not None and not re.fullmatch(
+            r"[a-z][a-z0-9_]*", self.run_state_from_config
+        ):
+            raise ValueError("run_state_from_config must be a lowercase config slug")
         return self
 
 

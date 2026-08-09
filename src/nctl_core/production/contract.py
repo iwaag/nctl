@@ -45,6 +45,7 @@ ACTUAL_MAX_AGE_HOURS = 72
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$")
 _PROFILE_KEYS = {"group", "config_schema_version", "variables"}
+_PROFILE_OPTIONAL_KEYS = {"placement_list_variable"}
 _VARIABLE_KEYS = {"ansible_variable", "type", "required", "items"}
 _JSON_TYPES = {"string", "integer", "number", "boolean", "list"}
 _INVENTORY_METADATA_KEYS = {
@@ -168,7 +169,10 @@ def validate_deployment_profiles(value: Any) -> dict[str, Any]:
         profile = value[profile_name]
         if not isinstance(profile, dict):
             raise ContractError("invalid_profile", "profile must be an object", path=path)
-        _require_exact_keys(profile, _PROFILE_KEYS, path)
+        unknown = set(profile) - _PROFILE_KEYS - _PROFILE_OPTIONAL_KEYS
+        missing = _PROFILE_KEYS - set(profile)
+        if unknown or missing:
+            _raise_key_error(unknown, missing, path)
         group = profile["group"]
         _require_slug(group, f"{path}.group")
         if group in groups:
@@ -222,6 +226,22 @@ def validate_deployment_profiles(value: Any) -> dict[str, Any]:
                     raise ContractError("invalid_profile_item_type", "list items must be a supported scalar type", path=f"{variable_path}.items")
             elif "items" in definition:
                 raise ContractError("unexpected_profile_items", "items is allowed only for list variables", path=f"{variable_path}.items")
+        placement_list_variable = profile.get("placement_list_variable")
+        if placement_list_variable is not None:
+            if not isinstance(placement_list_variable, str) or not re.fullmatch(
+                r"[a-z][a-z0-9_]*", placement_list_variable
+            ):
+                raise ContractError(
+                    "invalid_ansible_variable",
+                    "must be a lowercase Ansible variable name",
+                    path=f"{path}.placement_list_variable",
+                )
+            if placement_list_variable in ansible_names:
+                raise ContractError(
+                    "duplicate_variable_assignment",
+                    "placement list variable collides with a mapped config variable",
+                    path=f"{path}.placement_list_variable",
+                )
         validated[profile_name] = profile
     return validated
 
@@ -350,6 +370,8 @@ def validate_production_inventory_document(
         allowed_host_variables.update(
             definition["ansible_variable"] for definition in profile["variables"].values()
         )
+        if profile.get("placement_list_variable"):
+            allowed_host_variables.add(profile["placement_list_variable"])
     ssh_hosts: set[str] = set()
     for group_name in sorted(children):
         group = children[group_name]

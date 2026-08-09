@@ -37,6 +37,20 @@ def test_load_deployment_profiles_returns_validated_map_and_digest(tmp_path):
     assert digest == canonical_json_digest(profiles)
 
 
+def test_profile_accepts_placement_list_variable(tmp_path):
+    playbook_dir = write_profiles(
+        tmp_path,
+        VALID_YAML.replace(
+            'config_schema_version: "1"',
+            'config_schema_version: "1"\n    placement_list_variable: dnsmasq_instances',
+        ),
+    )
+
+    profiles, _digest = load_deployment_profiles(playbook_dir)
+
+    assert profiles["dnsmasq"]["placement_list_variable"] == "dnsmasq_instances"
+
+
 def test_load_deployment_profiles_missing_file(tmp_path):
     playbook_dir = tmp_path / "ansible_agdev"
     playbook_dir.mkdir()

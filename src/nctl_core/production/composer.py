@@ -541,6 +541,7 @@ def _compose_host(
 
     active_ids: list[str] = []
     assignments: list[tuple[str, Mapping[str, Any]]] = [(f"node:{node.slug}", base_vars)]
+    placement_lists: dict[str, list[dict[str, Any]]] = {}
     for placement in sorted(node.placements, key=lambda item: item.instance_name):
         if placement.desired_state != "active":
             continue
@@ -558,8 +559,23 @@ def _compose_host(
                 stage="placement_config",
                 evidence={"placement": _placement_evidence(placement)},
             )
-        assignments.append((f"placement:{placement.instance_name}", mapped))
+        profile = profiles[placement.deployment_profile]
+        placement_list_variable = profile.get("placement_list_variable")
+        if placement_list_variable:
+            placement_lists.setdefault(placement_list_variable, []).append(
+                {
+                    "placement_id": placement.id,
+                    "service_slug": placement.service_slug,
+                    "instance_name": placement.instance_name,
+                    **mapped,
+                }
+            )
+        else:
+            assignments.append((f"placement:{placement.instance_name}", mapped))
         active_ids.append(placement.id)
+
+    for variable, rows in sorted(placement_lists.items()):
+        assignments.append((f"placement-list:{variable}", {variable: rows}))
 
     try:
         host_vars = merge_host_variables(assignments)
