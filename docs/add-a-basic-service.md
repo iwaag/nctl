@@ -62,6 +62,13 @@ derived from active placements + `ansible_agdev/vars/deployment_profiles.yml`
      knobs your deployment actually needs. A non-default `config` is genuine
      placement intent too — it is never inferred.
 
+   If the service carries an HTTP check, the endpoint it probes needs a
+   usable address: the target node's existing primary `dns_name`, `mdns_name`
+   or IP, copied into the new `desired_endpoint`. An endpoint whose address
+   fields are all null renders a probe with no URL, and `service_missing`
+   then persists after reconcile until both the probe has a URL and fresh
+   service drift converges.
+
 3. **Preview, then apply** — set `dry_run: true` in the document and run
    `nctl desired apply -f .local/desired-state.yaml`; review the result, set
    `dry_run: false`, then re-run with `--yes`. For example:
