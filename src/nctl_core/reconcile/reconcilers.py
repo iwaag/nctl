@@ -45,7 +45,7 @@ from .registry import Reconciler, register_reconciler
 from .ledger import NODE_LINK_CANDIDATE_FIELD_BY_OBJECT_TYPE
 
 OBSERVE_NODE = register_reconciler(
-    Reconciler(id="observe_node", action_kind="observation", mutates=True, requires_observation=False)
+    Reconciler(id="observe_node", action_kind="observation", mutates=True, requires_observation=False, connects_over_ssh=True)
 )
 LINK_ACTUAL_NODE = register_reconciler(
     Reconciler(id="link_actual_node", action_kind="ledger_patch", mutates=True, requires_observation=False)
@@ -54,25 +54,32 @@ LINK_COMPUTE_REALIZATION = register_reconciler(
     Reconciler(id="link_compute_realization", action_kind="ledger_patch", mutates=True, requires_observation=False)
 )
 CREATE_COMPUTE_INSTANCE = register_reconciler(
-    Reconciler(id="create_compute_instance", action_kind="compute_create", mutates=True, requires_observation=True)
+    # connects_over_ssh: the create playbook runs `--limit control_host` --
+    # the *hypervisor* in `parameters["host_slugs"]`, never the guest.
+    Reconciler(id="create_compute_instance", action_kind="compute_create", mutates=True, requires_observation=True, connects_over_ssh=True)
 )
 DESTROY_COMPUTE_INSTANCE = register_reconciler(
-    Reconciler(id="destroy_compute_instance", action_kind="compute_destroy", mutates=True, requires_observation=True)
+    # connects_over_ssh: same shape as create -- the destroy playbook only
+    # ever contacts the control node (`parameters["host_slugs"]`).
+    Reconciler(id="destroy_compute_instance", action_kind="compute_destroy", mutates=True, requires_observation=True, connects_over_ssh=True)
 )
 RECONCILE_IPAM = register_reconciler(
     Reconciler(id="reconcile_ipam", action_kind="job", mutates=True, requires_observation=False)
 )
 SERVICE_PROFILE = register_reconciler(
-    Reconciler(id="service_profile", action_kind="playbook", mutates=True, requires_observation=True)
+    Reconciler(id="service_profile", action_kind="playbook", mutates=True, requires_observation=True, connects_over_ssh=True)
 )
 DNSMASQ_CONFIG = register_reconciler(
     # fix_sshkey3 Step 5: requires_observation=True -- a dnsmasq deploy must
     # be followed by a fresh nodeutils collection/ingest so the next round's
     # drift compares against the just-deployed digest, not stale evidence.
-    Reconciler(id="dnsmasq_config", action_kind="dnsmasq_config", mutates=True, requires_observation=True)
+    Reconciler(id="dnsmasq_config", action_kind="dnsmasq_config", mutates=True, requires_observation=True, connects_over_ssh=True)
 )
 NEW_NODE_BASELINE = register_reconciler(
-    Reconciler(id="new_node_baseline", action_kind="playbook", mutates=True, requires_observation=False)
+    # Playbook over SSH when the executor ever triggers it procedurally; no
+    # handler is registered today (see dispatch._HANDLERS), so this flag is
+    # declarative only and pinned by the invariant test's registry sweep.
+    Reconciler(id="new_node_baseline", action_kind="playbook", mutates=True, requires_observation=False, connects_over_ssh=True)
 )
 
 
@@ -85,16 +92,25 @@ class Fallback:
     evidence: dict = field(default_factory=dict)
 
 
-def plan_observe_node(targets: list[Target], claimed_codes: list[str]) -> ReconcileAction:
+def plan_observe_node(
+    targets: list[Target],
+    claimed_codes: list[str],
+    *,
+    action_id: str = "observe_node",
+    reason: str = "Fresh nodeutils collection and ingest may resolve or refine this evidence gap.",
+) -> ReconcileAction:
+    # host_slugs is mandatory for every SSH-connecting reconciler (no_guest_vm
+    # Step 3): the observation contacts exactly its node targets.
     return ReconcileAction(
-        id="observe_node",
+        id=action_id,
         reconciler_id=OBSERVE_NODE.id,
         action_kind=OBSERVE_NODE.action_kind,
         targets=targets,
         claimed_diff_codes=sorted(set(claimed_codes)),
-        reason="Fresh nodeutils collection and ingest may resolve or refine this evidence gap.",
+        reason=reason,
         mutates=OBSERVE_NODE.mutates,
         requires_observation=OBSERVE_NODE.requires_observation,
+        parameters={"host_slugs": sorted({target.slug for target in targets if target.slug})},
     )
 
 
@@ -134,8 +150,12 @@ def plan_link_compute_realization(target: Target, snapshot: SourceSnapshot, *, g
     """Pin the two ledger writes from the same typed decision as compute drift."""
     realization = derive_compute_realizations(snapshot, generated_at=generated_at).get(target.id or "")
     disposition = derive_compute_dispositions(snapshot, generated_at=generated_at).get(target.id or "")
-    if disposition is None or disposition.outcome in {"retained", "destroy_required", "removal_complete"}:
-        return Fallback(Classification.MANUAL_REVIEW, "retired compute disposition forbids a realization link")
+    # no_guest_vm G2: a retired disposition no longer forbids the link. A VM
+    # matched by vmid/name for a retired instance is exactly the row destroy
+    # must operate on and retirement prune must collect; identity/ambiguity
+    # validation below still applies, and linked_to_other is never replaced.
+    if disposition is None:
+        return Fallback(Classification.MANUAL_REVIEW, "compute disposition is missing for this instance")
     if realization is None or realization.cluster is None or realization.virtual_machine is None:
         return Fallback(Classification.MANUAL_REVIEW, "compute link candidate is missing or not unique")
     if realization.platform_failures or realization.instance_failures:

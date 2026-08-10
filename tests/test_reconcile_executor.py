@@ -453,6 +453,39 @@ def test_with_forced_observation_refuses_to_merge_into_a_multi_target_action():
         executor_module._with_forced_observation(plan, snapshot, PlanScope(kind="host", host_slug="aghub"))
 
 
+def test_with_forced_observation_skips_control_node_evidence_action():
+    """no_guest_vm Step 1: a compute-evidence observe action deliberately
+    targets the platform's control node, not the scoped guest. Forced refresh
+    for the guest must skip it (no scope error, no merge) and add its own
+    guest-targeted action."""
+    guest = _node("agdoomed")
+    control_target = Target(kind="node", slug="aghub", name="aghub", id="22222222-2222-2222-2222-222222222222")
+    control_action = ReconcileAction(
+        id="observe_node:compute-evidence", reconciler_id="observe_node", action_kind="observation",
+        targets=[control_target], claimed_diff_codes=[], reason="test",
+        mutates=True, requires_observation=False, parameters={"host_slugs": ["aghub"]},
+    )
+    plan = ReconcilePlan(
+        scope=PlanScope(kind="host", host_slug="agdoomed"),
+        drift_fingerprint="fp",
+        generated_at=datetime.now(timezone.utc),
+        actions=[control_action],
+    )
+    snapshot = _snapshot(nodes=[guest])
+
+    forced_plan = executor_module._with_forced_observation(
+        plan, snapshot, PlanScope(kind="host", host_slug="agdoomed")
+    )
+
+    by_id = {action.id: action for action in forced_plan.actions}
+    assert set(by_id) == {"observe_node", "observe_node:compute-evidence"}
+    assert by_id["observe_node:compute-evidence"] == control_action  # untouched
+    forced = by_id["observe_node"]
+    assert forced.parameters["forced_refresh"] is True
+    assert forced.parameters["host_slugs"] == ["agdoomed"]
+    assert [t.slug for t in forced.targets] == ["agdoomed"]
+
+
 def test_refresh_observation_scope_violation_surfaces_as_failed_envelope(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     _no_op_deployment_profiles(monkeypatch)

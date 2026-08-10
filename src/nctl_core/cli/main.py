@@ -53,7 +53,7 @@ from nctl_core.retirement_prune import render_prune_text, run_prune
 from nctl_core.desired_apply import apply_document
 from nctl_core.desired_export import build_desired_export, document_to_yaml, render_desired_export_text
 from nctl_core.desired_write import DesiredWriteError
-from nctl_core.ops_render import build_ops_list, build_ops_show, render_ops_list_text, render_ops_show_text
+from nctl_core.ops_render import build_ops_close, build_ops_list, build_ops_show, render_ops_close_text, render_ops_list_text, render_ops_show_text
 from nctl_core.output import emit
 from nctl_core.upload import build_upload, make_store, render_upload_text
 from nctl_core.production_render import (
@@ -457,6 +457,30 @@ def ops_show(
     envelope = build_ops_show(cfg, operation_id, after_seq=after_seq)
     emit(envelope, json_output, render_ops_show_text)
     if any(error.code in ("malformed_operation_id", "unknown_operation") for error in envelope.errors):
+        raise typer.Exit(EXIT_USAGE)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+OpsCloseJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.ops.close.v1 envelope as JSON.")]
+OpsCloseReasonOption = Annotated[str, typer.Option("--reason", help="Why this operation is being closed as abandoned.")]
+OpsCloseForceOption = Annotated[
+    bool, typer.Option("--force", help="Close even though the operation was active recently (it may still be running).")
+]
+
+
+@ops_app.command("close")
+def ops_close(
+    operation_id: OperationIdArgument,
+    reason: OpsCloseReasonOption,
+    config: ConfigOption = None,
+    force: OpsCloseForceOption = False,
+    json_output: OpsCloseJsonOption = False,
+) -> None:
+    """Close a stale running operation whose process died without a finished event."""
+    cfg = _load_config(config)
+    envelope = build_ops_close(cfg, operation_id, reason=reason, force=force)
+    emit(envelope, json_output, render_ops_close_text)
+    if any(error.code == "malformed_operation_id" for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 

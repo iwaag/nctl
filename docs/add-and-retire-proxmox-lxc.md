@@ -152,3 +152,35 @@ targets, schedules, or general provider disposal.
 
 See also the `retire-proxmox-lxc` Claude Code skill (`.claude/skills/retire-proxmox-lxc/`) for an
 enumerated manual-review branch table covering this retirement flow.
+
+## Recovering a created-then-orphaned guest (incident F3)
+
+If the reconcile that created a guest dies during its post-actuation observation (Ctrl-C, a shell
+timeout, a dropped session), the guest exists on the hypervisor but not in Actual State, and drift
+reports `compute_instance_missing` for a guest the hypervisor can see perfectly. The guest itself
+never has to answer SSH: the evidence that links (and later destroys) it is the hypervisor-side
+nodeutils collection on the platform's **control node**.
+
+The planner routes this automatically (no_guest_vm Step 1): when a scoped compute instance has no
+realized VirtualMachine and no create action can be planned, `nctl reconcile GUEST` plans an
+`observe_node` on the control node instead of the guest — a read-only collection, gated on the
+control node's enrollment only. So the recovery is the ordinary loop, from the guest's own scope:
+
+```bash
+nctl reconcile GUEST --yes                 # hypervisor-side observation + ingest; guest appears in Actual State
+nctl reconcile GUEST --allow-destroy       # dry: expect one destroy_compute_instance
+nctl reconcile GUEST --allow-destroy --yes
+nctl prune GUEST --yes
+```
+
+`nctl reconcile CONTROL_NODE --refresh-observation --yes` forces the same collection explicitly and
+also works. A node whose effective lifecycle is `retired` never gets an SSH-gated `observe_node`
+action of its own (no_guest_vm Step 2); its remaining evidence gaps stay visible in drift.
+
+Once the guest is visible in Actual State, the destroy plan links first (no_guest_vm G2): a VM
+matched only by vmid/name gets a `link_compute_realization` action ordered ahead of the destroy, so
+prune can collect the VirtualMachine record and no unlinked tombstone survives to re-bind to a
+future guest of the same name/vmid. If an unlinked *tombstone* already exists (a `proxmox_presence:
+absent` VirtualMachine row with no Desired rows, left by a pre-fix prune), clean it with the same
+supported loop: re-declare the guest `retired`/`absent` with its original vmid, `nctl reconcile
+GUEST --yes` (plans exactly the link), then `nctl prune GUEST --yes`.

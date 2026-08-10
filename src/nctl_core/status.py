@@ -47,11 +47,25 @@ class SubmoduleCheckError(Exception):
     pass
 
 
+# G1 (no_guest_vm follow-up): a Job stuck PENDING longer than this while a
+# worker reports as running is the recorded stall signature -- the worker's
+# consumer connection is dead even though `celery inspect ping` still answers.
+PENDING_JOB_STALL_SECONDS = 120
+
+
+class WorkerStatus(BaseModel):
+    checked: bool = False
+    workers_running: int | None = None
+    pending_jobs: int | None = None
+    oldest_pending_age_seconds: float | None = None
+
+
 class StatusData(BaseModel):
     operation_id: str
     nautobot: NautobotInfo
     dumps: DumpsStatus
     submodules: list[SubmoduleStatus]
+    worker: WorkerStatus = WorkerStatus()
 
 
 def build_status(cfg: Config) -> Envelope[StatusData]:
@@ -63,6 +77,11 @@ def build_status(cfg: Config) -> Envelope[StatusData]:
     if nautobot_error is not None:
         errors.append(nautobot_error)
     op.emit("step_completed", "nautobot checked", ok=nautobot_error is None)
+
+    op.emit("step_started", "checking worker")
+    worker_status, worker_errors = _check_worker(cfg, nautobot_info)
+    errors.extend(worker_errors)
+    op.emit("step_completed", "worker checked", ok=not worker_errors)
 
     op.emit("step_started", "scanning dumps")
     dumps_status = _check_dumps(cfg)
@@ -83,6 +102,7 @@ def build_status(cfg: Config) -> Envelope[StatusData]:
         nautobot=nautobot_info,
         dumps=dumps_status,
         submodules=submodules,
+        worker=worker_status,
     )
     return Envelope.build(STATUS_SCHEMA, data, errors)
 
@@ -101,6 +121,14 @@ def render_status_text(envelope: Envelope[StatusData]) -> str:
         )
     else:
         lines.append("    unreachable")
+
+    if data.worker.checked:
+        stalled = any(err.code in ("celery_workers_not_running", "worker_queue_stalled") for err in envelope.errors)
+        wmark = "✗" if stalled else "✓"
+        pending = data.worker.pending_jobs if data.worker.pending_jobs is not None else "?"
+        lines.append(f"{wmark} worker     celery workers: {data.worker.workers_running}, pending jobs: {pending}")
+        if data.worker.oldest_pending_age_seconds is not None:
+            lines.append(f"    oldest pending job: {data.worker.oldest_pending_age_seconds:.0f}s")
 
     dmark = "✓" if not data.dumps.errors else "✗"
     lines.append(f"{dmark} dumps      {data.dumps.dir} ({len(data.dumps.hosts)} host(s))")
@@ -149,6 +177,66 @@ def _check_nautobot(cfg: Config) -> tuple[NautobotInfo, EnvelopeError | None]:
             message=f"intent-catalog GraphQL types not found in the schema at {cfg.nautobot.url}",
         )
     return info, None
+
+
+def _check_worker(cfg: Config, nautobot_info: NautobotInfo) -> tuple[WorkerStatus, list[EnvelopeError]]:
+    """G1 detector: is the Celery worker present *and actually consuming*?
+
+    Two independent signals, both read-only over the Nautobot REST API:
+    worker registration (`/api/status/` `celery-workers-running`) catches a
+    dead worker; a PENDING JobResult older than `PENDING_JOB_STALL_SECONDS`
+    catches the silent-stall mode where the worker still answers pings but
+    its consumer connection is dead (recorded 2026-08-06 and 2026-08-10).
+    """
+
+    status = WorkerStatus()
+    if not (nautobot_info.reachable and nautobot_info.authenticated):
+        return status, []
+    errors: list[EnvelopeError] = []
+    try:
+        token = cfg.nautobot.resolve_token()
+        with NautobotClient(cfg.nautobot.url, token) as client:
+            response = client.rest_get("/api/status/")
+            response.raise_for_status()
+            workers = response.json().get("celery-workers-running")
+            status.workers_running = workers if isinstance(workers, int) else None
+            response = client.rest_get("/api/extras/job-results/", params={"status": "PENDING", "limit": 50})
+            response.raise_for_status()
+            payload = response.json()
+            status.pending_jobs = payload.get("count")
+            now = datetime.now(timezone.utc)
+            ages = []
+            for row in payload.get("results", []):
+                created = row.get("date_created")
+                if not created:
+                    continue
+                try:
+                    ages.append((now - datetime.fromisoformat(created)).total_seconds())
+                except ValueError:
+                    continue
+            status.oldest_pending_age_seconds = max(ages) if ages else None
+    except Exception as exc:  # noqa: BLE001 - a degraded probe must not sink the other checks
+        return status, [EnvelopeError(code="worker_check_failed", message=f"worker probe failed: {exc}")]
+    status.checked = True
+    if status.workers_running == 0:
+        errors.append(
+            EnvelopeError(
+                code="celery_workers_not_running",
+                message="Nautobot reports no running Celery worker; Job submissions will fail with HTTP 503",
+            )
+        )
+    elif status.oldest_pending_age_seconds is not None and status.oldest_pending_age_seconds > PENDING_JOB_STALL_SECONDS:
+        errors.append(
+            EnvelopeError(
+                code="worker_queue_stalled",
+                message=(
+                    f"{status.pending_jobs} Job(s) stuck PENDING (oldest {status.oldest_pending_age_seconds:.0f}s) "
+                    "while a worker is registered -- the worker's consumer connection is likely dead; "
+                    "restart the worker container (scratch env: `docker restart nautobot-nautobot-worker-1`)"
+                ),
+            )
+        )
+    return status, errors
 
 
 def _check_dumps(cfg: Config) -> DumpsStatus:

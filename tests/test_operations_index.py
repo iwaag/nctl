@@ -1,11 +1,15 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from nctl_core.artifacts import OperationArtifacts
 from nctl_core.events import OperationLog
 from nctl_core.operations_index import (
+    STALE_RUNNING_SECONDS,
+    OperationCloseError,
     OperationIndexError,
+    close_operation,
     list_operations,
     load_operation,
     read_events,
@@ -44,6 +48,66 @@ def test_load_operation_running_when_no_finished_record(tmp_path):
     assert record.state == "running"
     assert record.ok is None
     assert record.result is None
+
+
+def test_running_operation_past_threshold_is_stale(tmp_path):
+    log = OperationLog.start("reconcile", tmp_path)
+    log.emit("job_poll", "pending")
+    future = datetime.now(timezone.utc) + timedelta(seconds=STALE_RUNNING_SECONDS + 60)
+    record = load_operation(tmp_path, log.operation_id, now=future)
+    assert record.state == "running"
+    assert record.stale is True
+    fresh = load_operation(tmp_path, log.operation_id)
+    assert fresh.stale is False
+
+
+def test_finished_operation_is_never_stale(tmp_path):
+    log = _finished_op(tmp_path)
+    future = datetime.now(timezone.utc) + timedelta(seconds=STALE_RUNNING_SECONDS + 60)
+    record = load_operation(tmp_path, log.operation_id, now=future)
+    assert record.state == "finished"
+    assert record.stale is False
+
+
+def test_close_operation_appends_abandoned_finished_event(tmp_path):
+    log = OperationLog.start("reconcile", tmp_path)
+    log.emit("job_poll", "pending")
+    future = datetime.now(timezone.utc) + timedelta(seconds=STALE_RUNNING_SECONDS + 60)
+
+    record = close_operation(tmp_path, log.operation_id, reason="process killed mid-poll", now=future)
+
+    assert record.state == "finished"
+    assert record.ok is False
+    assert record.result == "abandoned: process killed mid-poll"
+    events, corrupt = read_events(tmp_path, log.operation_id)
+    assert corrupt == 0
+    assert events[-1].event == "finished"
+    assert events[-1].seq == events[-2].seq + 1
+    assert events[-1].data == {"ok": False, "abandoned": True, "closed_by": "nctl ops close"}
+
+
+def test_close_operation_refuses_recent_running_without_force(tmp_path):
+    log = OperationLog.start("reconcile", tmp_path)
+    log.emit("job_poll", "pending")
+
+    with pytest.raises(OperationCloseError) as exc:
+        close_operation(tmp_path, log.operation_id, reason="oops")
+    assert exc.value.code == "not_stale"
+
+    record = close_operation(tmp_path, log.operation_id, reason="known dead", force=True)
+    assert record.state == "finished"
+    assert record.ok is False
+
+
+def test_close_operation_refuses_finished_and_unknown(tmp_path):
+    log = _finished_op(tmp_path)
+    with pytest.raises(OperationCloseError) as exc:
+        close_operation(tmp_path, log.operation_id, reason="x", force=True)
+    assert exc.value.code == "already_finished"
+
+    with pytest.raises(OperationCloseError) as unknown:
+        close_operation(tmp_path, "0" * 26, reason="x", force=True)
+    assert unknown.value.code == "unknown_operation"
 
 
 def test_load_operation_lists_artifacts_from_operation_directory(tmp_path):

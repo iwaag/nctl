@@ -23,12 +23,23 @@ class Reconciler:
     reconciler always mutates the same way; only whether it can act *at all*
     for a given target varies, which is decided per-instance in
     `reconcilers.py`, not here).
+
+    `connects_over_ssh` is the one machine-readable home for "does this
+    reconciler's handler open an SSH connection to a node" (no_guest_vm
+    Step 3). `ssh_preflight.SSH_REQUIRING_RECONCILER_IDS` is derived from it
+    instead of hand-written, and every SSH-connecting reconciler must put the
+    exact contacted hosts in `parameters["host_slugs"]` --
+    `action_host_slugs()` refuses the silent `targets` fallback for them.
+    `tests/test_reconcile_ssh_invariant.py` executes each handler against
+    fakes and asserts this flag and the declared hosts against the hosts the
+    handler actually contacts.
     """
 
     id: str
     action_kind: str
     mutates: bool
     requires_observation: bool
+    connects_over_ssh: bool = False
 
 
 class DuplicateReconcilerError(Exception):

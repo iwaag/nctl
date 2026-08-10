@@ -15,6 +15,15 @@ reader (schema `nctl.ops.show.v1`; a truncated or partially written final line i
 helper: the JSONL event log and operation-artifact directories are durable disk evidence read by
 this module and the CLI alone, not published to or consumed by any external subscriber.
 
+**Stale running operations and `ops close`** (no_guest_vm F4): a `running` operation whose last
+event is older than one hour is reported as `running (stale)` (`stale: true` in the envelope) —
+the owning process almost certainly died without its `finished` event (`kill -9`, crash). Nothing
+is ever auto-closed: `nctl ops close OPERATION_ID --reason TEXT [--force]` is the one sanctioned
+write, appending a `finished` event (`ok: false`, message `abandoned: <reason>`, data
+`abandoned: true`) so history stops reporting the run forever — the log stays append-only and the
+closure records why (schema `nctl.ops.close.v1`). A recently-active operation is refused with
+`not_stale` unless `--force` is given, because it may genuinely still be running.
+
 ## `upload`
 
 `nctl upload PATH [PATH...] [--zip] [--ttl DURATION] [--json]` puts the given file(s) in the

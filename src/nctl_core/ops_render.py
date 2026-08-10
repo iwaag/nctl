@@ -13,8 +13,10 @@ from pydantic import BaseModel
 from nctl_core.config import Config
 from nctl_core.events import EventRecord
 from nctl_core.operations_index import (
+    OperationCloseError,
     OperationIndexError,
     OperationRecord,
+    close_operation,
     list_operations,
     load_operation,
     read_events,
@@ -23,6 +25,7 @@ from nctl_core.output import Envelope, EnvelopeError
 
 OPS_LIST_SCHEMA = "nctl.ops.list.v1"
 OPS_SHOW_SCHEMA = "nctl.ops.show.v1"
+OPS_CLOSE_SCHEMA = "nctl.ops.close.v1"
 
 
 class OpsListData(BaseModel):
@@ -34,6 +37,12 @@ class OpsShowData(BaseModel):
     log_dir: str
     operation: OperationRecord | None = None
     events: list[EventRecord] = []
+
+
+class OpsCloseData(BaseModel):
+    log_dir: str
+    operation: OperationRecord | None = None
+    reason: str
 
 
 def build_ops_list(cfg: Config, limit: int | None = None) -> Envelope[OpsListData]:
@@ -65,6 +74,31 @@ def build_ops_show(cfg: Config, operation_id: str, after_seq: int = -1) -> Envel
     return Envelope.build(OPS_SHOW_SCHEMA, data, errors)
 
 
+def build_ops_close(cfg: Config, operation_id: str, *, reason: str, force: bool = False) -> Envelope[OpsCloseData]:
+    log_dir = cfg.events.resolved_log_dir()
+    data = OpsCloseData(log_dir=str(log_dir), reason=reason)
+    try:
+        data.operation = close_operation(log_dir, operation_id, reason=reason, force=force)
+    except OperationIndexError as exc:
+        return Envelope.build(OPS_CLOSE_SCHEMA, data, [EnvelopeError(code="malformed_operation_id", message=str(exc))])
+    except OperationCloseError as exc:
+        return Envelope.build(OPS_CLOSE_SCHEMA, data, [EnvelopeError(code=exc.code, message=str(exc))])
+    except OSError as exc:
+        return Envelope.build(OPS_CLOSE_SCHEMA, data, [EnvelopeError(code="event_write_failed", message=str(exc))])
+    return Envelope.build(OPS_CLOSE_SCHEMA, data)
+
+
+def render_ops_close_text(envelope: Envelope[OpsCloseData]) -> str:
+    data = envelope.data
+    lines: list[str] = []
+    if data.operation is not None:
+        lines.append(f"closed {data.operation.operation_id} ({data.operation.op or '?'}): abandoned: {data.reason}")
+        lines.append(f"state: {data.operation.state}, ok: {data.operation.ok}")
+    for error in envelope.errors:
+        lines.append(f"error[{error.code}]: {error.message}")
+    return "\n".join(lines)
+
+
 def render_ops_list_text(envelope: Envelope[OpsListData]) -> str:
     data = envelope.data
     lines = [f"log_dir: {data.log_dir}", f"operations: {len(data.operations)}"]
@@ -72,9 +106,12 @@ def render_ops_list_text(envelope: Envelope[OpsListData]) -> str:
         started = record.started_at.isoformat() if record.started_at else "-"
         ok = "-" if record.ok is None else ("ok" if record.ok else "FAILED")
         result = f" {record.result}" if record.result else ""
+        state = f"{record.state} (stale)" if record.stale else record.state
         lines.append(
-            f"  {record.operation_id}  {record.op or '?':<12} {record.state:<9} {ok:<7} {started}{result}"
+            f"  {record.operation_id}  {record.op or '?':<12} {state:<9} {ok:<7} {started}{result}"
         )
+    if any(record.stale for record in data.operations):
+        lines.append("stale running operations likely lost their process; close with `nctl ops close ID --reason TEXT`")
     for error in envelope.errors:
         lines.append(f"error[{error.code}]: {error.message}")
     return "\n".join(lines)
@@ -87,7 +124,7 @@ def render_ops_show_text(envelope: Envelope[OpsShowData]) -> str:
         lines += [
             f"operation_id: {record.operation_id}",
             f"op: {record.op or '?'}",
-            f"state: {record.state}" + (f" ({record.result})" if record.result else ""),
+            f"state: {record.state}{' (stale)' if record.stale else ''}" + (f" ({record.result})" if record.result else ""),
             f"ok: {'-' if record.ok is None else record.ok}",
             f"started_at: {record.started_at.isoformat() if record.started_at else '-'}",
             f"updated_at: {record.updated_at.isoformat() if record.updated_at else '-'}",

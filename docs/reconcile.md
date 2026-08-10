@@ -78,14 +78,46 @@ runs; it never falls back to `HEAD`.
 
 **SSH trust preflight** (`devdocs/small/fix_sshkey/plan.md` Step 5): every round, before observation,
 Nautobot Jobs, inventory writes, or playbooks run, nctl checks that every node touched by an
-SSH-requiring action (`observe_node`, `service_profile`, `dnsmasq_config`) has at least one entry
-under its stable alias in `[ssh].known_hosts_file`. A missing entry fails the whole round with
+SSH-requiring action has at least one entry under its stable alias in `[ssh].known_hosts_file`.
+Which reconcilers require SSH, and which hosts one action touches, both have a single
+machine-readable home (no_guest_vm Step 3): the reconciler registry's `connects_over_ssh` flag
+derives the requiring set (`observe_node`, `create_compute_instance`, `destroy_compute_instance`,
+`service_profile`, `dnsmasq_config`), and every such action pins its exact contacted hosts in
+`parameters["host_slugs"]` — compute create/destroy gate on their **control node**, never the guest.
+`tests/test_reconcile_ssh_invariant.py` executes each handler against fakes and asserts the declared
+hosts equal the hosts actually contacted. A missing entry fails the whole round with
 `ssh_host_key_unenrolled` and the verified-source `nctl ssh enroll <slug>
 --from-known-hosts`/`--fingerprint` remediation, before any write --
 this is what prevented the original incident (`agdnsmasq`'s observation/IPAM succeeding, then
 failing on the production dnsmasq SSH connection). Ledger-only actions (`link_actual_node`,
-`reconcile_ipam`) never require enrollment, so an unrelated unenrolled host never blocks them. See
-[ssh-trust.md](ssh-trust.md) for the full SSH trust store contract.
+`link_compute_realization`, `reconcile_ipam`) never require enrollment, so an unrelated unenrolled
+host never blocks them. See [ssh-trust.md](ssh-trust.md) for the full SSH trust store contract.
+
+**Compute evidence routing and retired nodes** (no_guest_vm Steps 1-2): a scoped compute instance
+with no realized VirtualMachine and no plannable create action gets its evidence refresh planned as
+an `observe_node` on its platform's **control node** (`observe_node:compute-evidence`) — the
+hypervisor-side collection/ingest is the linking path, so a created-then-orphaned guest is
+recoverable from its own scope without the guest ever answering SSH (see
+[add-and-retire-proxmox-lxc.md](add-and-retire-proxmox-lxc.md) §Recovering a created-then-orphaned
+guest). This deliberately actuates a node outside the requested host scope; it is a read-only
+collection. A node whose effective lifecycle is `retired` is never planned as an `observe_node`
+target at all — its evidence gaps stay visible in drift instead of producing an SSH-gated action
+that can only fail. The same suppression applies to an *active* compute guest that has no realized
+VirtualMachine **and** no realized Device (no_guest_vm G3): it has never run sshd, so a
+guest-targeted `observe_node` could only fail `ssh_host_key_unenrolled`; its refresh routes to the
+control node instead. A guest that does have a realized Device keeps its own observe action — it
+exists and is enrolled; only its facts are stale.
+
+**Retired guests link before they destroy** (no_guest_vm G2): a retired instance whose VM matched
+only by vmid/name still surfaces `compute_instance_not_linked`, so the plan records the realization
+link in the same round as — and ordered ahead of, via an action dependency — the
+`destroy_compute_instance`. The destroy therefore always operates on a linked row, and
+`nctl prune` (whose server-side Actual cleanup accepts only Desired-linked roots, never a
+vmid/name search) can collect the VirtualMachine record. This also closes the tombstone trap: an
+unlinked VM row destroyed and left behind used to re-bind by vmid/name to any later re-declared
+node of the same identity. An already-absent unlinked row (an existing tombstone) is cleaned the
+same way — re-declare the guest retired/absent, `nctl reconcile GUEST --yes` plans just the link,
+then `nctl prune GUEST --yes` collects it.
 
 **IPAM eligibility is policy-aware, not `ip_policy=dhcp_reserved`-only** (ipam_policy plan): an
 endpoint with a `dhcp_reserved` IP is always automatic (`missing_actual_ip_address`/

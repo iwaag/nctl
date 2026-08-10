@@ -30,6 +30,8 @@ from nctl_core.output import EnvelopeError
 from nctl_core.hosts_intent import select_mdns_endpoint
 from nctl_core.production.model import ResolvedSshTarget
 from nctl_core.reconcile.model import ReconcileAction, ReconcilePlan
+from nctl_core.reconcile import reconcilers as _reconcilers  # noqa: F401  (forces registry population)
+from nctl_core.reconcile.registry import UnknownReconcilerError, get_reconciler, registered_reconciler_ids
 from nctl_core.sources.desired import DesiredSnapshot
 from nctl_core.ssh_enroll import (
     SshProbeRunner,
@@ -43,10 +45,26 @@ from nctl_core.ssh_trust import (
     managed_lookup_name,
 )
 
-# Only reconcilers that actually connect to the node over SSH require enrollment;
+# Only reconcilers that actually connect to a node over SSH require enrollment;
 # `link_actual_node` (Nautobot metadata patch) and `reconcile_ipam` (Nautobot Job)
 # never do, so ledger-only plans are never blocked by an unrelated unenrolled host.
-SSH_REQUIRING_RECONCILER_IDS = frozenset({"observe_node", "service_profile", "dnsmasq_config", "destroy_compute_instance"})
+# no_guest_vm Step 3: derived from the registry's `connects_over_ssh` flag --
+# the one machine-readable home for this fact -- instead of hand-written here.
+SSH_REQUIRING_RECONCILER_IDS = frozenset(
+    reconciler_id
+    for reconciler_id in registered_reconciler_ids()
+    if get_reconciler(reconciler_id).connects_over_ssh
+)
+
+
+class MissingSshHostSlugsError(Exception):
+    """An SSH-connecting reconciler's action carries no `parameters["host_slugs"]`.
+
+    no_guest_vm Step 3: the silent `targets` fallback is exactly what made the
+    destroy gate *look* wrong during incident F3 (the guest's slug was gated
+    although the handler only ever contacts the control node). For reconcilers
+    that connect over SSH, the planned host set must be explicit.
+    """
 
 STATUS_READY = "ready"
 STATUS_UNENROLLED = "unenrolled"
@@ -89,18 +107,29 @@ class SshPreflightEntry(BaseModel):
 def action_host_slugs(action: ReconcileAction) -> set[str]:
     """Return the node slugs one reconcile action actually touches.
 
-    `service_profile`/`dnsmasq_config` actions target the *service* (their
-    `targets` are kind="service"); the node slugs they actually touch live in
-    `parameters["host_slugs"]` (`reconcilers.plan_service_profile`).
-    `observe_node`/ledger actions target the nodes themselves and set no
-    `host_slugs` parameter, so this falls through to the target loop. Shared
-    by `ssh_required_host_slugs` (SSH gating) and the executor's
-    post-actuation observation host list (fix_sshkey3 Step 2 item 8) so the
-    two can never disagree on which node a service action's evidence belongs to.
+    Every SSH-connecting reconciler (registry `connects_over_ssh`) must set
+    `parameters["host_slugs"]` explicitly -- `service_profile`/`dnsmasq_config`
+    put their placement hosts there, compute create/destroy their control
+    node, `observe_node` its own node targets. For those reconcilers a missing
+    `host_slugs` raises `MissingSshHostSlugsError` instead of silently falling
+    back to `targets` (no_guest_vm Step 3). Ledger-only actions keep the
+    node-target fallback. Shared by `ssh_required_host_slugs` (SSH gating) and
+    the executor's post-actuation observation host list (fix_sshkey3 Step 2
+    item 8) so the two can never disagree on which node an action's evidence
+    belongs to.
     """
     host_slugs = action.parameters.get("host_slugs")
     if host_slugs:
         return set(host_slugs)
+    try:
+        connects_over_ssh = get_reconciler(action.reconciler_id).connects_over_ssh
+    except UnknownReconcilerError:
+        connects_over_ssh = False
+    if connects_over_ssh:
+        raise MissingSshHostSlugsError(
+            f"action {action.id!r} ({action.reconciler_id}) connects over SSH but declares no "
+            'parameters["host_slugs"]; the planner must pin the exact contacted hosts'
+        )
     return {target.slug for target in action.targets if target.kind == "node" and target.slug}
 
 

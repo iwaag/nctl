@@ -118,6 +118,15 @@ def _evaluate_instance(realization, disposition, nodes, snapshot, creation=None)
                         f"{target.slug}: retired compute instance is confirmed absent",
                         {"desired_presence": "absent", "effective_lifecycle": "retired"},
                         {"virtual_machine_id": vm.id, "presence": facts.presence if facts else None})
+        # no_guest_vm G2: a retired instance whose VM matched only by vmid/name
+        # must still get its ledger link recorded -- destroy then operates on a
+        # linked row and retirement prune can collect it, instead of leaving an
+        # unlinked VirtualMachine tombstone that later re-binds to a re-declared
+        # node of the same name/vmid.
+        if realization.instance_link_state == "absent":
+            yield _diff(target, "compute_instance_not_linked", Severity.WARNING,
+                        f"{target.slug}: VM matches but no ledger link is recorded", {},
+                        {"virtual_machine_id": vm.id, "match_basis": realization.match_basis})
         yield _summary(target, platform, cluster, vm, snapshot,
                        match_basis=("linked" if realization.instance_link_state == "linked_to_expected" else realization.match_basis),
                        disposition=disposition.outcome)

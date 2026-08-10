@@ -104,3 +104,22 @@ def test_build_ops_show_envelope_ok_flag(tmp_path):
     assert build_ops_show(cfg, operation_id).ok is True
     assert build_ops_show(cfg, "01JZZZZZZZZZZZZZZZZZZZZZZZ").ok is False
     assert build_ops_list(cfg).ok is True
+
+
+def test_ops_close_abandons_stale_running_operation(tmp_path, monkeypatch):
+    log = OperationLog.start("reconcile", tmp_path)
+    log.emit("job_poll", "pending")
+    monkeypatch.setattr(main, "_load_config", lambda path: _cfg_for(tmp_path))
+
+    refused = runner.invoke(main.app, ["ops", "close", log.operation_id, "--reason", "killed mid-poll"])
+    assert refused.exit_code == 1
+    assert "not_stale" in refused.stdout
+
+    forced = runner.invoke(main.app, ["ops", "close", log.operation_id, "--reason", "killed mid-poll", "--force"])
+    assert forced.exit_code == 0
+    assert "abandoned: killed mid-poll" in forced.stdout
+
+    listed = runner.invoke(main.app, ["ops", "list", "--json"])
+    record = json.loads(listed.stdout)["data"]["operations"][0]
+    assert record["state"] == "finished"
+    assert record["ok"] is False

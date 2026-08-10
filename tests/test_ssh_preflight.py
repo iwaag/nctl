@@ -4,15 +4,20 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from nctl_core.config import Config
 from nctl_core.drift.model import Target
 from nctl_core.production.model import ResolvedSshTarget
 from nctl_core.reconcile.model import PlanScope, ReconcileAction, ReconcilePlan
 from nctl_core.reconcile.ssh_preflight import (
+    SSH_REQUIRING_RECONCILER_IDS,
     STATUS_MISMATCH,
     STATUS_READY,
     STATUS_UNENROLLED,
     STATUS_UNREACHABLE,
+    MissingSshHostSlugsError,
+    action_host_slugs,
     check_ssh_enrollment,
     ssh_required_host_slugs,
     verify_offered_keys,
@@ -90,7 +95,11 @@ def _plan(*actions: ReconcileAction) -> ReconcilePlan:
     )
 
 
-def _action(reconciler_id: str, action_kind: str, slug: str) -> ReconcileAction:
+def _action(reconciler_id: str, action_kind: str, slug: str, *, host_slugs: list[str] | None = None) -> ReconcileAction:
+    """SSH-connecting reconcilers must pin parameters["host_slugs"] (no_guest_vm
+    Step 3); default it to the target slug like the real planner does."""
+    if host_slugs is None and reconciler_id in SSH_REQUIRING_RECONCILER_IDS:
+        host_slugs = [slug]
     return ReconcileAction(
         id=f"action-{slug}",
         reconciler_id=reconciler_id,
@@ -100,6 +109,7 @@ def _action(reconciler_id: str, action_kind: str, slug: str) -> ReconcileAction:
         reason="test",
         mutates=True,
         requires_observation=False,
+        parameters={"host_slugs": host_slugs} if host_slugs else {},
     )
 
 
@@ -142,6 +152,31 @@ def test_ssh_required_host_slugs_can_be_narrowed_to_observe_node_only():
         _action("service_profile", "playbook", "agsvc"),
     )
     assert ssh_required_host_slugs(plan, reconciler_ids=frozenset({"observe_node"})) == {"agdnsmasq"}
+
+
+def test_ssh_requiring_reconciler_ids_are_derived_from_the_registry():
+    """no_guest_vm Step 3: the SSH gate membership has one machine-readable
+    home -- the registry's `connects_over_ssh` flag -- not a hand-written set."""
+    from nctl_core.reconcile.registry import get_reconciler, registered_reconciler_ids
+
+    derived = {rid for rid in registered_reconciler_ids() if get_reconciler(rid).connects_over_ssh}
+    assert SSH_REQUIRING_RECONCILER_IDS == frozenset(derived)
+    # The incident-relevant memberships, pinned explicitly: compute create and
+    # destroy contact only their control node over SSH; ledger reconcilers
+    # never connect at all.
+    assert {"observe_node", "create_compute_instance", "destroy_compute_instance"} <= SSH_REQUIRING_RECONCILER_IDS
+    assert {"link_actual_node", "link_compute_realization", "reconcile_ipam"}.isdisjoint(SSH_REQUIRING_RECONCILER_IDS)
+
+
+def test_action_host_slugs_refuses_targets_fallback_for_ssh_reconcilers():
+    action = _action("observe_node", "observation", "agdnsmasq", host_slugs=[])
+    with pytest.raises(MissingSshHostSlugsError):
+        action_host_slugs(action)
+
+
+def test_action_host_slugs_keeps_targets_fallback_for_ledger_actions():
+    action = _action("link_actual_node", "ledger_patch", "agledgeronly")
+    assert action_host_slugs(action) == {"agledgeronly"}
 
 
 def test_ssh_required_host_slugs_excludes_ledger_only_actions():

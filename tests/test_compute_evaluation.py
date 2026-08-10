@@ -115,6 +115,29 @@ def test_retirement_presence_semantics_suppress_stale_comparisons():
     assert not {"compute_instance_missing", "compute_power_state_mismatch", "compute_resource_mismatch", "compute_identity_conflict"} & set(complete)
 
 
+def test_retired_unlinked_guest_still_reports_not_linked_for_destroy():
+    """no_guest_vm G2: a retired instance whose VM matched only by vmid must
+    still surface `compute_instance_not_linked` so the link is recorded before
+    destroy -- otherwise prune leaves an unlinked VirtualMachine tombstone."""
+    snapshot = _snapshot(vm={"proxmox": {"guest_type": "lxc", "vmid": 108, "node": "host", "status": "running", "presence": "present", "lxc_rootfs": {"storage": "local-lvm", "size_gb": 8}}})
+    snapshot.desired.nodes[0] = snapshot.desired.nodes[0].model_copy(update={"lifecycle": "retired"})
+    snapshot.desired.compute_instances[0] = snapshot.desired.compute_instances[0].model_copy(update={"desired_presence": "absent"})
+    destroy = _codes(snapshot)
+    assert "compute_instance_destroy_required" in destroy
+    assert "compute_instance_not_linked" in destroy
+
+
+def test_removal_complete_unlinked_tombstone_reports_not_linked():
+    """no_guest_vm G2: an already-absent, unlinked VM row (the tombstone shape)
+    gets a link diff so retirement prune can collect it as a linked root."""
+    snapshot = _snapshot(vm={"proxmox": {"guest_type": "lxc", "vmid": 108, "node": "host", "status": "stopped", "presence": "absent", "lxc_rootfs": {"storage": "local-lvm", "size_gb": 8}}})
+    snapshot.desired.nodes[0] = snapshot.desired.nodes[0].model_copy(update={"lifecycle": "retired"})
+    snapshot.desired.compute_instances[0] = snapshot.desired.compute_instances[0].model_copy(update={"desired_presence": "absent"})
+    complete = _codes(snapshot)
+    assert "compute_instance_removal_complete" in complete
+    assert "compute_instance_not_linked" in complete
+
+
 def test_absent_without_retirement_is_visible_but_still_compared_as_present():
     snapshot = _snapshot(link=True, vm={"proxmox": {"guest_type": "lxc", "vmid": 108, "node": "host", "status": "stopped", "presence": "absent", "lxc_rootfs": {"storage": "local-lvm", "size_gb": 8}}})
     snapshot.desired.compute_instances[0] = snapshot.desired.compute_instances[0].model_copy(update={"desired_presence": "absent"})

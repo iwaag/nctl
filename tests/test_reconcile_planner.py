@@ -12,8 +12,16 @@ from nctl_core.reconcile.planner import HostScopeError, build_plan, select_scope
 from nctl_core.reconcile import planner as planner_module
 from nctl_core.reconcile.model import Classification, PlanScope
 from nctl_core.reconcile.profiles import ProfileAction, ProfileReconciliation
-from nctl_core.sources.actual import ActualDevice, ActualSnapshot, ActualVirtualMachine
-from nctl_core.sources.desired import DesiredNode, DesiredService, DesiredServicePlacement, DesiredSnapshot
+from nctl_core.reconcile.ssh_preflight import ssh_required_host_slugs
+from nctl_core.sources.actual import ActualCluster, ActualDevice, ActualSnapshot, ActualVirtualMachine
+from nctl_core.sources.desired import (
+    DesiredComputeInstance,
+    DesiredComputePlatform,
+    DesiredNode,
+    DesiredService,
+    DesiredServicePlacement,
+    DesiredSnapshot,
+)
 from nctl_core.sources.snapshot import SourceSnapshot
 
 
@@ -694,6 +702,268 @@ def test_build_plan_ignores_unclassified_non_error_diagnostic():
     assert plan.actions == []
     assert plan.manual_review == []
     assert plan.unsupported == []
+
+
+# --- no_guest_vm Steps 1-2: hypervisor-routed evidence refresh and retired
+# ---                        observe suppression ------------------------------
+
+GENERATED_AT = "2026-07-17T00:00:00+00:00"
+
+
+def _compute_snapshot(
+    *,
+    vm_present: bool,
+    platform_observed_at: str = GENERATED_AT,
+    guest_lifecycle: str = "retired",
+    desired_presence: str = "absent",
+    link: bool = False,
+) -> SourceSnapshot:
+    """One Proxmox platform: control node `aghub`, guest `agdoomed` (vmid 110)."""
+    control = _node("control", "aghub", realized_device_id="device")
+    guest = DesiredNode(
+        id="guest-node", slug="agdoomed", name="agdoomed", lifecycle=guest_lifecycle,
+        node_type="service_host", accepted_actual_types=["device"],
+    )
+    platform = DesiredComputePlatform(
+        id="platform", name="aghub-pve", slug="aghub-pve", provider_type="proxmox", lifecycle="active",
+        control_node_id="control", config_schema_version="v1",
+        config={"cluster_name": "cluster"}, realized_cluster_id="cluster",
+    )
+    instance = DesiredComputeInstance(
+        id="instance", desired_node_id="guest-node", platform_id="platform", instance_kind="container",
+        desired_presence=desired_presence, desired_power_state="running",
+        vcpus=1, memory_mb=512, root_disk_gb=8, config_schema_version="v1",
+        config={"vmid": 110, "template": "local:vztmpl/ubuntu.tar.zst", "storage": "local-lvm", "bridge": "vmbr0"},
+        realized_vm_id="vm" if link else None,
+    )
+    cluster = ActualCluster.model_validate({
+        "id": "cluster", "name": "cluster",
+        "proxmox": {"observer_device_id": "device", "observed_at": platform_observed_at,
+                    "observation_state": "complete", "observed_node_names": ["aghub"]},
+    })
+    vms = []
+    if vm_present:
+        vms.append(ActualVirtualMachine.model_validate({
+            "id": "vm", "name": "agdoomed", "cluster_id": "cluster", "vcpus": 1, "memory": 512, "disk": 8,
+            "proxmox": {"guest_type": "lxc", "vmid": 110, "node": "aghub", "status": "running",
+                        "presence": "present", "lxc_rootfs": {"storage": "local-lvm", "size_gb": 8}},
+        }))
+    return SourceSnapshot(
+        desired=DesiredSnapshot(
+            nodes=[control, guest], compute_platforms=[platform], compute_instances=[instance]
+        ),
+        actual=ActualSnapshot(clusters=[cluster], virtual_machines=vms),
+        fetched_at=datetime.now(timezone.utc),
+    )
+
+
+def _instance_diff(code: str, severity: Severity = Severity.ERROR) -> DiffRecord:
+    return DiffRecord(
+        target=Target(kind="compute_instance", slug="agdoomed", name="agdoomed", id="instance"),
+        code=code, severity=severity, message=f"agdoomed: {code}",
+    )
+
+
+def _guest_node_diff(code: str, severity: Severity = Severity.ERROR) -> DiffRecord:
+    return DiffRecord(
+        target=Target(kind="node", slug="agdoomed", name="agdoomed", id="guest-node"),
+        code=code, severity=severity, message=f"agdoomed: {code}",
+    )
+
+
+def test_orphaned_guest_routes_evidence_refresh_to_control_node():
+    """The F3 shape: guest exists on the hypervisor but not in Actual State,
+    desired is retired/absent. The plan must contain an observe_node on the
+    control node, none on the guest, and gate SSH on the control node only."""
+    snapshot = _compute_snapshot(vm_present=False)
+    diffs = [_instance_diff("compute_instance_missing"), _guest_node_diff("missing_actual_node")]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    [action] = plan.actions
+    assert action.id == "observe_node:compute-evidence"
+    assert action.reconciler_id == "observe_node"
+    assert [t.slug for t in action.targets] == ["aghub"]
+    assert action.parameters["host_slugs"] == ["aghub"]
+    assert "compute_instance_missing" in action.claimed_diff_codes
+    assert ssh_required_host_slugs(plan) == {"aghub"}
+    # The create fallback for the retired guest stays visible as manual review.
+    assert "compute_instance_missing" in {r.code for r in plan.manual_review}
+
+
+def test_stale_platform_observation_also_routes_refresh_to_control_node():
+    """Acceptance (a): with a stale hypervisor snapshot, a retired guest's plan
+    contains an observe_node on the control node and none on the guest."""
+    snapshot = _compute_snapshot(vm_present=False, platform_observed_at="2026-07-01T00:00:00+00:00")
+    diffs = [
+        _instance_diff("compute_platform_observation_stale"),
+        _guest_node_diff("missing_actual_node"),
+    ]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    observe_actions = [a for a in plan.actions if a.reconciler_id == "observe_node"]
+    assert len(observe_actions) == 1
+    assert [t.slug for t in observe_actions[0].targets] == ["aghub"]
+    assert all("agdoomed" not in {t.slug for t in a.targets} for a in plan.actions)
+
+
+def test_present_guest_plans_exactly_one_destroy_gated_on_control_node():
+    """Acceptance (b): with the guest present in the hypervisor's guest list,
+    the plan contains exactly one destroy_compute_instance and gates SSH on
+    the control node only."""
+    snapshot = _compute_snapshot(vm_present=True, link=True)
+    diffs = [_instance_diff("compute_instance_destroy_required", Severity.WARNING)]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    destroys = [a for a in plan.actions if a.reconciler_id == "destroy_compute_instance"]
+    assert len(destroys) == 1
+    assert destroys[0].parameters["host_slugs"] == ["aghub"]
+    assert [a.reconciler_id for a in plan.actions] == ["destroy_compute_instance"]
+    assert ssh_required_host_slugs(plan) == {"aghub"}
+
+
+def test_unlinked_present_guest_plans_link_before_destroy():
+    """no_guest_vm G2: a retired guest whose VM matched only by vmid gets its
+    ledger link planned in the same round as -- and ahead of -- the destroy,
+    so the destroy operates on a linked row and prune can collect it."""
+    snapshot = _compute_snapshot(vm_present=True, link=False)
+    diffs = [
+        _instance_diff("compute_instance_not_linked", Severity.WARNING),
+        _instance_diff("compute_instance_destroy_required", Severity.WARNING),
+    ]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    assert [a.reconciler_id for a in plan.actions] == ["link_compute_realization", "destroy_compute_instance"]
+    link, destroy = plan.actions
+    assert link.parameters["virtual_machine_id"] == "vm"
+    assert link.parameters["match_basis"] == "vmid"
+    assert destroy.parameters["host_slugs"] == ["aghub"]
+
+
+def test_removal_complete_unlinked_tombstone_plans_only_the_link():
+    """no_guest_vm G2 (tombstone cleanup shape): the VM is already absent on
+    the hypervisor; the plan records the link so prune can collect the row."""
+    snapshot = _compute_snapshot(vm_present=True, link=False)
+    snapshot.actual.virtual_machines[0] = snapshot.actual.virtual_machines[0].model_copy(
+        update={"proxmox": snapshot.actual.virtual_machines[0].proxmox.model_copy(update={"presence": "absent", "status": "stopped"})}
+    )
+    diffs = [_instance_diff("compute_instance_not_linked", Severity.WARNING)]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    assert [a.reconciler_id for a in plan.actions] == ["link_compute_realization"]
+    assert plan.actions[0].parameters["virtual_machine_id"] == "vm"
+
+
+def test_realized_instance_never_triggers_a_control_node_refresh():
+    snapshot = _compute_snapshot(vm_present=True, link=True)
+    diffs = [_instance_diff("compute_instance_destroy_required", Severity.WARNING)]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    assert all(a.id != "observe_node:compute-evidence" for a in plan.actions)
+
+
+def test_active_guest_with_failed_create_preflight_gets_control_node_refresh():
+    """The narrowing rule: only when no create action was planned. Creation
+    preflight fails here (no template/storage/bridge evidence), so the create
+    falls back to manual_review and the control-node refresh is planned."""
+    snapshot = _compute_snapshot(vm_present=False, guest_lifecycle="active", desired_presence="present")
+    diffs = [_instance_diff("compute_instance_missing")]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    assert [a.id for a in plan.actions] == ["observe_node:compute-evidence"]
+    assert "compute_instance_missing" in {r.code for r in plan.manual_review}
+
+
+def test_active_unrealized_guest_is_not_observe_gated_before_creation():
+    """no_guest_vm G3: an active guest with no VM in its realization and no
+    realized Device has never run sshd -- a guest-targeted observe_node can
+    only fail unenrolled. Its refresh routes to the control node instead."""
+    snapshot = _compute_snapshot(vm_present=False, guest_lifecycle="active", desired_presence="present",
+                                 platform_observed_at="2026-07-01T00:00:00+00:00")
+    diffs = [
+        _instance_diff("compute_platform_observation_stale"),
+        _guest_node_diff("missing_actual_node"),
+    ]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    observe_actions = [a for a in plan.actions if a.reconciler_id == "observe_node"]
+    assert len(observe_actions) == 1
+    assert observe_actions[0].id == "observe_node:compute-evidence"
+    assert [t.slug for t in observe_actions[0].targets] == ["aghub"]
+    assert all("agdoomed" not in {t.slug for t in a.targets} for a in plan.actions)
+
+
+def test_unrealized_guest_with_realized_device_keeps_its_own_observe_action():
+    """The G3 narrowing: a guest that has a realized Device exists and is
+    enrolled; its stale facts are refreshed by observing the guest itself."""
+    snapshot = _compute_snapshot(vm_present=False, guest_lifecycle="active", desired_presence="present",
+                                 platform_observed_at="2026-07-01T00:00:00+00:00")
+    guest = next(node for node in snapshot.desired.nodes if node.slug == "agdoomed")
+    snapshot.desired.nodes[snapshot.desired.nodes.index(guest)] = guest.model_copy(
+        update={"realized_device_id": "guest-device"}
+    )
+    diffs = [_guest_node_diff("stale_actual_data")]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    observe_actions = [a for a in plan.actions if a.reconciler_id == "observe_node" and a.id != "observe_node:compute-evidence"]
+    assert len(observe_actions) == 1
+    assert {t.slug for t in observe_actions[0].targets} == {"agdoomed"}
+
+
+def test_retired_node_never_gets_an_observe_action(monkeypatch):
+    """no_guest_vm Step 2: a retired node's evidence gaps stay visible in
+    drift but never produce an SSH-gated observe_node action."""
+    retired = DesiredNode(
+        id="n1", slug="aggone", name="aggone", lifecycle="retired", node_type="device",
+        accepted_actual_types=["device"],
+    )
+    active = _node("n2", "aglive")
+    snapshot = _snapshot(nodes=[retired, active])
+    diffs = [
+        _node_diff(retired, "missing_actual_node"),
+        _node_diff(active, "missing_actual_data"),
+    ]
+
+    plan = _build(snapshot, diffs)
+
+    [action] = plan.actions
+    assert action.reconciler_id == "observe_node"
+    assert {t.slug for t in action.targets} == {"aglive"}
+
+
+def test_retired_only_observation_diffs_produce_no_observe_action():
+    retired = DesiredNode(
+        id="n1", slug="aggone", name="aggone", lifecycle="retired", node_type="device",
+        accepted_actual_types=["device"],
+    )
+    snapshot = _snapshot(nodes=[retired])
+    diffs = [_node_diff(retired, "missing_actual_node")]
+
+    plan = _build(snapshot, diffs)
+
+    assert plan.actions == []
+
+
+def test_retired_platform_lifecycle_also_suppresses_guest_observation():
+    """Effective lifecycle combines node and platform (compute.contract):
+    an active guest under a retired platform is effectively retired."""
+    snapshot = _compute_snapshot(vm_present=False, guest_lifecycle="active")
+    snapshot.desired.compute_platforms[0] = snapshot.desired.compute_platforms[0].model_copy(
+        update={"lifecycle": "retired"}
+    )
+    diffs = [_guest_node_diff("missing_actual_node")]
+
+    plan = _build(snapshot, diffs, scope=PlanScope(kind="host", host_slug="agdoomed"))
+
+    assert all("agdoomed" not in {t.slug for t in a.targets} for a in plan.actions)
 
 
 # --- Phase 1 (better_usability p1): production-blocked host filtering ------

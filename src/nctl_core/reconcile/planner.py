@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from nctl_core.compute.contract import effective_lifecycle
+from nctl_core.drift.compute_realization import derive_compute_realizations
 from nctl_core.drift.model import DiffRecord, Severity, Target
 from nctl_core.production.composer import PRODUCTION_BLOCKING_NODE_CODES
 from nctl_core.sources.snapshot import SourceSnapshot
@@ -205,12 +207,15 @@ def build_plan(
             if target.slug:
                 node_targets_by_slug[target.slug] = outcome.id
 
+    compute_link_ids_by_slug: dict[str, str] = {}
     for key, (target, codes, group_diffs) in sorted(automatic_groups.get("link_compute_realization", {}).items()):
         outcome = plan_link_compute_realization(target, snapshot, generated_at=drift_generated_at)
         if isinstance(outcome, Fallback):
             _apply_fallback(outcome, group_diffs, manual_review, unsupported)
         else:
             actions.append(outcome)
+            if target.slug:
+                compute_link_ids_by_slug[target.slug] = outcome.id
 
     for key, (target, codes, group_diffs) in sorted(automatic_groups.get("create_compute_instance", {}).items()):
         outcome = plan_create_compute_instance(target, snapshot, generated_at=drift_generated_at)
@@ -224,6 +229,10 @@ def build_plan(
         if isinstance(outcome, Fallback):
             _apply_fallback(outcome, group_diffs, manual_review, unsupported)
         else:
+            # no_guest_vm G2: destroy after the same guest's realization link,
+            # so the destroyed row is a linked root retirement prune can collect.
+            if target.slug and target.slug in compute_link_ids_by_slug:
+                outcome = outcome.model_copy(update={"dependencies": [compute_link_ids_by_slug[target.slug]]})
             actions.append(outcome)
 
     # An absent compute guest has no SSH endpoint to observe yet.  Its create
@@ -236,13 +245,71 @@ def build_plan(
         if action.reconciler_id in {"create_compute_instance", "destroy_compute_instance", "link_compute_realization"}
         and action.targets and action.targets[0].slug
     }
+    # no_guest_vm Step 2: a node whose effective lifecycle is retired can
+    # never be required to answer SSH again -- its evidence gaps stay visible
+    # in drift, but they must not produce an observe action that can only fail
+    # on a guest that no longer (or never did) run sshd.
+    retired_node_slugs = _retired_effective_lifecycle_slugs(snapshot)
+    # no_guest_vm G3: an *active* compute guest that has no VirtualMachine in
+    # its realization and has never been realized as a Device (no manual
+    # initial access yet) cannot answer SSH -- a guest-targeted observe action
+    # can only fail `ssh_host_key_unenrolled` and kill the round. Its evidence
+    # refresh belongs on the platform's control node (the compute-evidence
+    # action below). A guest with a realized Device keeps its own observe
+    # action: it exists, is enrolled, and its facts may merely be stale.
+    node_by_id = {node.id: node for node in snapshot.desired.nodes}
+    realizations = derive_compute_realizations(snapshot, generated_at=drift_generated_at or "")
+    unenrollable_guest_slugs = {
+        node.slug
+        for realization in realizations.values()
+        if realization.virtual_machine is None
+        and (node := node_by_id.get(realization.instance.desired_node_id)) is not None
+        and node.slug
+        and node.realized_device_id is None
+    }
+    observed_slugs: set[str] = set()
     if observe_targets:
         ordered_targets = [
             observe_targets[key] for key in sorted(observe_targets)
             if observe_targets[key].slug not in compute_transition_target_slugs
+            and observe_targets[key].slug not in retired_node_slugs
+            and observe_targets[key].slug not in unenrollable_guest_slugs
         ]
         if ordered_targets:
             actions.append(plan_observe_node(ordered_targets, sorted(observe_codes)))
+            observed_slugs = {target.slug for target in ordered_targets if target.slug}
+
+    # no_guest_vm Step 1: a scoped compute instance whose realization has no
+    # VirtualMachine, and for which no compute transition action was planned
+    # (create fell back to manual_review, or the node is retired), gets its
+    # evidence refresh routed to the platform's *control node* instead of the
+    # guest. The hypervisor-side nodeutils collection/ingest is the linking
+    # path that resolves a created-then-orphaned guest; this action makes it
+    # re-requestable from the guest's own scope. It deliberately actuates a
+    # node outside `scope.host_slug` -- a read-only collection on the
+    # hypervisor -- and gates SSH on the control node, which is enrolled for
+    # any platform that ever created a guest.
+    control_targets, control_codes = _compute_evidence_refresh(
+        snapshot,
+        scoped_diffs,
+        generated_at=drift_generated_at,
+        excluded_instance_slugs=compute_transition_target_slugs,
+        already_observed_slugs=observed_slugs,
+        retired_node_slugs=retired_node_slugs,
+    )
+    if control_targets:
+        actions.append(
+            plan_observe_node(
+                control_targets,
+                control_codes,
+                action_id="observe_node:compute-evidence",
+                reason=(
+                    "A scoped compute instance has no realized VirtualMachine; a fresh "
+                    "hypervisor-side collection and ingest on the platform's control node "
+                    "is the evidence that can resolve or refine it."
+                ),
+            )
+        )
 
     for key, (target, codes, group_diffs) in sorted(automatic_groups.get("reconcile_ipam", {}).items()):
         action = plan_reconcile_ipam(target, group_diffs)
@@ -294,6 +361,83 @@ def build_plan(
         manual_review=manual_review,
         unsupported=unsupported,
     )
+
+
+def _retired_effective_lifecycle_slugs(snapshot: SourceSnapshot) -> set[str]:
+    """Node slugs whose effective lifecycle is retired (no_guest_vm Step 2).
+
+    Compute-backed nodes combine their own lifecycle with their platform's
+    (`compute.contract.effective_lifecycle`, the same rule the disposition
+    derivation uses); plain nodes are retired iff their own lifecycle is.
+    """
+
+    platforms = {platform.id: platform for platform in snapshot.desired.compute_platforms}
+    platform_by_node_id = {
+        instance.desired_node_id: platforms.get(instance.platform_id)
+        for instance in snapshot.desired.compute_instances
+    }
+    retired: set[str] = set()
+    for node in snapshot.desired.nodes:
+        platform = platform_by_node_id.get(node.id)
+        lifecycle = effective_lifecycle(node.lifecycle, platform.lifecycle) if platform else node.lifecycle
+        if lifecycle == "retired" and node.slug:
+            retired.add(node.slug)
+    return retired
+
+
+def _compute_evidence_refresh(
+    snapshot: SourceSnapshot,
+    scoped_diffs: list[DiffRecord],
+    *,
+    generated_at: str | None,
+    excluded_instance_slugs: set[str],
+    already_observed_slugs: set[str],
+    retired_node_slugs: set[str],
+) -> tuple[list[Target], list[str]]:
+    """Control-node observe targets for unrealizable scoped compute instances (no_guest_vm Step 1).
+
+    An instance qualifies when it has a diff in this scope, no
+    `VirtualMachine` in its realization (missing guest, stale or absent
+    platform observation alike), and no compute transition action was planned
+    for it this round. The returned targets are the owning platforms'
+    control nodes -- deduplicated, minus nodes the main observe action
+    already covers and minus retired nodes.
+    """
+
+    diff_slugs = {
+        diff.target.slug
+        for diff in scoped_diffs
+        if diff.target.kind in {"compute_instance", "node"} and diff.target.slug
+    }
+    if not diff_slugs:
+        return [], []
+    nodes = {node.id: node for node in snapshot.desired.nodes}
+    controls: dict[str, Target] = {}
+    triggering_slugs: set[str] = set()
+    realizations = derive_compute_realizations(snapshot, generated_at=generated_at or "")
+    for realization in realizations.values():
+        node = nodes.get(realization.instance.desired_node_id)
+        if node is None or node.slug not in diff_slugs:
+            continue
+        if node.slug in excluded_instance_slugs:
+            continue
+        if realization.virtual_machine is not None:
+            continue
+        control = nodes.get(realization.platform.control_node_id)
+        if control is None or not control.slug:
+            continue
+        if control.slug in already_observed_slugs or control.slug in retired_node_slugs:
+            continue
+        controls[control.slug] = Target(kind="node", slug=control.slug, name=control.name, id=control.id)
+        triggering_slugs.add(node.slug)
+    codes = sorted(
+        {
+            diff.code
+            for diff in scoped_diffs
+            if diff.target.kind == "compute_instance" and diff.target.slug in triggering_slugs
+        }
+    )
+    return [controls[slug] for slug in sorted(controls)], codes
 
 
 def _wire_profile_dependencies(

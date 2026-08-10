@@ -46,6 +46,55 @@ def make_repo_with_submodule(tmp_path, dirty: bool = False, deinit: bool = False
     return outer
 
 
+class FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def make_ok_client(workers=1, pending_results=None, pending_count=None):
+    """A healthy NautobotClient double covering ping and the worker probe."""
+
+    results = pending_results or []
+
+    class OkClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return None
+
+        def ping(self):
+            return NautobotInfo(
+                reachable=True,
+                url="http://nautobot.test",
+                version="3.1.3",
+                authenticated=True,
+                intent_catalog=True,
+                intent_graphql=True,
+            )
+
+        def rest_get(self, path, params=None):
+            if path == "/api/status/":
+                return FakeResponse({"celery-workers-running": workers})
+            if path == "/api/extras/job-results/":
+                return FakeResponse({"count": pending_count if pending_count is not None else len(results), "results": results})
+            raise AssertionError(f"unexpected rest_get path: {path}")
+
+        def close(self):
+            pass
+
+    return OkClient
+
+
 def test_git_submodule_status_clean(tmp_path):
     outer = make_repo_with_submodule(tmp_path)
     submodules = _git_submodule_status(outer)
@@ -200,34 +249,20 @@ def test_build_status_ok_when_all_checks_pass(tmp_path, monkeypatch):
     outer = make_repo_with_submodule(tmp_path)
     cfg = make_config(tmp_path, dumps_dir, outer)
 
-    class OkClient:
-        def __init__(self, *a, **kw):
-            pass
-
-        def ping(self):
-            return NautobotInfo(
-                reachable=True,
-                url="http://nautobot.test",
-                version="3.1.3",
-                authenticated=True,
-                intent_catalog=True,
-                intent_graphql=True,
-            )
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr("nctl_core.status.NautobotClient", OkClient)
+    monkeypatch.setattr("nctl_core.status.NautobotClient", make_ok_client())
 
     envelope = build_status(cfg)
     assert envelope.ok is True
     assert envelope.errors == []
+    assert envelope.data.worker.checked is True
+    assert envelope.data.worker.workers_running == 1
+    assert envelope.data.worker.pending_jobs == 0
 
     # golden schema shape: top-level and data keys are stable.
     parsed = json.loads(envelope.to_json())
     assert set(parsed.keys()) == {"schema", "generated_at", "ok", "data", "errors"}
     assert parsed["schema"] == "nctl.status.v1"
-    assert set(parsed["data"].keys()) == {"operation_id", "nautobot", "dumps", "submodules"}
+    assert set(parsed["data"].keys()) == {"operation_id", "nautobot", "dumps", "submodules", "worker"}
     assert set(parsed["data"]["nautobot"].keys()) == {
         "reachable",
         "url",
@@ -253,22 +288,56 @@ def test_render_status_text_points_to_drift_for_target_state(tmp_path, monkeypat
     outer = make_repo_with_submodule(tmp_path)
     cfg = make_config(tmp_path, dumps_dir, outer)
 
-    class OkClient:
-        def __init__(self, *a, **kw):
-            pass
-
-        def ping(self):
-            return NautobotInfo(
-                reachable=True, url="http://nautobot.test", version="3.1.3",
-                authenticated=True, intent_catalog=True, intent_graphql=True,
-            )
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr("nctl_core.status.NautobotClient", OkClient)
+    monkeypatch.setattr("nctl_core.status.NautobotClient", make_ok_client())
 
     envelope = build_status(cfg)
     text = render_status_text(envelope)
 
     assert "target state: use `nctl drift --host SLUG`" in text
+    assert "celery workers: 1" in text
+
+
+def test_status_flags_no_running_worker(tmp_path, monkeypatch):
+    dumps_dir = make_dump_dir(tmp_path)
+    outer = make_repo_with_submodule(tmp_path)
+    cfg = make_config(tmp_path, dumps_dir, outer)
+    monkeypatch.setattr("nctl_core.status.NautobotClient", make_ok_client(workers=0))
+
+    envelope = build_status(cfg)
+    assert envelope.ok is False
+    assert any(e.code == "celery_workers_not_running" for e in envelope.errors)
+
+
+def test_status_flags_stalled_queue_with_live_worker(tmp_path, monkeypatch):
+    """G1 signature: worker registered, but a Job sits PENDING past the threshold."""
+    from datetime import timedelta
+
+    dumps_dir = make_dump_dir(tmp_path)
+    outer = make_repo_with_submodule(tmp_path)
+    cfg = make_config(tmp_path, dumps_dir, outer)
+    stuck_created = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
+    monkeypatch.setattr(
+        "nctl_core.status.NautobotClient",
+        make_ok_client(workers=1, pending_results=[{"date_created": stuck_created}]),
+    )
+
+    envelope = build_status(cfg)
+    assert envelope.ok is False
+    stall = next(e for e in envelope.errors if e.code == "worker_queue_stalled")
+    assert "restart the worker container" in stall.message
+    assert envelope.data.worker.oldest_pending_age_seconds > 120
+
+
+def test_status_fresh_pending_job_is_not_a_stall(tmp_path, monkeypatch):
+    dumps_dir = make_dump_dir(tmp_path)
+    outer = make_repo_with_submodule(tmp_path)
+    cfg = make_config(tmp_path, dumps_dir, outer)
+    fresh_created = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(
+        "nctl_core.status.NautobotClient",
+        make_ok_client(workers=1, pending_results=[{"date_created": fresh_created}]),
+    )
+
+    envelope = build_status(cfg)
+    assert envelope.ok is True
+    assert envelope.data.worker.pending_jobs == 1

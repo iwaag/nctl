@@ -29,7 +29,7 @@ CURRENT_ENVELOPE_ERROR_FIELDS = {"code", "message", "detail"}
 # Current command schemas. A coordinated future change updates its writer, reader, documentation,
 # and this exact contract in one matched-version rollout.
 CURRENT_DATA_FIELDS = {
-    "nctl.status.v1": (StatusData, {"operation_id", "nautobot", "dumps", "submodules"}),
+    "nctl.status.v1": (StatusData, {"operation_id", "nautobot", "dumps", "submodules", "worker"}),
     "nctl.drift.v1": (DriftData, {"generated_at", "summary", "severity_summary", "targets", "sources"}),
     "nctl.apply.dnsmasq.v2": (
         DnsmasqApplyData,

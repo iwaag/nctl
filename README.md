@@ -116,9 +116,14 @@ uv run nctl braindump review <braindump-id> --summary "agpc already runs Ollama;
 uv run nctl braindump review-delete <braindump-id> --yes
 ```
 
-`status` checks Nautobot connectivity/auth/intent-catalog presence, nodeutils dump freshness, and
-parent-repo submodule state. Each of the three checks degrades independently: e.g. an unreachable
-Nautobot still yields dump and submodule info, with `ok: false` and an entry in `errors`.
+`status` checks Nautobot connectivity/auth/intent-catalog presence, Celery worker health, nodeutils
+dump freshness, and parent-repo submodule state. Each check degrades independently: e.g. an
+unreachable Nautobot still yields dump and submodule info, with `ok: false` and an entry in
+`errors`. The worker check (no_guest_vm G1) reads two REST signals: `celery-workers-running` from
+`/api/status/` (a dead worker → `celery_workers_not_running`), and PENDING JobResults older than
+120s while a worker is registered (`worker_queue_stalled` — the silent-stall mode where the worker
+still answers pings but its consumer connection is dead; the recorded fix is a worker container
+restart).
 
 `render dnsmasq` fetches desired endpoints, IP ranges, and actual node/interface state through GraphQL and
 prints a deterministic dnsmasq configuration. Its exact UTF-8 bytes (header plus sorted directives)

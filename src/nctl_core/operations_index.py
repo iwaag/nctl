@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
@@ -20,6 +20,12 @@ from pydantic import BaseModel, ValidationError
 from nctl_core.events import EventRecord
 
 OPERATION_ID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
+# F4 (no_guest_vm follow-up): a "running" operation whose last event is older
+# than this is almost certainly a process that died without its `finished`
+# event (kill -9, crash). It is *reported* as stale, never auto-closed --
+# closing is an explicit `nctl ops close` decision with a recorded reason.
+STALE_RUNNING_SECONDS = 3600
 
 
 class OperationIndexError(RuntimeError):
@@ -35,6 +41,7 @@ class OperationRecord(BaseModel):
     operation_id: str
     op: str | None  # None when no event line could be parsed
     state: str  # "running" | "finished" | "no_events"
+    stale: bool = False  # running, but silent past STALE_RUNNING_SECONDS (owner likely died)
     ok: bool | None  # from the `finished` record's data.ok; None while running
     result: str | None  # the `finished` record's message (e.g. reconcile's terminal state)
     started_at: datetime | None
@@ -92,7 +99,7 @@ def _list_artifacts(artifact_dir: Path) -> list[OperationArtifact]:
     return artifacts
 
 
-def load_operation(log_dir: Path, operation_id: str) -> OperationRecord | None:
+def load_operation(log_dir: Path, operation_id: str, *, now: datetime | None = None) -> OperationRecord | None:
     """Build one operation's record from its JSONL file and artifact directory, or None if neither exists."""
 
     validate_operation_id(operation_id)
@@ -112,11 +119,14 @@ def load_operation(log_dir: Path, operation_id: str) -> OperationRecord | None:
         state = "finished"
     else:
         state = "running"
+    reference = now or datetime.now(timezone.utc)
+    stale = state == "running" and last is not None and (reference - last.ts).total_seconds() > STALE_RUNNING_SECONDS
     ok = last.data.get("ok") if state == "finished" and last is not None else None
     return OperationRecord(
         operation_id=operation_id,
         op=first.op if first is not None else None,
         state=state,
+        stale=stale,
         ok=ok if isinstance(ok, bool) else None,
         result=last.message if state == "finished" and last is not None else None,
         started_at=first.ts if first is not None else None,
@@ -149,3 +159,55 @@ def list_operations(log_dir: Path, limit: int | None = None) -> list[OperationRe
         if record is not None:
             records.append(record)
     return records
+
+
+class OperationCloseError(RuntimeError):
+    """The operation cannot be closed (unknown, already finished, or not stale)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def close_operation(
+    log_dir: Path, operation_id: str, *, reason: str, force: bool = False, now: datetime | None = None
+) -> OperationRecord:
+    """Append an explicit abandonment `finished` event to a stale running operation.
+
+    This is the one sanctioned write in this module: it closes an operation
+    whose owning process died without its `finished` event, so history stops
+    reporting it as running forever. The event log stays append-only -- nothing
+    is rewritten -- and the closure records who/why (`abandoned: <reason>`).
+    A recently-active operation is refused unless `force` is set, because it
+    may genuinely still be running.
+    """
+
+    reference = now or datetime.now(timezone.utc)
+    record = load_operation(log_dir, operation_id, now=reference)
+    if record is None:
+        raise OperationCloseError("unknown_operation", f"no event log or artifacts for operation {operation_id}")
+    if record.state == "finished":
+        raise OperationCloseError("already_finished", f"operation {operation_id} already has a finished event")
+    if record.state == "no_events":
+        raise OperationCloseError("no_events", f"operation {operation_id} has no parseable events to close")
+    if not record.stale and not force:
+        raise OperationCloseError(
+            "not_stale",
+            f"operation {operation_id} was active within the last {STALE_RUNNING_SECONDS}s; "
+            "it may still be running -- rerun with --force to close it anyway",
+        )
+    event = EventRecord(
+        ts=reference,
+        operation_id=operation_id,
+        op=record.op or "unknown",
+        seq=(record.last_seq or 0) + 1,
+        event="finished",
+        level="warning",
+        message=f"abandoned: {reason}",
+        data={"ok": False, "abandoned": True, "closed_by": "nctl ops close"},
+    )
+    with (log_dir / f"{operation_id}.jsonl").open("a") as handle:
+        handle.write(event.model_dump_json() + "\n")
+    closed = load_operation(log_dir, operation_id, now=reference)
+    assert closed is not None
+    return closed

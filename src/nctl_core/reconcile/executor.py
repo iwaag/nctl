@@ -382,11 +382,20 @@ def _run_apply(
         # behavior, but this explicit first-round request must stop here rather
         # than allowing stale drift to be called converged in a later round.
         if refresh_observation and round_index == 0:
+            # Only the explicitly forced observation action is this contract's
+            # subject -- a coexisting ordinary observe action (e.g. the
+            # planner's control-node compute-evidence refresh) keeps its
+            # established non-terminal failure behavior.
+            forced_action_ids = {
+                action.id
+                for action in plan.actions
+                if action.reconciler_id == "observe_node" and action.parameters.get("forced_refresh")
+            }
             forced_failure = next(
                 (
                     action
                     for action in outcome.summary.actions
-                    if action.reconciler_id == "observe_node" and not action.success
+                    if action.action_id in forced_action_ids and not action.success
                 ),
                 None,
             )
@@ -628,6 +637,7 @@ def _execute_round(
             id="post_actuation_observation", reconciler_id="observe_node", action_kind="observation",
             targets=[Target(kind="node", slug=slug, name=slug) for slug in observe_targets],
             claimed_diff_codes=[], reason="Post-actuation observation.", mutates=True, requires_observation=False,
+            parameters={"host_slugs": observe_targets},
         )
         executed = execute_action(
             ActionContext(
@@ -768,8 +778,13 @@ class ForcedObservationScopeError(Exception):
 
     `select_scoped_diffs` is expected to project every diff onto exactly the
     requested host before this function runs, so an existing `observe_node`
-    action naming any other node here is a planner invariant violation, not
-    a reason to silently widen the refresh to those extra hosts.
+    action that names the scoped host *alongside* other nodes is a planner
+    invariant violation, not a reason to silently widen the refresh to those
+    extra hosts. An observe action that does not contain the scoped host at
+    all (no_guest_vm Step 1: the planner may deliberately route a compute
+    instance's evidence refresh to its platform's control node) is a separate
+    action with its own purpose -- it is skipped, never merged and never an
+    error.
     """
 
 
@@ -793,21 +808,25 @@ def _with_forced_observation(
     for index, action in enumerate(actions):
         if action.reconciler_id != "observe_node":
             continue
+        if not any(target.slug == node.slug for target in action.targets):
+            # An observe action not containing the scoped host (e.g. the
+            # planner's control-node compute-evidence refresh) keeps its own
+            # purpose; the forced refresh neither merges into it nor fails.
+            continue
         other_slugs = sorted({target.slug for target in action.targets if target.slug != node.slug})
         if other_slugs:
             raise ForcedObservationScopeError(
                 f"host-scoped forced observation for {node.slug!r} would also touch "
                 f"{other_slugs!r}; refusing to merge into a multi-target observe_node action"
             )
-        if any(target.slug == node.slug for target in action.targets):
-            actions[index] = action.model_copy(
-                update={
-                    "reason": "Explicit observation refresh requested; " + action.reason,
-                    "evidence": {**action.evidence, **evidence},
-                    "parameters": {**action.parameters, **evidence},
-                }
-            )
-            return plan.model_copy(update={"actions": actions})
+        actions[index] = action.model_copy(
+            update={
+                "reason": "Explicit observation refresh requested; " + action.reason,
+                "evidence": {**action.evidence, **evidence},
+                "parameters": {**action.parameters, **evidence},
+            }
+        )
+        return plan.model_copy(update={"actions": actions})
 
     forced = ReconcileAction(
         id="observe_node",
@@ -817,7 +836,7 @@ def _with_forced_observation(
         claimed_diff_codes=[],
         reason="Explicit observation refresh requested for this node.",
         evidence=evidence,
-        parameters=evidence,
+        parameters={**evidence, "host_slugs": [node.slug]},
         mutates=True,
         requires_observation=False,
     )
