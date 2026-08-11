@@ -291,8 +291,20 @@ def run_observation(
         artifact_stem="ansible/slurp",
     )
     observations = {host: HostObservation(host=host) for host in targets}
+    collection_failed = set(collection.failed_hosts) | set(collection.unreachable_hosts)
+    if collection.exit_code != 0 and not collection_failed:
+        collection_failed = set(targets)
+    retrieval_failed = set(retrieval.failed_hosts) | set(retrieval.unreachable_hosts)
+    if retrieval.exit_code != 0 and not retrieval_failed:
+        retrieval_failed = set(targets)
     decoded: dict[str, tuple[str, NodeDump]] = {}
     for host in targets:
+        if host in collection_failed:
+            observations[host].error = f"{host}: nodeutils collection failed"
+            continue
+        if host in retrieval_failed:
+            observations[host].error = f"{host}: nodeutils report retrieval failed"
+            continue
         try:
             text, dump = _decode_slurp(
                 slurp_dir / host,

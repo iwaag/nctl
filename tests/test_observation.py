@@ -92,8 +92,9 @@ def _report(host: str, collected_at: datetime) -> str:
 
 
 class FakeCommands:
-    def __init__(self, reports: dict[str, str]) -> None:
+    def __init__(self, reports: dict[str, str], *, collection_returncode: int = 0) -> None:
         self.reports = reports
+        self.collection_returncode = collection_returncode
         self.calls: list[list[str]] = []
 
     def __call__(self, args: list[str], cwd: Path, timeout: float | None):
@@ -109,7 +110,12 @@ class FakeCommands:
                         }
                     )
                 )
-        return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(
+            args,
+            self.collection_returncode if args[0] == "ansible-playbook" else 0,
+            "",
+            "",
+        )
 
 
 class FakeJobRunner:
@@ -447,6 +453,23 @@ def test_observation_ingests_available_hosts_but_reports_partial_failure(tmp_pat
     assert by_host["node-b"].collected is False
     assert "node-b" in by_host["node-b"].error
     assert [row["source"] for row in json.loads(jobs.data["report_batch"])["reports"]] == ["node-a"]
+
+
+def test_observation_never_accepts_old_report_after_collection_failure(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 16, 1, tzinfo=timezone.utc)
+    artifacts, log = _operation(tmp_path)
+    jobs = FakeJobRunner(artifacts)
+
+    result = run_observation(
+        _config(tmp_path), _snapshot("node-a"), ["node-a"], artifacts, log,
+        command_runner=FakeCommands({"node-a": _report("node-a", now)}, collection_returncode=1),
+        job_runner=jobs, now=now,
+    )
+
+    assert result.ok is False
+    assert result.hosts[0].collected is False
+    assert result.hosts[0].error == "node-a: nodeutils collection failed"
+    assert jobs.data is None
 
 
 def test_completed_job_with_skipped_report_is_failure(tmp_path: Path) -> None:
