@@ -551,6 +551,25 @@ def test_probe_hints_resolve_profile_checks_against_placement_config() -> None:
     }
 
 
+def test_probe_hints_copy_only_manual_process_identity() -> None:
+    snapshot = _snapshot("node-a")
+    snapshot.services = [DesiredService(id="svc", slug="worker", name="worker", lifecycle="active")]
+    snapshot.placements = [
+        DesiredServicePlacement(
+            id="p1", service_id="svc", node_id=_node_id("node-a"), instance_name="worker",
+            deployment_profile="manual_toolchain", management_mode="manual", config_schema_version="1",
+            config={"process_pattern": "worker.*serve", "unrelated": "not rendered"},
+        )
+    ]
+
+    rendered = yaml.safe_load(render_probe_hints(snapshot, _node_id("node-a")))
+
+    assert rendered == {
+        "service_probe_hints": {"worker": {"process_pattern": "worker.*serve"}},
+        "workspace_probe_hints": {},
+    }
+
+
 def test_probe_hints_missing_check_config_key_is_a_render_error() -> None:
     # A missing/empty config key at render time is a validation error for
     # that placement, not a silent skip (README_DEV lesson 1).

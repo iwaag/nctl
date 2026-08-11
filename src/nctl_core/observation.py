@@ -111,10 +111,18 @@ def render_probe_hints(
     }
     endpoints_by_id = {endpoint.id: endpoint for endpoint in snapshot.endpoints}
     hints: dict[str, dict[str, Any]] = {service_names[sid]: {} for sid in active_by_service}
+    placement_by_service = {placement.service_id: placement for placement in active_placements}
     for service_id, (_profile_name, endpoint_id, management_mode) in active_by_service.items():
         # manual_service: a manual placement is never reachability-probed --
-        # presence on disk (a file_exists check below) is its only observation.
+        # explicit process identity is its local presence observation. These
+        # keys are intentionally narrow; arbitrary placement config is never
+        # exposed to nodeutils.
         if management_mode == "manual":
+            config = placement_by_service[service_id].config
+            for key in ("process", "process_pattern"):
+                value = config.get(key)
+                if isinstance(value, str) and value:
+                    hints[service_names[service_id]][key] = value
             continue
         endpoint = endpoints_by_id.get(endpoint_id or "")
         if endpoint is None:
