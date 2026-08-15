@@ -202,11 +202,11 @@ class BindingSlotSpec(BaseModel):
 
     Declares where a bound provider endpoint is written on the consumer node
     and what to read back. `config_file` intentionally allows a `~`-relative
-    path (unlike `ManagedFileSpec.path`): the OpenCode config lives under the
-    login user's home and nodeutils runs as that user, so a deliberate
+    path (unlike `ManagedFileSpec.path`): a per-user agent config lives under
+    the login user's home and nodeutils runs as that user, so a deliberate
     `Path.expanduser()` is the one documented deviation from the
     managed-files "path must be absolute" rule. `json_path` is a dot-notation
-    path into the parsed JSON config (e.g. `provider.ollama.options.baseURL`).
+    path into the parsed JSON config (e.g. `provider.ollama.base_url`).
     Copied verbatim into the nodeutils probe config by
     `nctl_core.observation.render_probe_hints`; nodeutils never re-derives it.
     """

@@ -96,8 +96,8 @@ _SERVICE_PROFILE_CODES = frozenset(
         "service_config_unreadable",
         "service_config_mismatch",
         # service_relation Phase 3: rerunning the consumer's own profile
-        # action (e.g. setup_opencode.yml) rewrites its config slot from
-        # resolved desired state -- the actual repair for both codes.
+        # action rewrites its config slot from resolved desired state -- the
+        # actual repair for both codes.
         "binding_unbound",
         "binding_misbound",
     }

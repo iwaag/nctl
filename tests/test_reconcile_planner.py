@@ -154,13 +154,13 @@ def test_select_scoped_diffs_unknown_host_raises():
 
 
 def test_select_scoped_diffs_placement_specific_observation_stays_on_its_owning_node():
-    """The p3/fix1 regression shape: a node_agent-style service placed on three
+    """The p3/fix1 regression shape: a multi-placement service placed on three
     hosts must not widen a host-scoped `--refresh-observation` beyond the one
     requested host merely because the service also runs there."""
     aghub = _node("n1", "aghub")
     agpc = _node("n2", "agpc")
     agstudio = _node("n3", "agstudio")
-    svc = _service("s1", "node_agent")
+    svc = _service("s1", "llm_consumer")
     placements = [
         _placement("p1", service_id="s1", node_id="n1", deployment_profile="daemon"),
         _placement("p2", service_id="s1", node_id="n2", deployment_profile="daemon"),
@@ -188,7 +188,7 @@ def test_select_scoped_diffs_placement_specific_observation_stays_on_its_owning_
 
 def test_select_scoped_diffs_node_local_and_service_observation_dedupe_to_one_target():
     aghub = _node("n1", "aghub")
-    svc = _service("s1", "node_agent")
+    svc = _service("s1", "llm_consumer")
     placement = _placement("p1", service_id="s1", node_id="n1", deployment_profile="daemon")
     snapshot = _snapshot(nodes=[aghub], services=[svc], placements=[placement])
 
@@ -206,7 +206,7 @@ def test_select_scoped_diffs_node_local_and_service_observation_dedupe_to_one_ta
 def test_select_scoped_diffs_cluster_scope_retains_multi_host_observation():
     aghub = _node("n1", "aghub")
     agpc = _node("n2", "agpc")
-    svc = _service("s1", "node_agent")
+    svc = _service("s1", "llm_consumer")
     placements = [
         _placement("p1", service_id="s1", node_id="n1", deployment_profile="daemon"),
         _placement("p2", service_id="s1", node_id="n2", deployment_profile="daemon"),
@@ -436,18 +436,18 @@ def test_service_profile_playbook_action():
     assert action.requires_observation is True
 
 
-def test_node_agent_profile_plans_only_the_scoped_placement_host():
+def test_a_multi_placement_profile_plans_only_the_scoped_placement_host():
     agstudio = _node("n1", "agstudio")
     agpc = _node("n2", "agpc")
-    svc = _service("s1", "node-agent")
+    svc = _service("s1", "llm-consumer")
     placements = [
-        _placement("p1", service_id="s1", node_id="n1", deployment_profile="node_agent"),
-        _placement("p2", service_id="s1", node_id="n2", deployment_profile="node_agent"),
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="llm_consumer"),
+        _placement("p2", service_id="s1", node_id="n2", deployment_profile="llm_consumer"),
     ]
     snapshot = _snapshot(nodes=[agstudio, agpc], services=[svc], placements=placements)
     reconciliation = {
-        "node_agent": ProfileReconciliation(
-            action=ProfileAction(kind="playbook", playbook="playbooks/agent/setup_opencode.yml")
+        "llm_consumer": ProfileReconciliation(
+            action=ProfileAction(kind="playbook", playbook="playbooks/agent/setup_llm_consumer.yml")
         )
     }
 
@@ -460,7 +460,7 @@ def test_node_agent_profile_plans_only_the_scoped_placement_host():
 
     [action] = plan.actions
     assert action.reconciler_id == "service_profile"
-    assert action.parameters["playbook"] == "playbooks/agent/setup_opencode.yml"
+    assert action.parameters["playbook"] == "playbooks/agent/setup_llm_consumer.yml"
     assert action.parameters["host_slugs"] == ["agpc"]
 
 

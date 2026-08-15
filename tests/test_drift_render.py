@@ -397,8 +397,8 @@ def test_ambiguous_binding_provider_surfaces_as_node_local_drift(tmp_path):
                 {
                     "id": "agent-placement", "desired_service": {"id": "svc-agent"},
                     "desired_node": {"id": "node-1"}, "desired_endpoint": None,
-                    "instance_name": "node-agent", "desired_state": "ACTIVE",
-                    "deployment_profile": "node_agent", "config_schema_version": "1", "config": {},
+                    "instance_name": "llm-consumer", "desired_state": "ACTIVE",
+                    "deployment_profile": "llm_consumer", "config_schema_version": "1", "config": {},
                 },
                 {
                     "id": "ollama-1", "desired_service": {"id": "svc-ollama"},
@@ -414,7 +414,7 @@ def test_ambiguous_binding_provider_surfaces_as_node_local_drift(tmp_path):
                 },
             ],
             "desired_services": [
-                {"id": "svc-agent", "slug": "node-agent", "name": "node-agent", "lifecycle": "ACTIVE"},
+                {"id": "svc-agent", "slug": "llm-consumer", "name": "llm-consumer", "lifecycle": "ACTIVE"},
                 {"id": "svc-ollama", "slug": "ollama", "name": "ollama", "lifecycle": "ACTIVE"},
             ],
             "desired_service_bindings": [
@@ -432,7 +432,7 @@ def test_ambiguous_binding_provider_surfaces_as_node_local_drift(tmp_path):
     # state degrades to `unknown` before the resolver ever runs.
     (tmp_path / "ansible_agdev" / "vars" / "deployment_profiles.yml").write_text(
         "deployment_profiles:\n"
-        "  node_agent: {group: node_agents, config_schema_version: '1', variables: {}}\n"
+        "  llm_consumer: {group: llm_consumers, config_schema_version: '1', variables: {}}\n"
         "  ollama: {group: ollama_servers, config_schema_version: '1', variables: {}}\n"
     )
 
@@ -462,12 +462,12 @@ def test_misbound_binding_surfaces_in_service_drift(tmp_path):
                     "last_seen": fresh, "inventory_source": "nodeutils",
                     "service_inventory_updated_at": fresh,
                     "observed_services": {
-                        "node-agent": {
+                        "llm-consumer": {
                             "state": "active", "source": "systemd", "checked_at": fresh,
                             "bindings": {
                                 "llm_provider": {
                                     "configuration_status": "present",
-                                    "configured_endpoint": "http://wrong-host.example.test:11434/v1",
+                                    "configured_endpoint": "http://wrong-host.example.test:11434",
                                     "reachability_status": "reachable",
                                     "http_status": 200,
                                     "checked_at": fresh,
@@ -522,8 +522,8 @@ def test_misbound_binding_surfaces_in_service_drift(tmp_path):
                 {
                     "id": "agent-placement", "desired_service": {"id": "svc-agent"},
                     "desired_node": {"id": "node-1"}, "desired_endpoint": None,
-                    "instance_name": "node-agent", "desired_state": "ACTIVE",
-                    "deployment_profile": "node_agent", "config_schema_version": "1", "config": {},
+                    "instance_name": "llm-consumer", "desired_state": "ACTIVE",
+                    "deployment_profile": "llm_consumer", "config_schema_version": "1", "config": {},
                 },
                 {
                     "id": "ollama-1", "desired_service": {"id": "svc-ollama"},
@@ -533,7 +533,7 @@ def test_misbound_binding_surfaces_in_service_drift(tmp_path):
                 },
             ],
             "desired_services": [
-                {"id": "svc-agent", "slug": "node-agent", "name": "node-agent", "lifecycle": "ACTIVE"},
+                {"id": "svc-agent", "slug": "llm-consumer", "name": "llm-consumer", "lifecycle": "ACTIVE"},
                 {"id": "svc-ollama", "slug": "ollama", "name": "ollama", "lifecycle": "ACTIVE"},
             ],
             "desired_service_bindings": [
@@ -549,23 +549,23 @@ def test_misbound_binding_surfaces_in_service_drift(tmp_path):
     cfg = make_config(tmp_path)
     (tmp_path / "ansible_agdev" / "vars" / "deployment_profiles.yml").write_text(
         "deployment_profiles:\n"
-        "  node_agent: {group: node_agents, config_schema_version: '1', variables: {}}\n"
+        "  llm_consumer: {group: llm_consumers, config_schema_version: '1', variables: {}}\n"
         "  ollama: {group: ollama_servers, config_schema_version: '1', variables: {}}\n"
         "deployment_profile_reconciliation:\n"
-        "  node_agent:\n"
+        "  llm_consumer:\n"
         "    action:\n"
         "      kind: playbook\n"
-        "      playbook: playbooks/agent/setup_opencode.yml\n"
+        "      playbook: playbooks/agent/setup_llm_consumer.yml\n"
         "      bindings:\n"
         "        llm_provider:\n"
-        "          config_file: ~/.config/opencode/opencode.json\n"
-        "          json_path: provider.ollama.options.baseURL\n"
+        "          config_file: ~/.config/llm-consumer/config.json\n"
+        "          json_path: provider.ollama.base_url\n"
         "  ollama:\n"
         "    observe_only: true\n"
     )
 
     envelope = build_drift(cfg)
 
-    node_agent_service = next(t for t in envelope.data.targets if t.target.slug == "node-agent")
-    codes = {d.code for d in node_agent_service.diffs}
+    consumer_service = next(t for t in envelope.data.targets if t.target.slug == "llm-consumer")
+    codes = {d.code for d in consumer_service.diffs}
     assert "binding_misbound" in codes

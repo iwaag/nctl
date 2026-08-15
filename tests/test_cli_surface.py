@@ -28,7 +28,6 @@ RETAINED_COMMANDS = {
     "braindump",
     "ssh",
     "session",
-    "agent",
     "workflow-episode",
     "upload",
 }

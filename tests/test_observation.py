@@ -331,10 +331,10 @@ def test_probe_hints_attach_bindings_from_profile_reconciliation() -> None:
         "node_agent": ProfileReconciliation(
             action=ProfileAction(
                 kind="playbook",
-                playbook="playbooks/agent/setup_opencode.yml",
+                playbook="playbooks/agent/setup_llm_consumer.yml",
                 bindings={
                     "llm_provider": BindingSlotSpec(
-                        config_file="~/.config/opencode/opencode.json",
+                        config_file="~/.config/llm-consumer/config.json",
                         json_path="provider.ollama.options.baseURL",
                     )
                 },
@@ -349,7 +349,7 @@ def test_probe_hints_attach_bindings_from_profile_reconciliation() -> None:
             "node-agent": {
                 "bindings": {
                     "llm_provider": {
-                        "config_file": "~/.config/opencode/opencode.json",
+                        "config_file": "~/.config/llm-consumer/config.json",
                         "json_path": "provider.ollama.options.baseURL",
                     }
                 },

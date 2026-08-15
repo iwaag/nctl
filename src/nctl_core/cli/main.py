@@ -15,11 +15,6 @@ import typer
 from pydantic import ValidationError
 
 from nctl_core.actual_render import build_actual, render_actual_text
-from nctl_core.agent import (
-    AGENT_ABORT_SCHEMA, AGENT_RUN_SCHEMA, AGENT_SEND_SCHEMA, AGENT_SESSIONS_SCHEMA, AGENT_STATUS_SCHEMA,
-    AgentError, attach_agent, build_agent_abort, build_agent_run, build_agent_send, build_agent_sessions, build_agent_status,
-)
-from nctl_core.agent_render import render_agent_abort_text, render_agent_sessions_text, render_agent_status_text, render_agent_task_text
 from nctl_core.braindump_render import (
     build_braindump_complete,
     build_braindump_create,
@@ -93,7 +88,6 @@ braindump_app = typer.Typer(help="Read immutable Braindumps and manage their Ali
 ssh_app = typer.Typer(help="Manage the local, alias-keyed SSH trust store nctl uses for actuation.")
 session_app = typer.Typer(help="Create isolated agent-workspace session folders under .local/workspace/.")
 desired_app = typer.Typer(help="Preview or atomically apply a desired-state batch document.")
-agent_app = typer.Typer(help="Reach loopback-only node agents through managed SSH tunnels.")
 workflow_episode_app = typer.Typer(help="Read and manage workflow-improvement episodes.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
@@ -102,7 +96,6 @@ app.add_typer(braindump_app, name="braindump")
 app.add_typer(ssh_app, name="ssh")
 app.add_typer(session_app, name="session")
 app.add_typer(desired_app, name="desired")
-app.add_typer(agent_app, name="agent")
 app.add_typer(workflow_episode_app, name="workflow-episode")
 
 
@@ -173,68 +166,6 @@ def upload(
     if any(error.code in ("invalid_ttl", "missing_path") for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
-
-
-AgentHostArgument = Annotated[str, typer.Argument(help="Exact DesiredNode slug.")]
-AgentStatusJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.agent.status.v1 envelope as JSON.")]
-AgentSessionOption = Annotated[Optional[str], typer.Option("--session", help="Existing OpenCode session ID to resume.")]
-AgentPromptOption = Annotated[str, typer.Option("--prompt", help="Prompt to send to the node agent.")]
-AgentJsonOption = Annotated[bool, typer.Option("--json", help="Print the command envelope as JSON.")]
-
-
-@agent_app.command("status")
-def agent_status(host: AgentHostArgument, config: ConfigOption = None, json_output: AgentStatusJsonOption = False) -> None:
-    """Check a node agent's /doc health endpoint through managed SSH."""
-    cfg = _load_config(config)
-    envelope = build_agent_status(cfg, host)
-    emit(envelope, json_output, render_agent_status_text)
-    if any(error.code == "unknown_host" for error in envelope.errors):
-        raise typer.Exit(EXIT_USAGE)
-    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
-
-
-@agent_app.command("attach")
-def agent_attach(host: AgentHostArgument, config: ConfigOption = None, session: AgentSessionOption = None) -> None:
-    """Open the controller's native OpenCode TUI through a temporary SSH tunnel."""
-    cfg = _load_config(config)
-    try:
-        code = attach_agent(cfg, host, session=session)
-    except AgentError as exc:
-        typer.echo(f"error [{exc.code}]: {exc}", err=True)
-        raise typer.Exit(EXIT_USAGE if exc.code == "unknown_host" else EXIT_FAILURE)
-    raise typer.Exit(code)
-
-
-@agent_app.command("sessions")
-def agent_sessions(host: AgentHostArgument, config: ConfigOption = None, json_output: AgentJsonOption = False) -> None:
-    """List sessions scoped to the node's configured working directory."""
-    envelope = build_agent_sessions(_load_config(config), host)
-    emit(envelope, json_output, render_agent_sessions_text)
-    raise typer.Exit(EXIT_USAGE if any(error.code == "unknown_host" for error in envelope.errors) else (EXIT_OK if envelope.ok else EXIT_FAILURE))
-
-
-@agent_app.command("run")
-def agent_run(host: AgentHostArgument, prompt: AgentPromptOption, config: ConfigOption = None, json_output: AgentJsonOption = False) -> None:
-    """Create a session, send a prompt, and wait for the completed reply."""
-    envelope = build_agent_run(_load_config(config), host, prompt)
-    emit(envelope, json_output, render_agent_task_text)
-    raise typer.Exit(EXIT_USAGE if any(error.code == "unknown_host" for error in envelope.errors) else (EXIT_OK if envelope.ok else EXIT_FAILURE))
-
-
-@agent_app.command("send")
-def agent_send(host: AgentHostArgument, session_id: Annotated[str, typer.Argument(help="OpenCode session ID.")], prompt: AgentPromptOption, config: ConfigOption = None, json_output: AgentJsonOption = False) -> None:
-    """Continue an existing node-local session and wait for its reply."""
-    envelope = build_agent_send(_load_config(config), host, session_id, prompt)
-    emit(envelope, json_output, render_agent_task_text)
-    raise typer.Exit(EXIT_USAGE if any(error.code == "unknown_host" for error in envelope.errors) else (EXIT_OK if envelope.ok else EXIT_FAILURE))
-
-
-@agent_app.command("abort")
-def agent_abort(host: AgentHostArgument, session_id: Annotated[str, typer.Argument(help="OpenCode session ID.")], config: ConfigOption = None, json_output: AgentJsonOption = False) -> None:
-    """Deliberately interrupt a running OpenCode session."""
-    envelope = build_agent_abort(_load_config(config), host, session_id)
-    emit(envelope, json_output, render_agent_abort_text)
-    raise typer.Exit(EXIT_USAGE if any(error.code == "unknown_host" for error in envelope.errors) else (EXIT_OK if envelope.ok else EXIT_FAILURE))
 
 
 ActualJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.actual.v2 envelope as JSON.")]

@@ -26,9 +26,11 @@ from .model import BindingInput, NodeInput, PlacementInput
 # profile declares, and which inventory variable each one produces. A binding
 # name arriving from desired state that is not declared here is a classified
 # error (`binding_name_undeclared`), never a crash.
-PROFILE_BINDING_VARIABLES: dict[tuple[str, str], str] = {
-    ("node_agent", "llm_provider"): "nintent_opencode_ollama_url",
-}
+# Empty right now: its only entry was the retired node_agent profile's
+# llm_provider binding. The machinery stays — it is the system's one
+# service-dependency path — and its tests install their own mapping, so the
+# resolver keeps its full coverage without a fictional production entry.
+PROFILE_BINDING_VARIABLES: dict[tuple[str, str], str] = {}
 
 
 @dataclass(frozen=True)
@@ -201,7 +203,11 @@ def _endpoint_url(endpoint: EndpointCandidate) -> str | None:
     else:
         if parsed.version == 6:
             address = f"[{address}]"
-    return f"{protocol}://{address}:{endpoint.port}/v1"
+    # The bare endpoint URL. It used to carry a `/v1` suffix, for one consumer
+    # that wanted the OpenAI-compatible path; that consumer is gone, and a
+    # path belongs to whatever a future binding actually needs rather than to
+    # every binding by default.
+    return f"{protocol}://{address}:{endpoint.port}"
 
 
 def _error(code: str, message: str, evidence: dict[str, Any]) -> ServiceDependencyResolution:

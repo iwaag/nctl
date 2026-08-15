@@ -84,9 +84,8 @@ def render_probe_hints(
     this node, matching the existing name-only hint behavior.
 
     service_relation Phase 3: the same placement's `ProfileAction.bindings`
-    (e.g. `node_agent`'s `llm_provider` slot) is copied verbatim under
-    `bindings` alongside `managed_files`, so nodeutils knows which config
-    slot to read and probe on the consumer node.
+    is copied verbatim under `bindings` alongside `managed_files`, so
+    nodeutils knows which config slot to read and probe on the consumer node.
 
     creative_workspace p1 Step 2: `workspace_probe_hints` is rendered from
     declared `DesiredWorkspace` rows the same way, so the declared path

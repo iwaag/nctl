@@ -19,7 +19,6 @@ _REPO_PROFILE_NAMES = {
     "manual_toolchain",
     "nomad_client",
     "nomad_server",
-    "node_agent",
     "ollama",
     "prometheus",
     "prometheus_node_exporter",
@@ -62,9 +61,6 @@ def test_real_repo_file_validates(tmp_path):
         "linux": "playbooks/nomad/setup_nomad_client.yml",
         "macos": "playbooks/nomad/setup_nomad_client_macos.yml",
     }
-    assert entries["node_agent"].action.playbook == "playbooks/agent/setup_opencode.yml"
-    assert entries["node_agent"].action.bindings["llm_provider"].config_file == "~/.config/opencode/opencode.json"
-    assert entries["node_agent"].action.bindings["llm_provider"].json_path == "provider.ollama.options.baseURL"
     assert entries["ollama"].observe_only is True
     assert entries["cron_task"].observe_only is True
     assert [check.kind for check in entries["cron_task"].checks] == ["file_exists", "cron_registered"]
@@ -361,7 +357,7 @@ def test_binding_config_file_accepts_home_relative_path(tmp_path):
                     "action": {
                         "kind": "playbook",
                         "playbook": "playbooks/monitoring/setup_grafana.yml",
-                        "bindings": {"llm_provider": {"config_file": "~/.config/opencode/opencode.json", "json_path": "a.b"}},
+                        "bindings": {"llm_provider": {"config_file": "~/.config/llm-consumer/config.json", "json_path": "a.b"}},
                     }
                 },
             }
@@ -370,7 +366,7 @@ def test_binding_config_file_accepts_home_relative_path(tmp_path):
 
     entries = load_profile_reconciliation(playbook_dir, {"grafana"})
 
-    assert entries["grafana"].action.bindings["llm_provider"].config_file == "~/.config/opencode/opencode.json"
+    assert entries["grafana"].action.bindings["llm_provider"].config_file == "~/.config/llm-consumer/config.json"
 
 
 # --- resolve_dnsmasq_records_spec (fix_sshkey4 Step 3) -----------------------

@@ -64,7 +64,7 @@ def test_eligibility_surfaces_inbound_consumers_of_a_hosted_provider_service():
                 ),
                 DesiredServicePlacement(
                     id="agent-placement", service_id="svc-agent", node_id="node-2",
-                    instance_name="node-agent", deployment_profile="node_agent", config_schema_version="1",
+                    instance_name="llm-consumer", deployment_profile="llm_consumer", config_schema_version="1",
                 ),
             ],
             "service_bindings": [

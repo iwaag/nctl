@@ -1,6 +1,9 @@
+from nctl_core.production import service_dependencies
 from nctl_core.production.derivation import EndpointCandidate
 from nctl_core.production.model import BindingInput, NodeInput, PlacementInput
 from nctl_core.production.service_dependencies import resolve_service_dependencies
+
+from conftest import TEST_BINDING_PROFILE as TEST_PROFILE, TEST_BINDING_VARIABLE as TEST_VARIABLE
 
 
 def _node(node_id, slug, *, endpoints=(), placements=()):
@@ -36,18 +39,18 @@ def _ollama_provider(node_id="provider", slug="agstudio", *, endpoint_id="ollama
 def _agent_consumer(bindings):
     return _node(
         "consumer", "aghub",
-        placements=[_placement("agent", "node-agent", profile="node_agent", bindings=bindings)],
+        placements=[_placement("agent", "llm-consumer", profile=TEST_PROFILE, bindings=bindings)],
     )
 
 
-def test_resolves_node_agent_binding_to_provider_endpoint_url():
+def test_resolves_a_declared_binding_to_the_provider_endpoint_url():
     provider = _ollama_provider()
     consumer = _agent_consumer([_binding("b1", "llm_provider", "ollama")])
 
     resolution = resolve_service_dependencies([consumer, provider])["consumer"]
 
     assert resolution.error_code is None
-    assert resolution.variables == {"nintent_opencode_ollama_url": "http://agstudio.local:11434/v1"}
+    assert resolution.variables == {"nintent_llm_provider_url": "http://agstudio.local:11434"}
     assert resolution.provenance == [{
         "consumer_placement_id": "agent", "binding_name": "llm_provider",
         "provider_service_slug": "ollama",
@@ -57,7 +60,7 @@ def test_resolves_node_agent_binding_to_provider_endpoint_url():
 
 def test_nodes_without_bindings_produce_no_resolution_entry():
     provider = _ollama_provider()
-    consumer = _node("plain", "agplain", placements=[_placement("agent", "node-agent", profile="node_agent")])
+    consumer = _node("plain", "agplain", placements=[_placement("agent", "llm-consumer", profile=TEST_PROFILE)])
 
     assert resolve_service_dependencies([consumer, provider]) == {}
 
@@ -67,7 +70,7 @@ def test_inactive_consumer_placement_bindings_are_ignored():
     consumer = _node(
         "consumer", "aghub",
         placements=[_placement(
-            "agent", "node-agent", profile="node_agent",
+            "agent", "llm-consumer", profile=TEST_PROFILE,
             bindings=[_binding("b1", "llm_provider", "ollama")], desired_state="retired",
         )],
     )
@@ -153,8 +156,8 @@ def test_self_referencing_binding_is_classified():
     consumer = _node(
         "consumer", "aghub",
         placements=[_placement(
-            "agent", "node-agent", profile="node_agent",
-            bindings=[_binding("b1", "llm_provider", "node-agent")],
+            "agent", "llm-consumer", profile=TEST_PROFILE,
+            bindings=[_binding("b1", "llm_provider", "llm-consumer")],
         )],
     )
 
@@ -171,7 +174,7 @@ def test_provider_cycle_is_classified():
         endpoints=[EndpointCandidate("ollama-endpoint", "ollama", "primary", "agstudio", dns_name="agstudio.local", protocol="http", port=11434)],
         placements=[_placement(
             "ollama-main", "ollama", profile="ollama", endpoint_id="ollama-endpoint",
-            bindings=[_binding("back", "llm_provider", "node-agent")],
+            bindings=[_binding("back", "llm_provider", "llm-consumer")],
         )],
     )
     consumer = _agent_consumer([_binding("b1", "llm_provider", "ollama")])
@@ -181,7 +184,7 @@ def test_provider_cycle_is_classified():
     assert resolution.error_code == "binding_cycle"
 
 
-def test_multiple_bindings_merge_variables_and_provenance():
+def test_multiple_bindings_merge_variables_and_provenance(monkeypatch):
     provider = _ollama_provider()
     second_provider = _node(
         "provider2", "agsecond",
@@ -193,20 +196,17 @@ def test_multiple_bindings_merge_variables_and_provenance():
         _binding("b2", "second_provider", "second-service"),
     ])
 
-    from nctl_core.production import service_dependencies
-
-    original = dict(service_dependencies.PROFILE_BINDING_VARIABLES)
-    service_dependencies.PROFILE_BINDING_VARIABLES[("node_agent", "second_provider")] = "nintent_second_url"
-    try:
-        resolution = resolve_service_dependencies([consumer, provider, second_provider])["consumer"]
-    finally:
-        service_dependencies.PROFILE_BINDING_VARIABLES.clear()
-        service_dependencies.PROFILE_BINDING_VARIABLES.update(original)
+    monkeypatch.setitem(
+        service_dependencies.PROFILE_BINDING_VARIABLES,
+        (TEST_PROFILE, "second_provider"),
+        "nintent_second_url",
+    )
+    resolution = resolve_service_dependencies([consumer, provider, second_provider])["consumer"]
 
     assert resolution.error_code is None
     assert resolution.variables == {
-        "nintent_opencode_ollama_url": "http://agstudio.local:11434/v1",
-        "nintent_second_url": "http://agsecond.local:8080/v1",
+        "nintent_llm_provider_url": "http://agstudio.local:11434",
+        "nintent_second_url": "http://agsecond.local:8080",
     }
     assert [entry["binding_name"] for entry in resolution.provenance] == ["llm_provider", "second_provider"]
 
@@ -218,14 +218,14 @@ def test_reverse_service_bindings_lists_inbound_consumers_per_provider():
     consumer_one = _agent_consumer([_binding("b1", "llm_provider", "ollama")])
     consumer_two = _node(
         "consumer2", "agpc",
-        placements=[_placement("agent2", "node-agent", profile="node_agent", bindings=[_binding("b2", "llm_provider", "ollama")])],
+        placements=[_placement("agent2", "llm-consumer", profile=TEST_PROFILE, bindings=[_binding("b2", "llm_provider", "ollama")])],
     )
 
     reverse = reverse_service_bindings([consumer_one, consumer_two, provider])
 
     assert reverse["service-ollama"] == [
-        {"consumer_node": "aghub", "consumer_service": "node-agent", "binding_name": "llm_provider"},
-        {"consumer_node": "agpc", "consumer_service": "node-agent", "binding_name": "llm_provider"},
+        {"consumer_node": "aghub", "consumer_service": "llm-consumer", "binding_name": "llm_provider"},
+        {"consumer_node": "agpc", "consumer_service": "llm-consumer", "binding_name": "llm_provider"},
     ]
 
 
@@ -236,7 +236,7 @@ def test_reverse_service_bindings_ignores_inactive_consumer_placements():
     consumer = _node(
         "consumer", "aghub",
         placements=[_placement(
-            "agent", "node-agent", profile="node_agent",
+            "agent", "llm-consumer", profile=TEST_PROFILE,
             bindings=[_binding("b1", "llm_provider", "ollama")], desired_state="retired",
         )],
     )
@@ -257,7 +257,7 @@ def test_resolve_all_bindings_keys_by_placement_and_binding_name():
 
     assert resolved["agent"]["llm_provider"].error_code is None
     assert resolved["agent"]["llm_provider"].variables == {
-        "nintent_opencode_ollama_url": "http://agstudio.local:11434/v1"
+        "nintent_llm_provider_url": "http://agstudio.local:11434"
     }
 
 
@@ -278,7 +278,7 @@ def test_resolve_all_bindings_does_not_stop_at_the_first_per_node_error():
 def test_resolve_all_bindings_empty_for_no_bindings():
     from nctl_core.production.service_dependencies import resolve_all_bindings
 
-    consumer = _node("plain", "agplain", placements=[_placement("agent", "node-agent", profile="node_agent")])
+    consumer = _node("plain", "agplain", placements=[_placement("agent", "llm-consumer", profile=TEST_PROFILE)])
 
     assert resolve_all_bindings([consumer]) == {}
 

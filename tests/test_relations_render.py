@@ -52,8 +52,8 @@ def _base_desired(*, extra_placements=(), extra_services=(), extra_bindings=()) 
         ],
         placements=[
             DesiredServicePlacement(
-                id="placement-consumer", service_id="svc-node-agent", node_id="node-consumer",
-                instance_name="node-agent", deployment_profile="node_agent", config_schema_version="1",
+                id="placement-consumer", service_id="svc-llm-consumer", node_id="node-consumer",
+                instance_name="llm-consumer", deployment_profile="llm_consumer", config_schema_version="1",
             ),
             DesiredServicePlacement(
                 id="placement-provider", service_id="svc-ollama", node_id="node-provider",
@@ -63,7 +63,7 @@ def _base_desired(*, extra_placements=(), extra_services=(), extra_bindings=()) 
             *extra_placements,
         ],
         services=[
-            DesiredService(id="svc-node-agent", slug="node-agent", name="node-agent", lifecycle="active"),
+            DesiredService(id="svc-llm-consumer", slug="llm-consumer", name="llm-consumer", lifecycle="active"),
             DesiredService(id="svc-ollama", slug="ollama", name="ollama", lifecycle="active"),
             *extra_services,
         ],
@@ -85,7 +85,7 @@ def _device(observed_services: dict | None = None) -> ActualDevice:
 def _drift_result(*, ollama_status: Status = Status.CONVERGED) -> DriftResult:
     return DriftResult(
         targets=[
-            TargetStatus(target=Target(kind="service", id="svc-node-agent", slug="node-agent"), status=Status.CONVERGED, diffs=[]),
+            TargetStatus(target=Target(kind="service", id="svc-llm-consumer", slug="llm-consumer"), status=Status.CONVERGED, diffs=[]),
             TargetStatus(target=Target(kind="service", id="svc-ollama", slug="ollama"), status=ollama_status, diffs=[]),
         ]
     )
@@ -99,12 +99,12 @@ def _snapshot(desired: DesiredSnapshot, device: ActualDevice) -> SourceSnapshot:
 
 def test_satisfied_edge():
     device = _device({
-        "node-agent": {
+        "llm-consumer": {
             "state": "active", "source": "systemd", "checked_at": _fresh(),
             "bindings": {
                 "llm_provider": {
                     "configuration_status": "present",
-                    "configured_endpoint": "http://agstudio.home.arpa:11434/v1",
+                    "configured_endpoint": "http://agstudio.home.arpa:11434",
                     "reachability_status": "reachable",
                     "checked_at": _fresh(),
                 },
@@ -117,12 +117,12 @@ def test_satisfied_edge():
     assert len(data.edges) == 1
     edge = data.edges[0]
     assert edge.consumer.node == "aghub"
-    assert edge.consumer.service == "node-agent"
+    assert edge.consumer.service == "llm-consumer"
     assert edge.binding_name == "llm_provider"
     assert edge.provider.service == "ollama"
     assert edge.provider.node == "agstudio"
     assert edge.provider.endpoint == "ollama-api"
-    assert edge.provider.url == "http://agstudio.home.arpa:11434/v1"
+    assert edge.provider.url == "http://agstudio.home.arpa:11434"
     assert edge.state == "satisfied"
     assert edge.gap_codes == []
     assert data.summary == {"satisfied": 1}
@@ -130,12 +130,12 @@ def test_satisfied_edge():
 
 def test_misbound_edge():
     device = _device({
-        "node-agent": {
+        "llm-consumer": {
             "state": "active", "source": "systemd", "checked_at": _fresh(),
             "bindings": {
                 "llm_provider": {
                     "configuration_status": "present",
-                    "configured_endpoint": "http://wrong-host.example.test:11434/v1",
+                    "configured_endpoint": "http://wrong-host.example.test:11434",
                     "reachability_status": "reachable",
                     "checked_at": _fresh(),
                 },
@@ -177,12 +177,12 @@ def test_resolution_failure_edge_included_with_error_code():
 
 def test_provider_not_converged_gap():
     device = _device({
-        "node-agent": {
+        "llm-consumer": {
             "state": "active", "source": "systemd", "checked_at": _fresh(),
             "bindings": {
                 "llm_provider": {
                     "configuration_status": "present",
-                    "configured_endpoint": "http://agstudio.home.arpa:11434/v1",
+                    "configured_endpoint": "http://agstudio.home.arpa:11434",
                     "reachability_status": "reachable",
                     "checked_at": _fresh(),
                 },
@@ -208,7 +208,7 @@ def test_unreferenced_service_listed_informational():
     snapshot = _snapshot(desired, device)
     data = render_relations_data(snapshot, _drift_result(), GENERATED_AT)
 
-    assert data.unreferenced == ["node-agent", "orphan"]
+    assert data.unreferenced == ["llm-consumer", "orphan"]
 
 
 def test_services_project_active_placements_and_state():
@@ -217,10 +217,10 @@ def test_services_project_active_placements_and_state():
 
     data = render_relations_data(snapshot, _drift_result(), GENERATED_AT)
 
-    node_agent = next(row for row in data.services if row.service == "node-agent")
-    assert node_agent.state == "converged"
-    assert [(row.node, row.instance_name, row.state) for row in node_agent.placements] == [
-        ("aghub", "node-agent", "satisfied")
+    consumer_service = next(row for row in data.services if row.service == "llm-consumer")
+    assert consumer_service.state == "converged"
+    assert [(row.node, row.instance_name, row.state) for row in consumer_service.placements] == [
+        ("aghub", "llm-consumer", "satisfied")
     ]
 
 
@@ -229,8 +229,8 @@ def test_edges_sorted_deterministically():
     # No bindings observed -> unknown state, but ordering is what's under test.
     node_a = DesiredNode(id="node-a", slug="aaa", name="aaa", lifecycle="active", node_type="device", realized_device_id="dev-consumer")
     node_b = DesiredNode(id="node-b", slug="zzz", name="zzz", lifecycle="active", node_type="device", realized_device_id="dev-consumer")
-    placement_a = DesiredServicePlacement(id="p-a", service_id="svc-node-agent", node_id="node-a", instance_name="node-agent", deployment_profile="node_agent", config_schema_version="1")
-    placement_b = DesiredServicePlacement(id="p-b", service_id="svc-node-agent", node_id="node-b", instance_name="node-agent", deployment_profile="node_agent", config_schema_version="1")
+    placement_a = DesiredServicePlacement(id="p-a", service_id="svc-llm-consumer", node_id="node-a", instance_name="llm-consumer", deployment_profile="llm_consumer", config_schema_version="1")
+    placement_b = DesiredServicePlacement(id="p-b", service_id="svc-llm-consumer", node_id="node-b", instance_name="llm-consumer", deployment_profile="llm_consumer", config_schema_version="1")
     binding_a = DesiredServiceBinding(id="b-a", binding_name="llm_provider", consumer_placement_id="p-a", provider_service_id="svc-ollama", provider_service_slug="ollama")
     binding_b = DesiredServiceBinding(id="b-b", binding_name="llm_provider", consumer_placement_id="p-b", provider_service_id="svc-ollama", provider_service_slug="ollama")
     desired = DesiredSnapshot(
@@ -241,7 +241,7 @@ def test_edges_sorted_deterministically():
             DesiredServicePlacement(id="placement-provider", service_id="svc-ollama", node_id="node-provider", endpoint_id="ep-ollama", instance_name="ollama", deployment_profile="ollama", config_schema_version="1"),
         ],
         services=[
-            DesiredService(id="svc-node-agent", slug="node-agent", name="node-agent", lifecycle="active"),
+            DesiredService(id="svc-llm-consumer", slug="llm-consumer", name="llm-consumer", lifecycle="active"),
             DesiredService(id="svc-ollama", slug="ollama", name="ollama", lifecycle="active"),
         ],
         service_bindings=[binding_a, binding_b],

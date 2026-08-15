@@ -72,7 +72,6 @@ _BASE_HOST_VARIABLES = {
     "nintent_active_placement_ids",
     "nctl_ssh_host_key_alias",
     "ansible_ssh_common_args",
-    "nintent_opencode_ollama_url",
 }
 _REPORT_V3_KEYS = {
     "schema_version",

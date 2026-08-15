@@ -59,17 +59,3 @@ secret_key_file = ".local/minio-secret"
 # secret_key_env = "NCTL_STORAGE_SECRET"   # alternative, mirroring token_env
 default_ttl_minutes = 30
 
-[agent]
-# OpenCode is loopback-only on every node; nctl reaches it through a managed
-# SSH local forward. These values are controller policy, never CLI input.
-port = 4096
-ssh_user = "eiji"
-identity_file = "~/.ssh/ansible_key"
-macos_workdir = "/Users/eiji/agent-work"
-linux_workdir = "/home/eiji/agent-work"
-connect_timeout_seconds = 15
-request_timeout_seconds = 300
-runtime_version = "1.18.10"
-default_model = "ollama/qwen3.6:35b-a3b-coding-nvfp4"
-# The workdir is selected from nodeutils' observed Linux/Darwin OS.  Before
-# the first observation, declared_host_os is the bootstrap fallback.

@@ -176,30 +176,6 @@ class SshConfig(StrictModel):
         return resolve_local_path(self.lock_path, config_dir)
 
 
-class AgentConfig(StrictModel):
-    """Controller-owned settings for the loopback OpenCode service."""
-
-    port: int = Field(default=4096, ge=1, le=65535)
-    ssh_user: str = "eiji"
-    identity_file: Path = Path("~/.ssh/ansible_key")
-    macos_workdir: Path = Path("/Users/eiji/agent-work")
-    linux_workdir: Path = Path("/home/eiji/agent-work")
-    connect_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
-    request_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
-    runtime_version: str = "1.18.10"
-    default_model: str = "ollama/qwen3.6:35b-a3b-coding-nvfp4"
-
-    @field_validator("ssh_user")
-    @classmethod
-    def ssh_user_must_be_simple(cls, value: str) -> str:
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
-            raise ValueError("ssh_user must contain only letters, digits, underscores, or hyphens")
-        return value
-
-    def resolved_identity_file(self, config_dir: Path) -> Path:
-        return resolve_local_path(self.identity_file, config_dir)
-
-
 class Config(StrictModel):
     nautobot: NautobotConfig
     inventory: InventoryConfig
@@ -208,7 +184,6 @@ class Config(StrictModel):
     repo: RepoConfig = RepoConfig()
     reconcile: ReconcileConfig = ReconcileConfig()
     ssh: SshConfig = SshConfig()
-    agent: AgentConfig = AgentConfig()
     storage: StorageConfig | None = None
 
     # Where the config file was loaded from; relative paths resolve against its parent.
@@ -225,9 +200,6 @@ class Config(StrictModel):
 
     def resolved_ssh_lock_path(self) -> Path:
         return self.ssh.resolved_lock_path(self.source_path.parent)
-
-    def resolved_agent_identity_file(self) -> Path:
-        return self.agent.resolved_identity_file(self.source_path.parent)
 
     def require_storage(self) -> StorageConfig:
         if self.storage is None:

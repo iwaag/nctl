@@ -75,12 +75,12 @@ def full_snapshot() -> DesiredSnapshot:
             ),
             DesiredServicePlacement(
                 id="pl-2", service_id="svc-2", node_id="node-2",
-                instance_name="node-agent", deployment_profile="node_agent", config_schema_version="1",
+                instance_name="llm-consumer", deployment_profile="llm_consumer", config_schema_version="1",
             ),
         ],
         services=[
             DesiredService(id="svc-1", slug="ollama", name="ollama", lifecycle="active"),
-            DesiredService(id="svc-2", slug="node-agent", name="node-agent", lifecycle="active"),
+            DesiredService(id="svc-2", slug="llm-consumer", name="llm-consumer", lifecycle="active"),
         ],
         service_bindings=[
             DesiredServiceBinding(
@@ -158,7 +158,7 @@ def test_exports_every_kind_with_exact_expected_operations():
 
     binding = by_kind["desired_service_binding"][0]
     assert binding["key"] == {
-        "consumer_placement": {"desired_service": "node-agent", "instance_name": "node-agent"},
+        "consumer_placement": {"desired_service": "llm-consumer", "instance_name": "llm-consumer"},
         "binding_name": "llm_provider",
     }
     assert binding["values"]["provider_service"] == "ollama"
