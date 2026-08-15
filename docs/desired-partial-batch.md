@@ -1,7 +1,8 @@
 # Hand-writing a partial desired-state batch
 
-`nctl desired apply -f` accepts one batch document; apply is a **partial upsert**, so a
+`nctl desired apply -f` accepts one batch document; `op: upsert` is a **partial upsert**, so a
 hand-written document only needs the fields you are changing plus the target's identity key.
+`op: delete` removes a row (see below).
 This page is the minimal template for that case — for full-object examples see
 [`register-a-new-pc.md`](register-a-new-pc.md), [`add-a-basic-service.md`](add-a-basic-service.md)
 and [`add-and-retire-proxmox-lxc.md`](add-and-retire-proxmox-lxc.md).
@@ -23,6 +24,33 @@ operations:
 uv run --project nctl nctl desired apply -f batch.yaml        # preview, zero writes
 uv run --project nctl nctl desired apply -f batch.yaml --yes  # commit
 ```
+
+## Deleting rows
+
+`op: delete` uses the same document shape, and **`values: {}` must be present and empty** —
+every operation must contain exactly the four members `op`, `kind`, `key`, `values`, so omitting
+`values` fails validation, and a non-empty `values` on a delete is refused. Watch out: over the
+CLI a validation failure surfaces as a bare `HTTP 400`; run with `--json` to see the reason
+(e.g. `operations[0] must contain op, kind, key, values`).
+
+```yaml
+operations:
+  - op: delete
+    kind: desired_service_binding
+    key:
+      consumer_placement: {desired_service: node-agent, instance_name: node-agent-aghub}
+      binding_name: llm_provider
+    values: {}
+```
+
+A service, its placements, and their bindings can go in one batch in any order: deletes are
+applied leaf-first automatically (reverse dependency order), and a delete whose dependents are
+not also being deleted plans as `conflict` rather than leaving an orphan.
+
+Note that `nctl prune` is **not** the follow-up for service removals — it is guest-scoped
+(`nctl prune GUEST` collects a fully-retired guest's Desired and Actual records; see
+[`add-and-retire-proxmox-lxc.md`](add-and-retire-proxmox-lxc.md)). A delete batch removes the
+rows directly; there is nothing left to prune.
 
 ## Identity keys per kind
 
