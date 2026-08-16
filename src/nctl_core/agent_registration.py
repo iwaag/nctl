@@ -44,7 +44,7 @@ OBSERVE_SCHEMA = "nctl.observe.agents.v1"
 PAYLOAD_SCHEMA = "nctl.agent-registration.v1"
 INGEST_JOB_NAME = "Ingest Agent Registration"
 INGEST_ARTIFACT_NAME = "agent-registration-ingest-summary.json"
-COLLECTOR_NAME = "nctl observe agents"
+COLLECTOR_NAME = "nctl agents observe"
 
 
 class AgentRegistrationRow(BaseModel):
