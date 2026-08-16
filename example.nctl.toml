@@ -59,3 +59,19 @@ secret_key_file = ".local/minio-secret"
 # secret_key_env = "NCTL_STORAGE_SECRET"   # alternative, mirroring token_env
 default_ttl_minutes = 30
 
+
+[zulip]
+# Optional: only `nctl agents observe` needs it. `credentials_file` is a 0600
+# `KEY=value` file holding ZULIP_EMAIL and ZULIP_API_KEY -- the same file shape
+# the listeners already use, so no key is copied into a second place.
+# Relative paths resolve against this nctl.toml's directory.
+url = "https://zulip.example.invalid:8543"
+credentials_file = ".local/zulip/observer.env"
+# The local realm serves a self-signed certificate.
+verify_tls = false
+
+[plane]
+# Optional: only `nctl agents observe` needs it. credentials_file holds PLANE_API_KEY.
+url = "http://plane.example.invalid:8290"
+workspace_slug = "agautolab"
+credentials_file = ".local/plane-credentials.env"

@@ -176,6 +176,63 @@ class SshConfig(StrictModel):
         return resolve_local_path(self.lock_path, config_dir)
 
 
+def _read_env_file(path: Path, *, setting: str) -> dict[str, str]:
+    """Read a `KEY=value` credentials file into a mapping, values never logged."""
+    if not path.is_file():
+        raise ConfigInvalidError(f"{setting} does not exist: {path}")
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+class ZulipConfig(StrictModel):
+    """Realm URL plus an existing 0600 bot env file (agent_intent p1 step 3).
+
+    `credentials_file` is the same `ZULIP_URL/ZULIP_EMAIL/ZULIP_API_KEY` shape the
+    listeners already use, so the collector reuses one credential store rather than
+    copying a key into a second place. `verify_tls` exists because this realm is
+    served with a self-signed certificate on the LAN.
+    """
+
+    url: str
+    credentials_file: Path
+    verify_tls: bool = True
+
+    def resolve_credentials(self, config_dir: Path) -> tuple[str, str]:
+        values = _read_env_file(
+            resolve_local_path(self.credentials_file, config_dir),
+            setting="zulip.credentials_file",
+        )
+        missing = sorted({"ZULIP_EMAIL", "ZULIP_API_KEY"} - set(values))
+        if missing:
+            raise ConfigInvalidError(
+                f"zulip.credentials_file is missing {', '.join(missing)}"
+            )
+        return values["ZULIP_EMAIL"], values["ZULIP_API_KEY"]
+
+
+class PlaneConfig(StrictModel):
+    """Plane CE workspace plus an existing 0600 env file holding `PLANE_API_KEY`."""
+
+    url: str
+    workspace_slug: str
+    credentials_file: Path
+
+    def resolve_api_key(self, config_dir: Path) -> str:
+        values = _read_env_file(
+            resolve_local_path(self.credentials_file, config_dir),
+            setting="plane.credentials_file",
+        )
+        if "PLANE_API_KEY" not in values:
+            raise ConfigInvalidError("plane.credentials_file is missing PLANE_API_KEY")
+        return values["PLANE_API_KEY"]
+
+
 class Config(StrictModel):
     nautobot: NautobotConfig
     inventory: InventoryConfig
@@ -185,6 +242,8 @@ class Config(StrictModel):
     reconcile: ReconcileConfig = ReconcileConfig()
     ssh: SshConfig = SshConfig()
     storage: StorageConfig | None = None
+    zulip: ZulipConfig | None = None
+    plane: PlaneConfig | None = None
 
     # Where the config file was loaded from; relative paths resolve against its parent.
     source_path: Path
@@ -208,6 +267,22 @@ class Config(StrictModel):
                 "(endpoint, bucket, access_key, secret_key_file or secret_key_env)"
             )
         return self.storage
+
+    def require_zulip(self) -> ZulipConfig:
+        if self.zulip is None:
+            raise ConfigInvalidError(
+                "observing agent registration requires a [zulip] section in nctl.toml "
+                "(url, credentials_file)"
+            )
+        return self.zulip
+
+    def require_plane(self) -> PlaneConfig:
+        if self.plane is None:
+            raise ConfigInvalidError(
+                "observing agent registration requires a [plane] section in nctl.toml "
+                "(url, workspace_slug, credentials_file)"
+            )
+        return self.plane
 
     def resolved_storage_secret_key(self) -> str | None:
         return self.require_storage().resolve_secret_key(self.source_path.parent)

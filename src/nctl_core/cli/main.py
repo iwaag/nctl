@@ -15,6 +15,7 @@ import typer
 from pydantic import ValidationError
 
 from nctl_core.actual_render import build_actual, render_actual_text
+from nctl_core.agent_registration import observe_agents, render_observe_agents_text
 from nctl_core.braindump_render import (
     build_braindump_complete,
     build_braindump_create,
@@ -89,6 +90,7 @@ ssh_app = typer.Typer(help="Manage the local, alias-keyed SSH trust store nctl u
 session_app = typer.Typer(help="Create isolated agent-workspace session folders under .local/workspace/.")
 desired_app = typer.Typer(help="Preview or atomically apply a desired-state batch document.")
 workflow_episode_app = typer.Typer(help="Read and manage workflow-improvement episodes.")
+agents_app = typer.Typer(help="Observe agag agents' Zulip/Plane registration against desired state.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
 app.add_typer(ops_app, name="ops")
@@ -97,6 +99,7 @@ app.add_typer(ssh_app, name="ssh")
 app.add_typer(session_app, name="session")
 app.add_typer(desired_app, name="desired")
 app.add_typer(workflow_episode_app, name="workflow-episode")
+app.add_typer(agents_app, name="agents")
 
 
 @app.callback()
@@ -542,6 +545,23 @@ def lifecycle(
     emit(envelope, json_output, render_lifecycle_text)
     if any(error.code in ("invalid_lifecycle", "unknown_node") for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+@agents_app.command("observe")
+def agents_observe(
+    config: ConfigOption = None,
+    no_ingest: Annotated[bool, typer.Option("--no-ingest", help="Collect and print only; do not write the observation into Nautobot.")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the nctl.observe.agents.v1 envelope as JSON.")] = False,
+) -> None:
+    """Read each DesiredAgent's Zulip account/subscriptions and Plane membership, then ingest.
+
+    Reads only: the collector never writes to Zulip or Plane, and the Nautobot Job it
+    hands the result to refuses to invent a DesiredAgent from an observation.
+    """
+    cfg = _load_config(config)
+    envelope = observe_agents(cfg, ingest=not no_ingest)
+    emit(envelope, json_output, render_observe_agents_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 
