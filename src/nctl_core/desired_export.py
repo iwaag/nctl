@@ -43,6 +43,7 @@ from nctl_core.compute.model import DesiredComputeInstance, DesiredComputePlatfo
 from nctl_core.nautobot import NautobotClient, NautobotError
 from nctl_core.output import Envelope, EnvelopeError
 from nctl_core.sources.desired import (
+    DesiredAgent,
     DesiredEndpoint,
     DesiredEndpointRef,
     DesiredIPRange,
@@ -63,7 +64,7 @@ KIND_ORDER = (
     "desired_node", "desired_ip_range", "desired_endpoint",
     "desired_compute_platform", "desired_compute_instance", "desired_service",
     "desired_service_placement", "desired_service_binding", "desired_node_operational_override",
-    "desired_workspace",
+    "desired_workspace", "desired_agent",
 )
 
 # Snapshot model fields each kind's emitter consumes (or deliberately treats
@@ -103,6 +104,9 @@ _HANDLED_MODEL_FIELDS: dict[str, tuple[type[BaseModel], frozenset[str]]] = {
     "desired_workspace": (DesiredWorkspace, frozenset({
         "id", "slug", "name", "lifecycle", "source_remote_url", "expected_path",
         "desired_presence", "node_id", "node_slug"})),
+    "desired_agent": (DesiredAgent, frozenset({
+        "id", "slug", "name", "lifecycle", "zulip_user_id", "plane_user_id",
+        "desired_zulip_channels", "workspace_id", "workspace_slug", "placement_id"})),
 }
 
 
@@ -348,6 +352,25 @@ def export_document(snapshot: DesiredSnapshot) -> tuple[dict[str, Any], list[Env
             "desired_node": workspace.node_slug,
             "expected_path": workspace.expected_path,
             "desired_presence": workspace.desired_presence,
+        })
+
+    for agent in snapshot.agents:
+        _check_handled_fields("desired_agent", agent, context)
+        placement_identity = None
+        if agent.placement_id is not None:
+            placement_identity = context.resolve(
+                context.placement_identities, agent.placement_id,
+                kind="desired_agent", field="desired_service_placement", owner=agent.slug,
+            )
+        add("desired_agent", {"slug": agent.slug}, {
+            "name": agent.name,
+            "slug": agent.slug,
+            "lifecycle": agent.lifecycle,
+            "desired_workspace": agent.workspace_slug,
+            "desired_service_placement": placement_identity,
+            "zulip_user_id": agent.zulip_user_id,
+            "plane_user_id": agent.plane_user_id,
+            "desired_zulip_channels": list(agent.desired_zulip_channels),
         })
 
     operations.sort(key=lambda item: (item[0], item[1]))

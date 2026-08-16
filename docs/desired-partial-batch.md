@@ -70,9 +70,11 @@ writable `values` fields per kind.
 | `desired_service_binding` | `consumer_placement`, `binding_name` |
 | `desired_node_operational_override` | `desired_node` |
 | `desired_workspace` | `slug` |
+| `desired_agent` | `slug` |
 
 `consumer_placement` is itself a dict identity:
-`{desired_service: <slug>, instance_name: <name>}`.
+`{desired_service: <slug>, instance_name: <name>}`. So is a `desired_agent`'s
+`desired_service_placement` reference.
 
 ## Getting a known-good starting point
 

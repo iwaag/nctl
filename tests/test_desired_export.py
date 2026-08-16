@@ -16,6 +16,7 @@ import yaml
 from nctl_core.compute.model import DesiredComputeInstance, DesiredComputePlatform, DesiredSourceIssue
 from nctl_core.desired_export import KIND_ORDER, document_counts, document_to_yaml, export_document
 from nctl_core.sources.desired import (
+    DesiredAgent,
     DesiredEndpoint,
     DesiredEndpointRef,
     DesiredIPRange,
@@ -96,6 +97,14 @@ def full_snapshot() -> DesiredSnapshot:
                 node_id="node-1", node_slug="agpc",
             ),
         ],
+        agents=[
+            DesiredAgent(
+                id="ag-1", slug="cagent", name="cagent", lifecycle="active",
+                zulip_user_id=14, plane_user_id="plane-uuid-14",
+                desired_zulip_channels=["FreeForge", "general"],
+                workspace_id="ws-1", workspace_slug="pj-clusterintent", placement_id="pl-1",
+            ),
+        ],
         compute_platforms=[
             DesiredComputePlatform(
                 id="cp-1", name="pve-main", slug="pve-main", lifecycle="active",
@@ -173,11 +182,22 @@ def test_exports_every_kind_with_exact_expected_operations():
     workspace = by_kind["desired_workspace"][0]
     assert workspace["values"]["desired_node"] == "agpc"
 
+    agent = by_kind["desired_agent"][0]
+    assert agent["key"] == {"slug": "cagent"}
+    assert agent["values"] == {
+        "name": "cagent", "slug": "cagent", "lifecycle": "active",
+        "desired_workspace": "pj-clusterintent",
+        "desired_service_placement": {"desired_service": "ollama", "instance_name": "ollama"},
+        "zulip_user_id": 14, "plane_user_id": "plane-uuid-14",
+        "desired_zulip_channels": ["FreeForge", "general"],
+    }
+
     assert document_counts(document) == {
         "desired_node": 2, "desired_ip_range": 1, "desired_endpoint": 2,
         "desired_compute_platform": 1, "desired_compute_instance": 1, "desired_service": 2,
         "desired_service_placement": 2, "desired_service_binding": 1,
         "desired_node_operational_override": 1, "desired_workspace": 1,
+        "desired_agent": 1,
     }
 
 

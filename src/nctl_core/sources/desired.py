@@ -35,6 +35,12 @@ rows; `observation.py`'s `render_probe_hints` is the first consumer, driving
 roots below, not a required key, so existing fixtures that predate this
 field keep working.
 
+agent_intent p1 Step 1 addition: `desired_agents` carries `DesiredAgent` rows —
+an agag agent's registered identity (Zulip user id, desired channels, Plane user
+id) plus the workspace its listener runs from. Decoded with `.get(...) or []` so
+fixtures that predate the field keep working; the registration drift evaluation
+is its consumer.
+
 Compute roots are decoded here as transport data. Their pure row models,
 fixture-bound validation, collection assembly, and source-issue policy live
 in `nctl_core.compute`. Decode-time malformed-MAC tolerance stays here so an
@@ -173,6 +179,17 @@ DESIRED_QUERY = """
     desired_presence
     desired_node { id slug }
   }
+  desired_agents {
+    id
+    slug
+    name
+    lifecycle
+    zulip_user_id
+    plane_user_id
+    desired_zulip_channels
+    desired_workspace { id slug }
+    desired_service_placement { id }
+  }
   desired_compute_instances {
     id
     desired_node { id slug }
@@ -303,6 +320,21 @@ class DesiredWorkspace(BaseModel):
     node_slug: str
 
 
+class DesiredAgent(BaseModel):
+    """An agag agent identity: workspace, Zulip account, Plane account (agent_intent p1)."""
+
+    id: str
+    slug: str
+    name: str
+    lifecycle: str
+    zulip_user_id: int | None = None
+    plane_user_id: str = ""
+    desired_zulip_channels: list[str] = []
+    workspace_id: str | None = None
+    workspace_slug: str | None = None
+    placement_id: str | None = None
+
+
 class DesiredSnapshot(BaseModel):
     nodes: list[DesiredNode] = []
     endpoints: list[DesiredEndpoint] = []
@@ -312,6 +344,7 @@ class DesiredSnapshot(BaseModel):
     services: list[DesiredService] = []
     service_bindings: list[DesiredServiceBinding] = []
     workspaces: list[DesiredWorkspace] = []
+    agents: list[DesiredAgent] = []
     compute_platforms: list[DesiredComputePlatform] = []
     compute_instances: list[DesiredComputeInstance] = []
     # Valid writable instance rows excluded from `compute_instances` only by
@@ -344,6 +377,7 @@ def fetch_desired_snapshot(client: NautobotClient) -> DesiredSnapshot:
         services=[_build_service(row) for row in data["desired_services"]],
         service_bindings=[_build_service_binding(row) for row in data["desired_service_bindings"]],
         workspaces=[_build_workspace(row) for row in data.get("desired_workspaces") or []],
+        agents=[_build_agent(row) for row in data.get("desired_agents") or []],
         compute_platforms=compute_platforms,
         compute_instances=compute_instances,
         unready_compute_instances=decode_unready_instances(
@@ -470,6 +504,23 @@ def _build_workspace(row: dict[str, Any]) -> DesiredWorkspace:
         desired_presence=_lower(row["desired_presence"]),
         node_id=node["id"],
         node_slug=node["slug"],
+    )
+
+
+def _build_agent(row: dict[str, Any]) -> DesiredAgent:
+    workspace = row.get("desired_workspace") or {}
+    placement = row.get("desired_service_placement") or {}
+    return DesiredAgent(
+        id=row["id"],
+        slug=row["slug"],
+        name=row["name"],
+        lifecycle=_lower(row["lifecycle"]),
+        zulip_user_id=row.get("zulip_user_id"),
+        plane_user_id=row.get("plane_user_id") or "",
+        desired_zulip_channels=list(row.get("desired_zulip_channels") or []),
+        workspace_id=workspace.get("id"),
+        workspace_slug=workspace.get("slug"),
+        placement_id=placement.get("id"),
     )
 
 
