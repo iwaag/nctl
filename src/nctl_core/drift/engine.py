@@ -2,7 +2,7 @@
 over a `SourceSnapshot` and groups the resulting diff records into one
 `TargetStatus` per target.
 
-Every desired node, service, and workspace is seeded into the result up front
+Every desired node, service, workspace, and agent is seeded into the result up front
 (with zero diffs, hence `converged`) so a node, service, or workspace nobody
 flagged anything about still appears in `nctl.drift.v1`'s target list — the
 roadmap's "AI can read just that to explain the current state" only holds if
@@ -73,6 +73,12 @@ def _group_by_target(
 
     for workspace in snapshot.desired.workspaces:
         target = Target(kind="workspace", slug=workspace.slug, name=workspace.name, id=workspace.id)
+        key = _target_key(target)
+        grouped[key] = []
+        target_by_key[key] = target
+
+    for agent in snapshot.desired.agents:
+        target = Target(kind="agent", slug=agent.slug, name=agent.name, id=agent.id)
         key = _target_key(target)
         grouped[key] = []
         target_by_key[key] = target

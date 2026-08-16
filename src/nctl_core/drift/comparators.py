@@ -70,6 +70,7 @@ from .evaluation import EvaluationResult
 from .evaluation_snapshot import parse_now, evaluate_all_endpoints, evaluate_all_nodes, evaluate_all_services
 from .model import DiffRecord, Severity, Target
 from .registry import register
+from .agent_evaluation import evaluate_all_agents
 from .workspace_evaluation import evaluate_all_workspaces
 from nctl_core.compute.manual_initial_access import awaiting_manual_initial_access
 
@@ -435,6 +436,62 @@ def workspace_intent_matching(snapshot: SourceSnapshot, context: DriftContext) -
                 actual=evidence,
                 sources=["desired", "actual"],
             )
+
+
+_AGENT_SEVERITY_BY_CODE = {
+    "agent_zulip_account_missing": Severity.ERROR,
+    "agent_zulip_account_deactivated": Severity.ERROR,
+    "agent_zulip_channel_unsubscribed": Severity.ERROR,
+    "agent_plane_membership_missing": Severity.ERROR,
+    "agent_zulip_identity_undeclared": Severity.WARNING,
+    "agent_plane_identity_undeclared": Severity.WARNING,
+    "agent_registration_unobserved": Severity.WARNING,
+}
+
+
+@register("agent")
+def agent_registration_matching(snapshot: SourceSnapshot, context: DriftContext) -> Iterator[DiffRecord]:
+    """agent_intent p1 step 5: one `DiffRecord` per registration gap.
+
+    The `liveness_class` the evaluation also computes is deliberately never
+    read here — liveness is informational in p1 and reconcile must not be able
+    to consume it as drift.
+    """
+
+    evaluations = evaluate_all_agents(
+        snapshot.desired.agents,
+        snapshot.desired.workspaces,
+        snapshot.desired.nodes,
+        snapshot.actual.devices,
+        snapshot.actual.agent_registrations,
+        now=parse_now(context.generated_at),
+    )
+    for agent in snapshot.desired.agents:
+        target = Target(kind="agent", slug=agent.slug, name=agent.name, id=agent.id)
+        evaluation = evaluations[agent.id]
+        for gap in evaluation.gaps:
+            code = gap["code"]
+            evidence = {key: value for key, value in gap.items() if key != "code"}
+            yield DiffRecord(
+                target=target,
+                code=code,
+                severity=_AGENT_SEVERITY_BY_CODE.get(code, Severity.WARNING),
+                message=f"{agent.slug}: {code}",
+                actual=evidence,
+                sources=["desired", "actual"],
+            )
+        # Informational only, and INFO on purpose: `derive_status` changes a
+        # target's status on error-severity diffs alone, so this is visible in
+        # `nctl drift` without a stale listener ever making an agent "drifting".
+        # No reconciler maps this code, and p1 says none should.
+        yield DiffRecord(
+            target=target,
+            code="agent_liveness",
+            severity=Severity.INFO,
+            message=f"{agent.slug}: liveness={evaluation.liveness_class}",
+            actual={"liveness_class": evaluation.liveness_class, **evaluation.liveness_reasons},
+            sources=["actual"],
+        )
 
 
 def _gap_diffs(target: Target, evaluation: EvaluationResult) -> Iterator[DiffRecord]:

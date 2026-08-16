@@ -81,6 +81,19 @@ ACTUAL_QUERY = """
     interfaces { id }
     vm_interfaces { id }
   }
+  observed_agent_registrations {
+    id
+    observed_at
+    collector
+    zulip_present
+    zulip_user_id
+    zulip_is_active
+    zulip_channels
+    plane_present
+    plane_user_id
+    plane_role
+    desired_agent { id slug }
+  }
 }
 """
 
@@ -513,6 +526,23 @@ class ActualIPAddress(BaseModel):
     vm_interface_ids: list[str] = []
 
 
+class ObservedAgentRegistration(BaseModel):
+    """One agent's last observed Zulip/Plane registration (agent_intent p1 step 5)."""
+
+    id: str
+    agent_id: str
+    agent_slug: str
+    observed_at: str | None = None
+    collector: str = ""
+    zulip_present: bool = False
+    zulip_user_id: int | None = None
+    zulip_is_active: bool = False
+    zulip_channels: list[str] = []
+    plane_present: bool = False
+    plane_user_id: str = ""
+    plane_role: int | None = None
+
+
 class ActualSnapshot(BaseModel):
     devices: list[ActualDevice] = []
     virtual_machines: list[ActualVirtualMachine] = []
@@ -521,6 +551,7 @@ class ActualSnapshot(BaseModel):
     clusters: list[ActualCluster] = []
     vm_interfaces: list[ActualVMInterface] = []
     proxmox_read_errors: list[ProxmoxFactsReadError] = []
+    agent_registrations: list[ObservedAgentRegistration] = []
 
 
 def fetch_actual_snapshot(client: NautobotClient) -> ActualSnapshot:
@@ -536,8 +567,30 @@ def fetch_actual_snapshot(client: NautobotClient) -> ActualSnapshot:
         clusters=[_build_cluster(row, read_errors) for row in data.get("clusters", [])],
         vm_interfaces=[_build_vm_interface(row, read_errors) for row in data.get("vm_interfaces", [])],
         proxmox_read_errors=read_errors,
+        agent_registrations=[
+            _build_agent_registration(row)
+            for row in data.get("observed_agent_registrations") or []
+        ],
     )
     return snapshot
+
+
+def _build_agent_registration(row: dict[str, Any]) -> ObservedAgentRegistration:
+    agent = row.get("desired_agent") or {}
+    return ObservedAgentRegistration(
+        id=row["id"],
+        agent_id=agent.get("id") or "",
+        agent_slug=agent.get("slug") or "",
+        observed_at=row.get("observed_at"),
+        collector=row.get("collector") or "",
+        zulip_present=bool(row.get("zulip_present")),
+        zulip_user_id=row.get("zulip_user_id"),
+        zulip_is_active=bool(row.get("zulip_is_active")),
+        zulip_channels=list(row.get("zulip_channels") or []),
+        plane_present=bool(row.get("plane_present")),
+        plane_user_id=row.get("plane_user_id") or "",
+        plane_role=row.get("plane_role"),
+    )
 
 
 def _build_device(row: dict[str, Any]) -> ActualDevice:

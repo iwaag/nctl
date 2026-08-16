@@ -63,6 +63,29 @@ state, same as `drift`.
 | `drifting` | an error-severity diff exists and nothing in flight explains it |
 | `unknown` | required actual data is missing, stale, or never linked — nctl cannot see this target, which is different from it having drifted |
 
+## Agent targets and liveness
+
+`kind="agent"` targets (agent_intent p1) carry two independent things, and the split is
+deliberate:
+
+- **Registration gaps are drift.** `agent_zulip_account_missing`,
+  `agent_zulip_account_deactivated`, `agent_zulip_channel_unsubscribed`, and
+  `agent_plane_membership_missing` are error-severity: the realm does not match what was
+  declared. `agent_zulip_identity_undeclared` / `agent_plane_identity_undeclared` (the
+  desired row has no id to match on) and `agent_registration_unobserved` (nothing has been
+  collected yet) are warnings — a hole in the declaration or in the observation, not a
+  disagreement.
+- **Liveness is not drift.** Every agent target also carries one info-severity
+  `agent_liveness` diff whose evidence holds `liveness_class`: `polling` (its status file
+  was written within three long-poll windows), `stale`, or `unobserved` with a reason.
+  Info diffs never change a target's status, so a stopped listener never makes an agent
+  `drifting`, and no reconciler maps this code. A listener may be restarting, mid-deploy,
+  or deliberately stopped; p1 refuses to call that drift until there is false-positive data
+  saying it deserves to be one.
+
+Refresh the underlying observations with `nctl agents observe` (registration) and
+`nctl reconcile <host> --refresh-observation --yes` (the node-side status file).
+
 For a specific bounded operation's outcome, use its `result.json` (embedded in `nctl reconcile`
 output, or read later via `nctl ops show`) rather than re-deriving it from a separately cached
 status. For historical operations, `nctl ops list`/`nctl ops show` read past and running
