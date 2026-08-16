@@ -89,7 +89,8 @@ def test_a_fully_registered_polling_agent_has_no_gaps():
     result = evaluate()
     assert result.gaps == []
     assert result.liveness_class == "polling"
-    assert result.liveness_reasons["effective_age_seconds"] == 40.0
+    assert result.liveness_reasons["age_seconds_at_collection"] == 30.0
+    assert result.liveness_reasons["observation_age_seconds"] == 10.0
 
 
 def test_a_missing_zulip_account_is_a_gap():
@@ -144,16 +145,17 @@ def test_liveness_goes_stale_past_the_threshold_without_producing_a_gap():
 
 
 def test_the_threshold_is_inclusive_at_exactly_three_poll_windows():
-    result = evaluate(devices=[device(polling_status(age_seconds=260.0, seconds_since_collection=10.0))])
+    result = evaluate(devices=[device(polling_status(age_seconds=270.0, seconds_since_collection=10.0))])
     assert result.liveness_class == "polling"
-    result = evaluate(devices=[device(polling_status(age_seconds=261.0, seconds_since_collection=10.0))])
+    result = evaluate(devices=[device(polling_status(age_seconds=271.0, seconds_since_collection=10.0))])
     assert result.liveness_class == "stale"
 
 
-def test_collection_age_counts_toward_liveness_so_a_frozen_observation_goes_stale():
-    """A status file that was fresh when collected, but collected long ago, is not liveness."""
+def test_an_old_observation_of_a_polling_agent_still_reads_polling():
+    """The class describes the agent as of the look; the look's own age rides beside it."""
     result = evaluate(devices=[device(polling_status(age_seconds=5.0, seconds_since_collection=3600.0))])
-    assert result.liveness_class == "stale"
+    assert result.liveness_class == "polling"
+    assert result.liveness_reasons["observation_age_seconds"] == 3600.0
 
 
 def test_every_way_of_not_knowing_is_unobserved_with_a_reason():

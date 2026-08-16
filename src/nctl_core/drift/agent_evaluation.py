@@ -24,6 +24,11 @@ Liveness is read from the agent's `DesiredWorkspace` observation
 (`agent_status`, put there by nodeutils), so an agent with no declared
 workspace is `unobserved` rather than dead — the difference between "we looked
 and saw nothing" and "we never looked" is kept visible.
+
+The class describes the agent **as of the observation**: an agent that was
+polling when nodeutils looked reads `polling`, however long ago that was. How
+old the look itself is rides along as `observation_age_seconds`, the same way
+`nctl workspaces` keeps observation freshness in its own column.
 """
 
 from __future__ import annotations
@@ -119,23 +124,26 @@ def _liveness(
         reason = "status_file_unreadable" if isinstance(status, dict) else "no_status_file"
         return "unobserved", {"reason": reason, "workspace": workspace.slug}
 
-    # The node computed `age_seconds` on its own clock at collection time; add
-    # the age of the collection itself, measured here. Neither term compares
-    # two different machines' clocks, so skew never enters the answer.
+    # The node computed `age_seconds` on its own clock at collection time, and
+    # that is the whole verdict: it answers "was this listener polling when we
+    # looked", which is the only question the status file can answer. The age
+    # of the observation itself is a property of the collector's schedule, not
+    # of the agent, so it travels beside the class as `observation_age_seconds`
+    # rather than being added into it — otherwise every agent in the realm goes
+    # stale in lockstep whenever nodeutils simply has not run for a while.
+    # Neither term compares two machines' clocks, so skew never enters either.
     age = status.get("age_seconds")
     if not isinstance(age, (int, float)):
         return "unobserved", {"reason": "status_age_missing", "workspace": workspace.slug}
     collection_age = _observation_age_seconds(status.get("checked_at"), now)
-    total = float(age) + (collection_age or 0.0)
     reasons: dict[str, Any] = {
         "workspace": workspace.slug,
         "age_seconds_at_collection": round(float(age), 3),
-        "seconds_since_collection": None if collection_age is None else round(collection_age, 3),
-        "effective_age_seconds": round(total, 3),
+        "observation_age_seconds": None if collection_age is None else round(collection_age, 3),
     }
     if status.get("last_error"):
         reasons["last_error"] = status["last_error"]
-    return ("polling" if total <= stale_after_seconds else "stale"), reasons
+    return ("polling" if float(age) <= stale_after_seconds else "stale"), reasons
 
 
 def evaluate_agent(
