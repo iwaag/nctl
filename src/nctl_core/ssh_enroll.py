@@ -82,9 +82,25 @@ class SshProbeRunner:
     keygen_find: Callable[[Path, str], subprocess.CompletedProcess[str]]
 
 
+# ssh-keyscan opens one connection per key type (5 in current OpenSSH: rsa,
+# ecdsa, ed25519 and the two -sk types) and re-resolves the hostname for every
+# one of them, and `-T` bounds only the connection/exchange -- name resolution
+# sits outside it. A .local host that never answers mDNS AAAA queries (agpc)
+# therefore costs ~5s of resolver stall per connection: 25s wall clock however
+# small `-T` is, straight through the `timeout_seconds + 5` subprocess cap, and
+# a perfectly reachable node surfaces as ssh_host_key_unreachable. `-4` skips
+# the AAAA wait entirely -- every cluster route (LAN 192.168.0.x, Tailscale
+# 100.x) is IPv4, so an IPv6-only node is the one thing this scan would miss.
+# Independently, the per-connection `-T` budget is divided across the 5
+# connections so a genuinely slow host also stays within
+# `keyscan_timeout_seconds`, which is what the config key promises.
+_KEYSCAN_CONNECTIONS_PER_SCAN = 5
+
+
 def _default_keyscan(host: str, port: int, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
+    per_connection = max(1, int(timeout_seconds) // _KEYSCAN_CONNECTIONS_PER_SCAN)
     return subprocess.run(
-        ["ssh-keyscan", "-p", str(port), "-T", str(max(1, int(timeout_seconds))), host],
+        ["ssh-keyscan", "-4", "-p", str(port), "-T", str(per_connection), host],
         capture_output=True,
         text=True,
         check=False,
