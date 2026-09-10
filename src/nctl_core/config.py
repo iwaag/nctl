@@ -216,23 +216,6 @@ class ZulipConfig(StrictModel):
         return values["ZULIP_EMAIL"], values["ZULIP_API_KEY"]
 
 
-class PlaneConfig(StrictModel):
-    """Plane CE workspace plus an existing 0600 env file holding `PLANE_API_KEY`."""
-
-    url: str
-    workspace_slug: str
-    credentials_file: Path
-
-    def resolve_api_key(self, config_dir: Path) -> str:
-        values = _read_env_file(
-            resolve_local_path(self.credentials_file, config_dir),
-            setting="plane.credentials_file",
-        )
-        if "PLANE_API_KEY" not in values:
-            raise ConfigInvalidError("plane.credentials_file is missing PLANE_API_KEY")
-        return values["PLANE_API_KEY"]
-
-
 class Config(StrictModel):
     nautobot: NautobotConfig
     inventory: InventoryConfig
@@ -243,7 +226,6 @@ class Config(StrictModel):
     ssh: SshConfig = SshConfig()
     storage: StorageConfig | None = None
     zulip: ZulipConfig | None = None
-    plane: PlaneConfig | None = None
 
     # Where the config file was loaded from; relative paths resolve against its parent.
     source_path: Path
@@ -275,14 +257,6 @@ class Config(StrictModel):
                 "(url, credentials_file)"
             )
         return self.zulip
-
-    def require_plane(self) -> PlaneConfig:
-        if self.plane is None:
-            raise ConfigInvalidError(
-                "observing agent registration requires a [plane] section in nctl.toml "
-                "(url, workspace_slug, credentials_file)"
-            )
-        return self.plane
 
     def resolved_storage_secret_key(self) -> str | None:
         return self.require_storage().resolve_secret_key(self.source_path.parent)

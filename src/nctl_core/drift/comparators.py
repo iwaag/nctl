@@ -442,9 +442,7 @@ _AGENT_SEVERITY_BY_CODE = {
     "agent_zulip_account_missing": Severity.ERROR,
     "agent_zulip_account_deactivated": Severity.ERROR,
     "agent_zulip_channel_unsubscribed": Severity.ERROR,
-    "agent_plane_membership_missing": Severity.ERROR,
     "agent_zulip_identity_undeclared": Severity.WARNING,
-    "agent_plane_identity_undeclared": Severity.WARNING,
     "agent_registration_unobserved": Severity.WARNING,
 }
 

@@ -1,8 +1,8 @@
 """Collect, validate, and ingest observed agag agent registration (agent_intent p1 step 3).
 
 The same collect -> validate -> ingest-through-a-Job shape as `observation.py`:
-nctl holds the Zulip and Plane admin credentials and does every read, the
-Nautobot Job holds none and only writes what it is handed.
+nctl holds the Zulip credential and does every read, the Nautobot Job holds
+none and only writes what it is handed.
 
 What is read, per `DesiredAgent`:
 
@@ -11,7 +11,11 @@ What is read, per `DesiredAgent`:
   from events), then one `GET /users/{id}/subscriptions/{stream_id}` per
   *desired* channel. A member bot may ask this about any stream it can itself
   see, so no realm-owner credential is needed.
-- **Plane** the workspace members list, matched on `plane_user_id`.
+
+Until `refactor` p3 this also read Plane's workspace member list and matched
+each agent's `plane_user_id`. Plane is gone, and with it the only reason this
+observation needed a second admin credential: an agent's messaging identity
+is the Zulip bot user id and nothing else.
 
 `zulip_channels` therefore records the desired channels **confirmed
 subscribed**, not the agent's full subscription list — enumerating another
@@ -20,7 +24,7 @@ ever "is the agent on the channels it must hear". A desired channel that does
 not exist in the realm reads the same as one the agent is not on: both are a
 missing subscription.
 
-This module observes. It never writes to Zulip or Plane, and it never creates a
+This module observes. It never writes to Zulip, and it never creates a
 `DesiredAgent` from what it finds — desired state is not invented from actual
 state.
 """
@@ -55,9 +59,6 @@ class AgentRegistrationRow(BaseModel):
     zulip_user_id: int | None = None
     zulip_is_active: bool = False
     zulip_channels: list[str] = Field(default_factory=list)
-    plane_present: bool = False
-    plane_user_id: str = ""
-    plane_role: int | None = None
 
 
 class AgentRegistrationCollection(BaseModel):
@@ -117,44 +118,15 @@ class ZulipReader:
         return bool(self._get(f"/api/v1/users/{user_id}/subscriptions/{stream_id}").get("is_subscribed"))
 
 
-class PlaneReader:
-    """Read-only Plane CE workspace reader over the configured admin API key."""
-
-    def __init__(self, url: str, workspace_slug: str, api_key: str, timeout: float = 15.0) -> None:
-        self.workspace_slug = workspace_slug
-        self._client = httpx.Client(
-            base_url=url.rstrip("/"), headers={"X-API-Key": api_key}, timeout=timeout
-        )
-
-    def close(self) -> None:
-        self._client.close()
-
-    def __enter__(self) -> "PlaneReader":
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
-
-    def members(self) -> dict[str, dict[str, Any]]:
-        response = self._client.get(f"/api/v1/workspaces/{self.workspace_slug}/members/")
-        response.raise_for_status()
-        rows = response.json()
-        if not isinstance(rows, list):
-            raise httpx.HTTPError(f"plane members list is not a list: {type(rows).__name__}")
-        return {str(row["id"]): row for row in rows}
-
-
 def collect_agent_registration(
     agents: list[DesiredAgent],
     zulip: ZulipReader,
-    plane: PlaneReader,
     *,
     now: datetime | None = None,
 ) -> AgentRegistrationCollection:
-    """Pure-ish collection: one Zulip/Plane read pass over the desired agents."""
+    """Pure-ish collection: one Zulip read pass over the desired agents."""
     users = zulip.users()
     streams = zulip.stream_ids()
-    members = plane.members()
     rows = []
     for agent in sorted(agents, key=lambda item: item.slug):
         row = AgentRegistrationRow(slug=agent.slug)
@@ -168,12 +140,6 @@ def collect_agent_registration(
                 for name in agent.desired_zulip_channels
                 if name in streams and zulip.is_subscribed(agent.zulip_user_id, streams[name])
             )
-        member = members.get(agent.plane_user_id) if agent.plane_user_id else None
-        if member is not None:
-            row.plane_present = True
-            row.plane_user_id = agent.plane_user_id
-            role = member.get("role")
-            row.plane_role = int(role) if isinstance(role, int) else None
         rows.append(row)
     return AgentRegistrationCollection(
         observed_at=now or datetime.now(timezone.utc), agents=rows
@@ -186,10 +152,8 @@ def observe_agents(cfg: Config, *, ingest: bool = True) -> Envelope:
     errors: list[EnvelopeError] = []
     try:
         zulip_cfg = cfg.require_zulip()
-        plane_cfg = cfg.require_plane()
         config_dir = cfg.source_path.parent
         zulip_email, zulip_key = zulip_cfg.resolve_credentials(config_dir)
-        plane_key = plane_cfg.resolve_api_key(config_dir)
     except ConfigError as exc:
         return Envelope.build(
             OBSERVE_SCHEMA, data,
@@ -209,8 +173,8 @@ def observe_agents(cfg: Config, *, ingest: bool = True) -> Envelope:
             )
         with ZulipReader(
             zulip_cfg.url, zulip_email, zulip_key, verify_tls=zulip_cfg.verify_tls
-        ) as zulip, PlaneReader(plane_cfg.url, plane_cfg.workspace_slug, plane_key) as plane:
-            collection = collect_agent_registration(agents, zulip, plane)
+        ) as zulip:
+            collection = collect_agent_registration(agents, zulip)
         data.observed_at = collection.observed_at
         data.agents = collection.agents
 
@@ -241,7 +205,7 @@ def render_observe_agents_text(envelope: Envelope) -> str:
         channels = ", ".join(row.zulip_channels) or "-"
         lines.append(
             f"{row.slug}: zulip={'yes' if row.zulip_present else 'no'} "
-            f"channels=[{channels}] plane={'yes' if row.plane_present else 'no'}"
+            f"active={'yes' if row.zulip_is_active else 'no'} channels=[{channels}]"
         )
     if data.ingested:
         lines.append("ingested through the Nautobot Job")

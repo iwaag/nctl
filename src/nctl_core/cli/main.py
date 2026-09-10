@@ -90,7 +90,7 @@ ssh_app = typer.Typer(help="Manage the local, alias-keyed SSH trust store nctl u
 session_app = typer.Typer(help="Create isolated agent-workspace session folders under .local/workspace/.")
 desired_app = typer.Typer(help="Preview or atomically apply a desired-state batch document.")
 workflow_episode_app = typer.Typer(help="Read and manage workflow-improvement episodes.")
-agents_app = typer.Typer(help="Observe agag agents' Zulip/Plane registration against desired state.")
+agents_app = typer.Typer(help="Observe agag agents' Zulip registration against desired state.")
 app.add_typer(render_app, name="render")
 app.add_typer(apply_app, name="apply")
 app.add_typer(ops_app, name="ops")
@@ -554,9 +554,9 @@ def agents_observe(
     no_ingest: Annotated[bool, typer.Option("--no-ingest", help="Collect and print only; do not write the observation into Nautobot.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Print the nctl.observe.agents.v1 envelope as JSON.")] = False,
 ) -> None:
-    """Read each DesiredAgent's Zulip account/subscriptions and Plane membership, then ingest.
+    """Read each DesiredAgent's Zulip account and subscriptions, then ingest.
 
-    Reads only: the collector never writes to Zulip or Plane, and the Nautobot Job it
+    Reads only: the collector never writes to Zulip, and the Nautobot Job it
     hands the result to refuses to invent a DesiredAgent from an observation.
     """
     cfg = _load_config(config)

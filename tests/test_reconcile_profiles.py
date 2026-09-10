@@ -12,6 +12,7 @@ from nctl_core.reconcile.profiles import (
 )
 
 _REPO_PROFILE_NAMES = {
+    "agag_agent",
     "autolab_node",
     "cron_task",
     "dnsmasq",

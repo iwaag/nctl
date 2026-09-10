@@ -36,7 +36,7 @@ roots below, not a required key, so existing fixtures that predate this
 field keep working.
 
 agent_intent p1 Step 1 addition: `desired_agents` carries `DesiredAgent` rows —
-an agag agent's registered identity (Zulip user id, desired channels, Plane user
+an agag agent's registered identity (Zulip user id, desired channels
 id) plus the workspace its listener runs from. Decoded with `.get(...) or []` so
 fixtures that predate the field keep working; the registration drift evaluation
 is its consumer.
@@ -185,7 +185,6 @@ DESIRED_QUERY = """
     name
     lifecycle
     zulip_user_id
-    plane_user_id
     desired_zulip_channels
     desired_workspace { id slug }
     desired_service_placement { id }
@@ -321,14 +320,15 @@ class DesiredWorkspace(BaseModel):
 
 
 class DesiredAgent(BaseModel):
-    """An agag agent identity: workspace, Zulip account, Plane account (agent_intent p1)."""
+    """An agag agent identity: workspace and Zulip account (agent_intent p1).
+
+    The Plane account went with Plane in `refactor` p3."""
 
     id: str
     slug: str
     name: str
     lifecycle: str
     zulip_user_id: int | None = None
-    plane_user_id: str = ""
     desired_zulip_channels: list[str] = []
     workspace_id: str | None = None
     workspace_slug: str | None = None
@@ -516,7 +516,6 @@ def _build_agent(row: dict[str, Any]) -> DesiredAgent:
         name=row["name"],
         lifecycle=_lower(row["lifecycle"]),
         zulip_user_id=row.get("zulip_user_id"),
-        plane_user_id=row.get("plane_user_id") or "",
         desired_zulip_channels=list(row.get("desired_zulip_channels") or []),
         workspace_id=workspace.get("id"),
         workspace_slug=workspace.get("slug"),

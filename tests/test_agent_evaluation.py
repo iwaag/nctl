@@ -14,7 +14,7 @@ NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 def agent(**overrides) -> DesiredAgent:
     values = {
         "id": "ag-1", "slug": "agforge", "name": "agforge", "lifecycle": "active",
-        "zulip_user_id": 13, "plane_user_id": "plane-13",
+        "zulip_user_id": 13,
         "desired_zulip_channels": ["FreeForge", "ops"],
         "workspace_id": "ws-1",
     }
@@ -28,7 +28,6 @@ def registration(**overrides) -> ObservedAgentRegistration:
         "observed_at": "2026-08-17T11:59:00+00:00",
         "zulip_present": True, "zulip_user_id": 13, "zulip_is_active": True,
         "zulip_channels": ["FreeForge", "ops"],
-        "plane_present": True, "plane_user_id": "plane-13", "plane_role": 20,
     }
     values.update(overrides)
     return ObservedAgentRegistration(**values)
@@ -113,19 +112,12 @@ def test_extra_subscriptions_beyond_the_desired_set_are_not_drift():
     assert result.gaps == []
 
 
-def test_a_missing_plane_membership_is_a_gap():
-    result = evaluate(registrations=[registration(plane_present=False)])
-    assert [gap["code"] for gap in result.gaps] == ["agent_plane_membership_missing"]
-
-
-def test_an_agent_with_no_declared_ids_reports_undeclared_not_missing():
+def test_an_agent_with_no_declared_id_reports_undeclared_not_missing():
     result = evaluate(
-        agents=[agent(zulip_user_id=None, plane_user_id="", desired_zulip_channels=[])],
-        registrations=[registration(zulip_present=False, plane_present=False)],
+        agents=[agent(zulip_user_id=None, desired_zulip_channels=[])],
+        registrations=[registration(zulip_present=False)],
     )
-    assert [gap["code"] for gap in result.gaps] == [
-        "agent_zulip_identity_undeclared", "agent_plane_identity_undeclared",
-    ]
+    assert [gap["code"] for gap in result.gaps] == ["agent_zulip_identity_undeclared"]
 
 
 def test_a_never_observed_agent_says_so_instead_of_claiming_every_gap():

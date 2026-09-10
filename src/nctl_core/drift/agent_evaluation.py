@@ -9,10 +9,11 @@ promote it to drift.
 **Registration is drift. Liveness is not.**
 
 - A gap means the cluster is not arranged the way it was declared: the agent's
-  Zulip account is missing or deactivated, a channel it must hear is not
-  subscribed, or its Plane membership is absent. Each is deterministic,
-  actionable, and false-positive-free — the collector reports presence, not
-  guesses.
+  Zulip account is missing or deactivated, or a channel it must hear is not
+  subscribed. Each is deterministic, actionable, and false-positive-free —
+  the collector reports presence, not guesses. (`refactor` p3 removed the
+  Plane membership gaps with Plane itself; messaging identity is the Zulip
+  bot user id and nothing else.)
 - `liveness_class` (`polling` / `stale` / `unobserved`) is the freshness of the
   agent's own status file, which is a property of a process that may be
   restarting, mid-deploy, or deliberately stopped. p1 refuses to call that
@@ -93,10 +94,6 @@ def _registration_gaps(
         if missing:
             gaps.append({"code": "agent_zulip_channel_unsubscribed", "channels": missing})
 
-    if not agent.plane_user_id:
-        gaps.append({"code": "agent_plane_identity_undeclared"})
-    elif not observation.plane_present:
-        gaps.append({"code": "agent_plane_membership_missing", "plane_user_id": agent.plane_user_id})
     return gaps
 
 

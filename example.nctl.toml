@@ -70,8 +70,3 @@ credentials_file = ".local/zulip/observer.env"
 # The local realm serves a self-signed certificate.
 verify_tls = false
 
-[plane]
-# Optional: only `nctl agents observe` needs it. credentials_file holds PLANE_API_KEY.
-url = "http://plane.example.invalid:8290"
-workspace_slug = "agautolab"
-credentials_file = ".local/plane-credentials.env"

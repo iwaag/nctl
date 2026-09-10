@@ -69,12 +69,13 @@ state, same as `drift`.
 deliberate:
 
 - **Registration gaps are drift.** `agent_zulip_account_missing`,
-  `agent_zulip_account_deactivated`, `agent_zulip_channel_unsubscribed`, and
-  `agent_plane_membership_missing` are error-severity: the realm does not match what was
-  declared. `agent_zulip_identity_undeclared` / `agent_plane_identity_undeclared` (the
-  desired row has no id to match on) and `agent_registration_unobserved` (nothing has been
-  collected yet) are warnings — a hole in the declaration or in the observation, not a
-  disagreement.
+  `agent_zulip_account_deactivated` and `agent_zulip_channel_unsubscribed` are
+  error-severity: the realm does not match what was declared.
+  `agent_zulip_identity_undeclared` (the desired row has no id to match on) and
+  `agent_registration_unobserved` (nothing has been collected yet) are warnings — a hole
+  in the declaration or in the observation, not a disagreement. `refactor` p3 removed the
+  two Plane codes with Plane itself: an agent's messaging identity is its Zulip bot user
+  id, and there is no second account for it to be missing from.
 - **Liveness is not drift.** Every agent target also carries one info-severity
   `agent_liveness` diff whose evidence holds `liveness_class`: `polling` (its status file
   was written within three long-poll windows), `stale`, or `unobserved` with a reason.

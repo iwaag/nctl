@@ -100,7 +100,7 @@ def full_snapshot() -> DesiredSnapshot:
         agents=[
             DesiredAgent(
                 id="ag-1", slug="cagent", name="cagent", lifecycle="active",
-                zulip_user_id=14, plane_user_id="plane-uuid-14",
+                zulip_user_id=14,
                 desired_zulip_channels=["FreeForge", "general"],
                 workspace_id="ws-1", workspace_slug="pj-clusterintent", placement_id="pl-1",
             ),
@@ -188,7 +188,7 @@ def test_exports_every_kind_with_exact_expected_operations():
         "name": "cagent", "slug": "cagent", "lifecycle": "active",
         "desired_workspace": "pj-clusterintent",
         "desired_service_placement": {"desired_service": "ollama", "instance_name": "ollama"},
-        "zulip_user_id": 14, "plane_user_id": "plane-uuid-14",
+        "zulip_user_id": 14,
         "desired_zulip_channels": ["FreeForge", "general"],
     }
 

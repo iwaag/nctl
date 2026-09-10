@@ -89,9 +89,6 @@ ACTUAL_QUERY = """
     zulip_user_id
     zulip_is_active
     zulip_channels
-    plane_present
-    plane_user_id
-    plane_role
     desired_agent { id slug }
   }
 }
@@ -527,7 +524,10 @@ class ActualIPAddress(BaseModel):
 
 
 class ObservedAgentRegistration(BaseModel):
-    """One agent's last observed Zulip/Plane registration (agent_intent p1 step 5)."""
+    """One agent's last observed Zulip registration (agent_intent p1 step 5).
+
+    `refactor` p3 removed the Plane half: an agent's messaging identity is its
+    Zulip bot user id, and there is no second account to be present in."""
 
     id: str
     agent_id: str
@@ -538,9 +538,6 @@ class ObservedAgentRegistration(BaseModel):
     zulip_user_id: int | None = None
     zulip_is_active: bool = False
     zulip_channels: list[str] = []
-    plane_present: bool = False
-    plane_user_id: str = ""
-    plane_role: int | None = None
 
 
 class ActualSnapshot(BaseModel):
@@ -587,9 +584,6 @@ def _build_agent_registration(row: dict[str, Any]) -> ObservedAgentRegistration:
         zulip_user_id=row.get("zulip_user_id"),
         zulip_is_active=bool(row.get("zulip_is_active")),
         zulip_channels=list(row.get("zulip_channels") or []),
-        plane_present=bool(row.get("plane_present")),
-        plane_user_id=row.get("plane_user_id") or "",
-        plane_role=row.get("plane_role"),
     )
 
 

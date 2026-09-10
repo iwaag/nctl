@@ -105,7 +105,7 @@ _HANDLED_MODEL_FIELDS: dict[str, tuple[type[BaseModel], frozenset[str]]] = {
         "id", "slug", "name", "lifecycle", "source_remote_url", "expected_path",
         "desired_presence", "node_id", "node_slug"})),
     "desired_agent": (DesiredAgent, frozenset({
-        "id", "slug", "name", "lifecycle", "zulip_user_id", "plane_user_id",
+        "id", "slug", "name", "lifecycle", "zulip_user_id",
         "desired_zulip_channels", "workspace_id", "workspace_slug", "placement_id"})),
 }
 
@@ -369,7 +369,6 @@ def export_document(snapshot: DesiredSnapshot) -> tuple[dict[str, Any], list[Env
             "desired_workspace": agent.workspace_slug,
             "desired_service_placement": placement_identity,
             "zulip_user_id": agent.zulip_user_id,
-            "plane_user_id": agent.plane_user_id,
             "desired_zulip_channels": list(agent.desired_zulip_channels),
         })
 
