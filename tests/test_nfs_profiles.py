@@ -44,7 +44,10 @@ def test_repo_declares_nfs_profiles_with_state_proofs():
 
     assert profiles["nfs_server"]["placement_list_variable"] == "nfs_server_exports"
     assert profiles["nfs_client"]["placement_list_variable"] == "nfs_client_mounts"
-    assert entries["nfs_server"].action.playbook_by_os == {"linux": "playbooks/services/setup_nfs_server.yml"}
+    assert entries["nfs_server"].action.playbook_by_os == {
+        "linux": "playbooks/services/setup_nfs_server.yml",
+        "macos": "playbooks/services/setup_nfs_server_macos.yml",
+    }
     assert entries["nfs_client"].action.playbook_by_os == {
         "linux": "playbooks/services/setup_nfs_client.yml",
         "macos": "playbooks/services/setup_nfs_client_macos.yml",
