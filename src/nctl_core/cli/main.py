@@ -58,6 +58,7 @@ from nctl_core.production_render import (
     render_production_summary_text,
     write_production_artifacts,
 )
+from nctl_core.observe_only import SourceUnavailable, UsageError as ObserveUsageError, check_operation_id, render_observe_text, run_observe
 from nctl_core.reconcile.executor import run_reconcile
 from nctl_core.reconcile_render import render_reconcile_text
 from nctl_core.relations_render import build_relations, render_relations_text
@@ -472,6 +473,23 @@ AllowDestroyOption = Annotated[
     bool,
     typer.Option("--allow-destroy", help="Permit planned LXC/QEMU guest destruction for this --yes reconcile run."),
 ]
+OperationIdOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--operation-id",
+        help="Use this ULID as the operation id (unused before), so a caller can record it before the operation starts.",
+    ),
+]
+AllowedHostsOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--allowed-hosts",
+        help=(
+            "Comma-separated desired-node slugs. Every action of every round must contact or target only these "
+            "hosts; an action outside them is refused before dispatch and stops the run."
+        ),
+    ),
+]
 
 
 @app.command()
@@ -482,6 +500,8 @@ def reconcile(
     allow_destroy: AllowDestroyOption = False,
     refresh_observation: RefreshObservationOption = False,
     max_rounds: MaxRoundsOption = None,
+    operation_id: OperationIdOption = None,
+    allowed_hosts: AllowedHostsOption = None,
     json_output: ReconcileJsonOption = False,
 ) -> None:
     """Drift -> plan -> (with --yes) execute -> re-observe -> converge, as one bounded operation.
@@ -491,6 +511,15 @@ def reconcile(
     `--max-rounds` bounded re-plan rounds, regenerating the full production inventory every round.
     """
     cfg = _load_config(config)
+    try:
+        check_operation_id(operation_id, cfg.events.resolved_log_dir())
+    except ObserveUsageError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise typer.Exit(EXIT_USAGE)
+    allowed = sorted({slug.strip() for slug in allowed_hosts.split(",") if slug.strip()}) if allowed_hosts is not None else None
+    if allowed is not None and not allowed:
+        print("error: --allowed-hosts needs at least one host", file=sys.stderr)
+        raise typer.Exit(EXIT_USAGE)
     envelope = run_reconcile(
         cfg,
         host=host,
@@ -498,10 +527,44 @@ def reconcile(
         allow_destroy=allow_destroy,
         refresh_observation=refresh_observation,
         max_rounds=max_rounds,
+        operation_id=operation_id,
+        allowed_hosts=allowed,
     )
     emit(envelope, json_output, render_reconcile_text)
     if any(error.code in ("unknown_host", "refresh_observation_requires_host") for error in envelope.errors):
         raise typer.Exit(EXIT_USAGE)
+    raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
+
+
+ObserveHostsArgument = Annotated[
+    Optional[list[str]],
+    typer.Argument(help="Desired-node slugs to observe. Omit for every node the bootstrap inventory exports."),
+]
+
+
+@app.command()
+def observe(
+    hosts: ObserveHostsArgument = None,
+    config: ConfigOption = None,
+    operation_id: OperationIdOption = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the nctl.observe.v1 envelope as JSON.")] = False,
+) -> None:
+    """Collect and ingest fresh nodeutils observations; never plan or run any other action.
+
+    Exit 0 when every scoped host was observed; 1 when any host was unavailable, failed collection or failed
+    ingest (the others are still observed and listed); 2 for an unknown or unobservable host or a malformed
+    or reused operation id, before anything runs. Drift is not consulted: observing never repairs.
+    """
+    cfg = _load_config(config)
+    try:
+        envelope = run_observe(cfg, list(hosts or []), operation_id=operation_id)
+    except ObserveUsageError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise typer.Exit(EXIT_USAGE)
+    except SourceUnavailable as exc:
+        print(f"error: desired state could not be read, nothing observed: {exc}", file=sys.stderr)
+        raise typer.Exit(EXIT_FAILURE)
+    emit(envelope, json_output, render_observe_text)
     raise typer.Exit(EXIT_OK if envelope.ok else EXIT_FAILURE)
 
 

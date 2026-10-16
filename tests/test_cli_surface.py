@@ -19,6 +19,7 @@ RETAINED_COMMANDS = {
     "relations",
     "workspaces",
     "reconcile",
+    "observe",
     "prune",
     "lifecycle",
     "desired",

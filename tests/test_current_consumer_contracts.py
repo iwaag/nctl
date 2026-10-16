@@ -92,6 +92,8 @@ CURRENT_RECONCILE_DATA_FIELDS = {
     "operation_id",
     "mode",
     "allow_destroy",
+    "allowed_hosts",
+    "outside_allowed_hosts",
     "scope",
     "state",
     "event_log_path",

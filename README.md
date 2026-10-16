@@ -96,6 +96,9 @@ uv run nctl reconcile agstudio --yes
 uv run nctl reconcile RETIRED_GUEST --allow-destroy
 uv run nctl reconcile RETIRED_GUEST --allow-destroy --yes
 uv run nctl reconcile --yes --max-rounds 1 --json
+uv run nctl reconcile agstudio --yes --allowed-hosts agstudio --operation-id 01KX...
+uv run nctl observe
+uv run nctl observe agstudio agpc --json
 uv run nctl desired apply -f .local/desired-state.yaml
 uv run nctl desired apply -f .local/desired-state.yaml --yes
 uv run nctl desired export > snapshot.yaml
@@ -158,6 +161,9 @@ escape hatch for a freshly registered node — is covered in
 has its own [`docs/reconcile.md`](docs/reconcile.md): plan/apply modes, per-round action ordering,
 the `nctl.reconcile.v2` envelope, `[reconcile]` config, SSH trust preflight, IPAM eligibility, and
 `--refresh-observation`.
+
+`observe` (observation-only collection and ingest, explicit host sets, per-host outcomes) and
+`reconcile --allowed-hosts`/`--operation-id` are covered in [`docs/observe.md`](docs/observe.md).
 
 `lifecycle` (direct `DesiredNode.lifecycle` setter) and `desired export` (canonical re-applyable
 desired-state backup) are covered in

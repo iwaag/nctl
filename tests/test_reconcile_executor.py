@@ -2603,3 +2603,109 @@ def test_real_multi_round_ipam_convergence_for_non_dhcp_endpoint(tmp_path, monke
     assert round1.data.state == "already_converged"
     assert round1.data.rounds == []
     assert ipam_calls == []
+
+
+# --- project_migration p5: --allowed-hosts ------------------------------------
+
+
+def test_action_outside_allowed_hosts_is_refused_before_dispatch(tmp_path, monkeypatch):
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    link = ReconcileAction(
+        id="link_actual_node:other", reconciler_id="link_actual_node", action_kind="ledger_patch",
+        targets=[Target(kind="node", slug="other", name="other", id="other-id")],
+        claimed_diff_codes=["actual_node_not_linked"], reason="test", mutates=True, requires_observation=False,
+    )
+    monkeypatch.setattr(
+        executor_module, "execute_action",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("an action outside --allowed-hosts must not dispatch")),
+    )
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, ctx.make_plan([link]), ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+        allowed_hosts=frozenset({ctx.node.slug}),
+    )
+    assert [error.code for error in outcome.terminal_errors] == ["action_outside_allowed_hosts"]
+    assert outcome.terminal_errors[0].detail["hosts"] == ["other"]
+    assert outcome.summary.actions[0].success is False and outcome.summary.actions[0].mutated is False
+
+
+def test_multi_host_ssh_action_partly_outside_allowed_hosts_is_refused(tmp_path, monkeypatch):
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    observe = ReconcileAction(
+        id="observe_node", reconciler_id="observe_node", action_kind="observation",
+        targets=[Target(kind="node", slug=ctx.node.slug, name=ctx.node.slug)], claimed_diff_codes=[],
+        reason="test", mutates=True, requires_observation=False,
+        parameters={"host_slugs": [ctx.node.slug, "selfdep"]},
+    )
+    monkeypatch.setattr(
+        executor_module, "execute_action",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+    )
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, ctx.make_plan([observe]), ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+        allowed_hosts=frozenset({ctx.node.slug}),
+    )
+    assert [error.code for error in outcome.terminal_errors] == ["action_outside_allowed_hosts"]
+
+
+def test_action_inside_allowed_hosts_dispatches(tmp_path, monkeypatch):
+    ctx = _direct_round_setup(tmp_path, monkeypatch)
+    link = ReconcileAction(
+        id=f"link_actual_node:{ctx.node.slug}", reconciler_id="link_actual_node", action_kind="ledger_patch",
+        targets=[Target(kind="node", slug=ctx.node.slug, name=ctx.node.slug, id=ctx.node.id)],
+        claimed_diff_codes=["actual_node_not_linked"], reason="test", mutates=True, requires_observation=False,
+    )
+    seen = []
+    monkeypatch.setattr(
+        executor_module, "execute_action",
+        lambda _context, action: seen.append(action.id) or executor_module.ExecutedAction(
+            result=executor_module.ActionResult(
+                action_id=action.id, reconciler_id=action.reconciler_id, action_kind=action.action_kind,
+                target_slugs=[ctx.node.slug], success=True, mutated=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        executor_module, "_regenerate_production_inventory",
+        lambda _cfg: (executor_module.ActionResult(
+            action_id="production", reconciler_id="production_inventory", action_kind="render", success=True
+        ), None),
+    )
+    outcome = executor_module._execute_round(
+        ctx.cfg, ctx.op, ctx.artifacts, 0, ctx.make_plan([link]), ctx.snapshot,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
+        allowed_hosts=frozenset({ctx.node.slug}),
+    )
+    assert seen == [link.id]
+    assert outcome.terminal_errors == []
+
+
+def test_plan_mode_lists_actions_outside_allowed_hosts(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    node = _node()
+    diff = DiffRecord(target=Target(kind="node", slug=node.slug, name=node.name, id=node.id), code="actual_node_not_linked", severity=Severity.ERROR, message="x")
+    _sequence(monkeypatch, [_drift([_target_status(diff.target, Status.DRIFTING, [diff])])])
+    planned = ReconcilePlan(
+        scope=PlanScope(kind="cluster"), drift_fingerprint="fp", generated_at=datetime.now(timezone.utc),
+        actions=[ReconcileAction(
+            id=f"link_actual_node:{node.slug}", reconciler_id="link_actual_node", action_kind="ledger_patch",
+            targets=[diff.target], claimed_diff_codes=["actual_node_not_linked"], reason="test",
+            mutates=True, requires_observation=False,
+        )],
+    )
+    monkeypatch.setattr(executor_module, "_build_plan_or_error", lambda *_a, **_k: (planned, None))
+    envelope = run_reconcile(cfg, apply_changes=False, allowed_hosts=["elsewhere"])
+    assert envelope.data.state == "planned"
+    assert envelope.data.allowed_hosts == ["elsewhere"]
+    assert [row["hosts"] for row in envelope.data.outside_allowed_hosts] == [[node.slug]]
+
+
+def test_caller_chosen_operation_id_names_the_operation(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    _no_op_deployment_profiles(monkeypatch)
+    _sequence(monkeypatch, [_drift([])])
+    envelope = run_reconcile(cfg, apply_changes=False, operation_id="01JAAAAAAAAAAAAAAAAAAAAAAA")
+    assert envelope.data.operation_id == "01JAAAAAAAAAAAAAAAAAAAAAAA"
+    assert (tmp_path / "events" / "01JAAAAAAAAAAAAAAAAAAAAAAA.jsonl").is_file()
