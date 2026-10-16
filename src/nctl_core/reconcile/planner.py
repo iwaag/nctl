@@ -96,7 +96,7 @@ def _target_key(target: Target) -> tuple[str, str]:
 
 def _service_profile_inputs(
     target: Target, snapshot: SourceSnapshot
-) -> tuple[str, list[str]] | Fallback:
+) -> dict[str, list[str]] | Fallback:
     service = next((s for s in snapshot.desired.services if s.slug == target.slug), None)
     if service is None:
         return Fallback(Classification.MANUAL_REVIEW, f"no desired service found for slug {target.slug!r}")
@@ -108,22 +108,13 @@ def _service_profile_inputs(
     ]
     if not active:
         return Fallback(Classification.MANUAL_REVIEW, f"service {target.slug!r} has no active placement")
-    profiles = {placement.deployment_profile for placement in active}
-    if len(profiles) > 1:
-        return Fallback(
-            Classification.MANUAL_REVIEW,
-            f"service {target.slug!r} has active placements using different deployment profiles: "
-            f"{', '.join(sorted(profiles))}",
-        )
-    host_slugs = sorted(
-        {
-            nodes_by_id[placement.node_id].slug
-            for placement in active
-            if placement.node_id in nodes_by_id
-            and placement.management_mode == "nctl_managed"
-        }
-    )
-    return next(iter(profiles)), host_slugs
+    hosts_by_profile: dict[str, set[str]] = {}
+    for placement in active:
+        if placement.node_id in nodes_by_id and placement.management_mode == "nctl_managed":
+            hosts_by_profile.setdefault(placement.deployment_profile, set()).add(
+                nodes_by_id[placement.node_id].slug
+            )
+    return {profile: sorted(hosts) for profile, hosts in sorted(hosts_by_profile.items())}
 
 
 def build_plan(
@@ -323,28 +314,35 @@ def build_plan(
         if isinstance(inputs, Fallback):
             _apply_fallback(inputs, group_diffs, manual_review, unsupported)
             continue
-        deployment_profile, host_slugs = inputs
-        if scope.kind == "host":
-            host_slugs = [slug for slug in host_slugs if slug == scope.host_slug]
-        host_slugs = [slug for slug in host_slugs if slug not in blocked_node_slugs]
-        if not host_slugs:
-            # Every host this service is placed on is production-blocked by a
-            # Phase 1 local finding; the reason isn't lost, it's already the
-            # owning node's manual_review record above (Decision 5.4: never
-            # create an empty-host action).
-            continue
-        outcome = plan_service_profile(
-            target,
-            codes,
-            deployment_profile=deployment_profile,
-            host_slugs=host_slugs,
-            reconciliation=profile_reconciliation,
-        )
-        if isinstance(outcome, Fallback):
-            _apply_fallback(outcome, group_diffs, manual_review, unsupported)
-        else:
-            actions.append(outcome)
-            profile_actions_by_profile.setdefault(deployment_profile, []).append(outcome)
+        for deployment_profile, host_slugs in inputs.items():
+            # Placement diffs identify their profile; a service-wide diff
+            # applies to every managed profile. Do not let a missing client
+            # trigger the server's playbook or its unsupported fallback.
+            profile_diffs = [
+                diff for diff in group_diffs
+                if diff.desired.get("expected", {}).get("deployment_profile")
+                in (None, deployment_profile)
+            ]
+            if not profile_diffs:
+                continue
+            if scope.kind == "host":
+                host_slugs = [slug for slug in host_slugs if slug == scope.host_slug]
+            host_slugs = [slug for slug in host_slugs if slug not in blocked_node_slugs]
+            if not host_slugs:
+                # Keep the owning node's blocker, without an empty action.
+                continue
+            outcome = plan_service_profile(
+                target,
+                [diff.code for diff in profile_diffs],
+                deployment_profile=deployment_profile,
+                host_slugs=host_slugs,
+                reconciliation=profile_reconciliation,
+            )
+            if isinstance(outcome, Fallback):
+                _apply_fallback(outcome, profile_diffs, manual_review, unsupported)
+            else:
+                actions.append(outcome)
+                profile_actions_by_profile.setdefault(deployment_profile, []).append(outcome)
 
     _wire_profile_dependencies(profile_actions_by_profile, profile_reconciliation)
 

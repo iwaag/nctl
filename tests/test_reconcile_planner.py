@@ -540,7 +540,8 @@ def test_service_profile_unsupported_when_observe_only():
     assert plan.unsupported[0].reason.startswith("deployment profile 'home_assistant' is observe_only")
 
 
-def test_service_profile_manual_review_when_placements_disagree_on_profile():
+@pytest.mark.parametrize("scope", [CLUSTER, PlanScope(kind="host", host_slug="agweb2")])
+def test_service_profiles_plan_separately_with_their_own_hosts(scope):
     node_a = _node("n1", "agweb")
     node_b = _node("n2", "agweb2")
     svc = _service("s1", "confused")
@@ -551,11 +552,71 @@ def test_service_profile_manual_review_when_placements_disagree_on_profile():
     snapshot = _snapshot(nodes=[node_a, node_b], services=[svc], placements=placements)
     diffs = [_service_diff(svc, "service_not_running")]
 
-    plan = _build(snapshot, diffs)
+    reconciliation = {
+        profile: ProfileReconciliation(action=ProfileAction(kind="playbook", playbook=f"{profile}.yml"))
+        for profile in ("profile_a", "profile_b")
+    }
+    plan = _build(snapshot, diffs, scope, reconciliation)
 
-    assert plan.actions == []
-    [record] = plan.manual_review
-    assert "different deployment profiles" in record.reason
+    assert not plan.manual_review
+    assert not plan.unsupported
+    by_profile = {action.parameters["deployment_profile"]: action for action in plan.actions}
+    assert set(by_profile) == ({"profile_a", "profile_b"} if scope.kind == "cluster" else {"profile_b"})
+    for profile, action in by_profile.items():
+        assert action.parameters["host_slugs"] == (["agweb"] if profile == "profile_a" else ["agweb2"])
+        assert action.parameters["playbook"] == f"{profile}.yml"
+    assert len({action.id for action in plan.actions}) == len(plan.actions)
+
+
+@pytest.mark.parametrize("placement_specific", [True, False])
+def test_profiles_keep_placement_diffs_and_unsupported_results_separate(placement_specific):
+    node = _node("n1", "agweb")
+    svc = _service("s1", "share")
+    snapshot = _snapshot(nodes=[node], services=[svc], placements=[
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="nfs_server"),
+        _placement("p2", service_id="s1", node_id="n1", deployment_profile="nfs_client"),
+    ])
+    diff = _service_observation_diff(svc, node, "service_missing")
+    if placement_specific:
+        diff.desired["expected"]["deployment_profile"] = "nfs_client"
+    reconciliation = {
+        "nfs_server": ProfileReconciliation(observe_only=True),
+        "nfs_client": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="client.yml")),
+    }
+    plan = _build(snapshot, [diff], profile_reconciliation=reconciliation)
+    [action] = plan.actions
+    assert action.parameters["deployment_profile"] == "nfs_client"
+    if placement_specific:
+        assert not plan.unsupported
+    else:
+        [unsupported] = plan.unsupported
+        assert "'nfs_server' is observe_only" in unsupported.reason
+
+
+def test_mixed_profiles_preserve_same_host_dependency_and_manual_exclusion():
+    node = _node("n1", "agweb")
+    other = _node("n2", "manual-host")
+    svc = _service("s1", "share")
+    snapshot = _snapshot(nodes=[node, other], services=[svc], placements=[
+        _placement("p1", service_id="s1", node_id="n1", deployment_profile="nfs_server"),
+        _placement("p2", service_id="s1", node_id="n1", deployment_profile="nfs_client"),
+        _placement("p3", service_id="s1", node_id="n2", deployment_profile="manual_only").model_copy(
+            update={"management_mode": "manual"}
+        ),
+    ])
+    reconciliation = {
+        "nfs_server": ProfileReconciliation(action=ProfileAction(kind="playbook", playbook="server.yml")),
+        "nfs_client": ProfileReconciliation(
+            action=ProfileAction(kind="playbook", playbook="client.yml"), dependencies=["nfs_server"]
+        ),
+    }
+    plan = _build(snapshot, [_service_diff(svc, "service_missing")], profile_reconciliation=reconciliation)
+    server, client = plan.actions
+    assert server.parameters["deployment_profile"] == "nfs_server"
+    assert client.parameters["deployment_profile"] == "nfs_client"
+    assert client.dependencies == [server.id]
+    assert all(action.parameters["host_slugs"] == ["agweb"] for action in plan.actions)
+    assert not plan.unsupported
 
 
 def test_profile_dependency_orders_actions_on_overlapping_hosts():

@@ -76,6 +76,14 @@ recorded in the operation event log and observation action result. If the
 superproject gitlink cannot be resolved, observation fails before Ansible
 runs; it never falls back to `HEAD`.
 
+Service placements may use different deployment profiles within one service.
+The planner creates an action per service and profile, with only that
+profile's managed hosts. Placement-specific diffs trigger their own profile;
+service-wide diffs apply across profiles. Host scope and production blockers
+still limit each action, and profile dependencies order actions only on
+overlapping hosts. A missing profile implementation is reported separately
+without suppressing the service's other supported profiles.
+
 **SSH trust preflight** (`devdocs/small/fix_sshkey/plan.md` Step 5): every round, before observation,
 Nautobot Jobs, inventory writes, or playbooks run, nctl checks that every node touched by an
 SSH-requiring action has at least one entry under its stable alias in `[ssh].known_hosts_file`.

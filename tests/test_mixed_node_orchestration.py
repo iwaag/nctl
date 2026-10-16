@@ -195,7 +195,7 @@ def test_mixed_six_node_matrix_isolates_every_finding_through_drift_and_reconcil
 
     # -- reconcile: host scope, isolated to the healthy node only --
     # aghealthy's own placement of "web" has no observed-running evidence in this fixture, so
-    # its manual_review may legitimately include the service's own service_missing record --
+    # its unsupported list includes its own service_missing record (no reconciliation metadata) --
     # what matters is that none of the *other* nodes' findings leak into this host's plan.
     host_plan = build_plan(
         snapshot=snapshot, diffs=all_diffs, scope=PlanScope(kind="host", host_slug="aghealthy"),
@@ -203,4 +203,8 @@ def test_mixed_six_node_matrix_isolates_every_finding_through_drift_and_reconcil
     )
     host_manual_review_targets = {(r.target.kind, r.target.slug) for r in host_plan.manual_review}
     assert host_manual_review_targets <= {("service", "web")}
-    assert host_plan.unsupported == []
+    [unsupported] = host_plan.unsupported
+    assert unsupported.target.slug == "web"
+    assert unsupported.code == "service_missing"
+    assert "deployment profile 'web'" in unsupported.reason
+    assert unsupported.evidence["desired"]["expected"]["node_slug"] == "aghealthy"
