@@ -13,7 +13,7 @@ RUNNING_STATES = frozenset({"running", "active"})
 # State-proof check kinds whose non-`present` result is a `service_missing`
 # gap. Mirror of `reconcile.profiles.EXISTENCE_PROOF_CHECK_KINDS` (this
 # module stays import-pure); nodeutils holds the executor-side copy.
-_EXISTENCE_PROOF_CHECK_KINDS = frozenset({"file_exists", "cron_registered"})
+_EXISTENCE_PROOF_CHECK_KINDS = frozenset({"file_exists", "cron_registered", "nfs_export", "nfs_mount"})
 _OBSERVED_SYSTEM_MAP = {"Linux": "linux", "Darwin": "macos"}
 _MANAGED_FILE_UNREADABLE_STATUSES = frozenset({"unreadable", "too_large"})
 

@@ -140,6 +140,49 @@ class CronRegisteredCheckSpec(BaseModel):
         )
 
 
+class _PathStateProof(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str | None = None
+    path_from_config: str | None = None
+
+    @model_validator(mode="after")
+    def _check_exactly_one_source(self) -> "_PathStateProof":
+        _validate_single_path_source(self.kind, self.path, self.path_from_config)
+        return self
+
+    def resolve_path(self, placement_config: dict[str, Any], context: str) -> str:
+        return _resolve_check_path(
+            self.kind, self.path, self.path_from_config, placement_config, context
+        )
+
+
+class NfsExportCheckSpec(_PathStateProof):
+    """One closed state-proof check: this host's NFS server exports a path.
+
+    project_migration p6. nodeutils reports configured (an exports file names
+    the path), running (the kernel server is up) and exported (the kernel's
+    export table lists it); only all three is `present`. Path semantics are
+    those of `file_exists`.
+    """
+
+    kind: Literal["nfs_export"] = "nfs_export"
+
+
+class NfsMountCheckSpec(_PathStateProof):
+    """One closed state-proof check: a path is a usable NFS mount on this host.
+
+    project_migration p6. nodeutils reports configured (fstab or an automounter
+    map names the path), mounted (an nfs mount is at the path after a bounded
+    listing triggered any automount) and the listing's result as the collecting
+    user; only all of them is `present`. Whether the share is writable, carries
+    large files intact or is shared with another host is not observed here --
+    that is the installing change's verification.
+    """
+
+    kind: Literal["nfs_mount"] = "nfs_mount"
+
+
 class HttpCheckSpec(BaseModel):
     """One closed HTTP liveness check against the placement's declared endpoint.
 
@@ -165,13 +208,15 @@ class HttpCheckSpec(BaseModel):
         return self
 
 
-ProfileCheckSpec = FileExistsCheckSpec | CronRegisteredCheckSpec | HttpCheckSpec
+ProfileCheckSpec = (
+    FileExistsCheckSpec | CronRegisteredCheckSpec | NfsExportCheckSpec | NfsMountCheckSpec | HttpCheckSpec
+)
 
 # The check kinds whose failed result is an existence/registration proof
 # failure (drift: `service_missing`). `nctl_core.drift.service_placement`
 # mirrors this set (it stays import-pure); nodeutils holds the executor-side
 # copy. Keep the three in sync when adding a state-proof kind.
-EXISTENCE_PROOF_CHECK_KINDS = frozenset({"file_exists", "cron_registered"})
+EXISTENCE_PROOF_CHECK_KINDS = frozenset({"file_exists", "cron_registered", "nfs_export", "nfs_mount"})
 
 
 class ManagedFileSpec(BaseModel):
@@ -271,7 +316,8 @@ class ProfileReconciliation(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     # autotask_intent Step 1: the explicit, closed, parameterized check list
     # replacing implicit field-presence check knowledge. Only kinds with a
-    # current consumer exist (`file_exists`, `cron_registered`, `http`).
+    # current consumer exist (`file_exists`, `cron_registered`, `http`, and
+    # since project_migration p6 `nfs_export`/`nfs_mount`).
     # Both observe-only and actionable profiles may add checks: action
     # profiles use them for post-actuation convergence evidence.
     checks: list[Annotated[ProfileCheckSpec, Field(discriminator="kind")]] = Field(default_factory=list)
@@ -398,7 +444,7 @@ def resolve_check_hints(
 
     hint_rows: list[dict[str, Any]] = []
     for check in entry.checks:
-        if isinstance(check, (FileExistsCheckSpec, CronRegisteredCheckSpec)):
+        if isinstance(check, (FileExistsCheckSpec, CronRegisteredCheckSpec, _PathStateProof)):
             hint_rows.append({"kind": check.kind, "path": check.resolve_path(placement_config, context)})
         else:
             hint_rows.append({"kind": "http", "paths": list(check.paths)})

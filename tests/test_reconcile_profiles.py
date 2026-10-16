@@ -18,6 +18,8 @@ _REPO_PROFILE_NAMES = {
     "dnsmasq",
     "grafana",
     "manual_toolchain",
+    "nfs_client",
+    "nfs_server",
     "nomad_client",
     "nomad_server",
     "ollama",
