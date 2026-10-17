@@ -43,6 +43,11 @@ def test_repo_declares_nfs_profiles_with_state_proofs():
     profiles, entries = _real_reconciliation()
 
     assert profiles["nfs_server"]["placement_list_variable"] == "nfs_server_exports"
+    assert profiles["nfs_server"]["variables"]["mount_require_resv_port"] == {
+        "ansible_variable": "nfs_server_mount_require_resv_port",
+        "type": "boolean",
+        "required": False,
+    }
     assert profiles["nfs_client"]["placement_list_variable"] == "nfs_client_mounts"
     assert entries["nfs_server"].action.playbook_by_os == {
         "linux": "playbooks/services/setup_nfs_server.yml",
