@@ -101,14 +101,12 @@ def run_reconcile(
     *,
     host: str | None = None,
     apply_changes: bool = False,
-    allow_destroy: bool = False,
     refresh_observation: bool = False,
     max_rounds: int | None = None,
     now: Callable[[], datetime] | None = None,
     command_runner: CommandRunner | None = None,
     operation_id: str | None = None,
     ssh_probe: SshProbeRunner | None = None,
-    allowed_hosts: list[str] | None = None,
 ) -> Envelope[ReconcileData]:
     now = now or (lambda: datetime.now(timezone.utc))
     ssh_probe = ssh_probe or default_ssh_probe_runner()
@@ -118,8 +116,6 @@ def run_reconcile(
     data = ReconcileData(
         operation_id=op.operation_id,
         mode="apply" if apply_changes else "plan",
-        allow_destroy=allow_destroy,
-        allowed_hosts=sorted(allowed_hosts) if allowed_hosts is not None else None,
         scope=scope,
         event_log_path=str(op.path),
     )
@@ -145,7 +141,6 @@ def run_reconcile(
 
     if not apply_changes:
         return _run_plan_only(cfg, op, data, artifacts, scope, refresh_observation)
-    allowed = frozenset(allowed_hosts) if allowed_hosts is not None else None
 
     try:
         with acquire_reconcile_lock(cfg.reconcile.resolved_lock_path()):
@@ -162,8 +157,6 @@ def run_reconcile(
                     interrupted,
                     ssh_probe,
                     refresh_observation,
-                    allow_destroy,
-                    allowed,
                 )
     except ReconcileLockError as exc:
         return _finish(op, data, "failed", [EnvelopeError(code="reconcile_lock_contention", message=str(exc))])
@@ -198,13 +191,6 @@ def _run_plan_only(
 
     data.plan_path = str(artifacts.write_json("plan.json", plan.model_dump(mode="json")))
     data.plan = plan.model_dump(mode="json")
-    if data.allowed_hosts is not None:
-        allowed = frozenset(data.allowed_hosts)
-        data.outside_allowed_hosts = [
-            {"action_id": action.id, "reconciler_id": action.reconciler_id, "hosts": _hosts_outside(action, allowed)}
-            for action in plan.actions
-            if _hosts_outside(action, allowed)
-        ]
     op.emit(
         "plan_created",
         "reconcile plan created",
@@ -239,8 +225,6 @@ def _run_apply(
     interrupted: "_InterruptFlag",
     ssh_probe: SshProbeRunner | None,
     refresh_observation: bool,
-    allow_destroy: bool,
-    allowed_hosts: frozenset[str] | None = None,
 ) -> Envelope[ReconcileData]:
     rounds_limit = max_rounds or cfg.reconcile.max_rounds
     previous_fingerprint: str | None = None
@@ -370,10 +354,6 @@ def _run_apply(
             # Retain the long-standing direct-call shape for ordinary runs;
             # only the explicit capability invocation needs the new keyword.
             extra: dict[str, Any] = {}
-            if allow_destroy:
-                extra["allow_destroy"] = True
-            if allowed_hosts is not None:
-                extra["allowed_hosts"] = allowed_hosts
             outcome = _execute_round(*round_args, **extra)
         except (ConfigError, NautobotError) as exc:
             # Truly unexpected failures _execute_round itself cannot classify
@@ -492,9 +472,6 @@ def _execute_round(
     command_runner: CommandRunner | None,
     interrupted: "_InterruptFlag",
     ssh_probe: SshProbeRunner,
-    *,
-    allow_destroy: bool = False,
-    allowed_hosts: frozenset[str] | None = None,
 ) -> RoundOutcome:
     """Execute one round's actions and always return a `RoundOutcome`.
 
@@ -513,29 +490,6 @@ def _execute_round(
     service_actions = [action for action in plan.actions if action_phase(action.reconciler_id) == "service"]
     had_side_effects = False
 
-    def _refused_outside(action: ReconcileAction) -> RoundOutcome | None:
-        """project_migration p5: --allowed-hosts is checked before every dispatch, in every round."""
-        outside = _hosts_outside(action, allowed_hosts)
-        if not outside:
-            return None
-        message = (
-            f"action {action.id!r} would contact or target {outside}, outside --allowed-hosts "
-            f"{sorted(allowed_hosts or [])}; refused before dispatch"
-        )
-        summary.actions.append(
-            ActionResult(
-                action_id=action.id, reconciler_id=action.reconciler_id, action_kind=action.action_kind,
-                target_slugs=[target.slug for target in action.targets if target.slug], success=False,
-                error=f"action_outside_allowed_hosts: {message}", mutated=False,
-            )
-        )
-        return RoundOutcome(
-            summary=summary,
-            terminal_errors=[EnvelopeError(code="action_outside_allowed_hosts", message=message,
-                                           detail={"action_id": action.id, "hosts": outside})],
-            had_side_effects=had_side_effects,
-        )
-
     def _interrupted_outcome() -> RoundOutcome:
         return RoundOutcome(
             summary=summary,
@@ -548,27 +502,6 @@ def _execute_round(
         for action in bootstrap_actions:
             if interrupted.is_set():
                 return _interrupted_outcome()
-            refused = _refused_outside(action)
-            if refused is not None:
-                return refused
-            if action.reconciler_id == "destroy_compute_instance" and not allow_destroy:
-                message = "destroy capability is not enabled; rerun with `--allow-destroy --yes`"
-                summary.actions.append(
-                    ActionResult(
-                        action_id=action.id,
-                        reconciler_id=action.reconciler_id,
-                        action_kind=action.action_kind,
-                        target_slugs=[target.slug for target in action.targets if target.slug],
-                        success=False,
-                        error=f"destroy_capability_not_enabled: {message}",
-                        mutated=False,
-                    )
-                )
-                return RoundOutcome(
-                    summary=summary,
-                    terminal_errors=[EnvelopeError(code="destroy_capability_not_enabled", message=message)],
-                    had_side_effects=had_side_effects,
-                )
             executed = execute_action(
                 ActionContext(
                     cfg=cfg, operation_log=op, artifacts=artifacts, round_index=round_index,
@@ -654,9 +587,6 @@ def _execute_round(
         for action in service_actions:
             if interrupted.is_set():
                 return _interrupted_outcome()
-            refused = _refused_outside(action)
-            if refused is not None:
-                return refused
             executed = execute_action(
                 ActionContext(cfg=cfg, operation_log=op, artifacts=artifacts, round_index=round_index,
                               snapshot=snapshot, client=None, now=now, command_runner=command_runner,
@@ -683,9 +613,6 @@ def _execute_round(
             claimed_diff_codes=[], reason="Post-actuation observation.", mutates=True, requires_observation=False,
             parameters={"host_slugs": observe_targets},
         )
-        refused = _refused_outside(observation_action)
-        if refused is not None:
-            return refused
         executed = execute_action(
             ActionContext(
                 cfg=cfg, operation_log=op, artifacts=artifacts, round_index=round_index,
@@ -702,15 +629,6 @@ def _execute_round(
             )
 
     return RoundOutcome(summary=summary, terminal_errors=[], had_side_effects=had_side_effects)
-
-
-def _hosts_outside(action: ReconcileAction, allowed_hosts: frozenset[str] | None) -> list[str]:
-    if allowed_hosts is None:
-        return []
-    hosts = set(action_host_slugs(action))
-    if not hosts:
-        hosts = {target.slug for target in action.targets if target.slug}
-    return sorted(hosts - allowed_hosts)
 
 
 def _regenerate_production_inventory(cfg: Config) -> tuple[ActionResult, ProductionRenderContext | None]:

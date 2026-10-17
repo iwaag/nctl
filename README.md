@@ -93,10 +93,10 @@ uv run nctl apply dnsmasq --yes
 uv run nctl reconcile
 uv run nctl reconcile agstudio
 uv run nctl reconcile agstudio --yes
-uv run nctl reconcile RETIRED_GUEST --allow-destroy
-uv run nctl reconcile RETIRED_GUEST --allow-destroy --yes
+uv run nctl reconcile RETIRED_GUEST
+uv run nctl reconcile RETIRED_GUEST --yes
 uv run nctl reconcile --yes --max-rounds 1 --json
-uv run nctl reconcile agstudio --yes --allowed-hosts agstudio --operation-id 01KX...
+uv run nctl reconcile agstudio --yes --operation-id 01KX...
 uv run nctl observe
 uv run nctl observe agstudio agpc --json
 uv run nctl desired apply -f .local/desired-state.yaml
@@ -163,7 +163,7 @@ the `nctl.reconcile.v2` envelope, `[reconcile]` config, SSH trust preflight, IPA
 `--refresh-observation`.
 
 `observe` (observation-only collection and ingest, explicit host sets, per-host outcomes) and
-`reconcile --allowed-hosts`/`--operation-id` are covered in [`docs/observe.md`](docs/observe.md).
+`reconcile` targets and `--operation-id` are covered in [`docs/observe.md`](docs/observe.md).
 
 `lifecycle` (direct `DesiredNode.lifecycle` setter) and `desired export` (canonical re-applyable
 desired-state backup) are covered in

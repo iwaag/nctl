@@ -6,6 +6,7 @@ No business logic lives in this module.
 
 from __future__ import annotations
 
+import json
 import sys
 from enum import Enum
 from pathlib import Path
@@ -458,7 +459,7 @@ ReconcileYesOption = Annotated[
 ]
 MaxRoundsOption = Annotated[
     Optional[int],
-    typer.Option("--max-rounds", min=1, max=10, help="Override [reconcile].max_rounds for this run."),
+    typer.Option("--max-rounds", min=1, help="Override [reconcile].max_rounds for this run."),
 ]
 ReconcileJsonOption = Annotated[bool, typer.Option("--json", help="Print the nctl.reconcile.v2 envelope as JSON.")]
 RefreshObservationOption = Annotated[
@@ -469,10 +470,6 @@ RefreshObservationOption = Annotated[
         help="Force one fresh nodeutils collection/ingest for the scoped host, even if drift is converged.",
     ),
 ]
-AllowDestroyOption = Annotated[
-    bool,
-    typer.Option("--allow-destroy", help="Permit planned LXC/QEMU guest destruction for this --yes reconcile run."),
-]
 OperationIdOption = Annotated[
     Optional[str],
     typer.Option(
@@ -480,28 +477,14 @@ OperationIdOption = Annotated[
         help="Use this ULID as the operation id (unused before), so a caller can record it before the operation starts.",
     ),
 ]
-AllowedHostsOption = Annotated[
-    Optional[str],
-    typer.Option(
-        "--allowed-hosts",
-        help=(
-            "Comma-separated desired-node slugs. Every action of every round must contact or target only these "
-            "hosts; an action outside them is refused before dispatch and stops the run."
-        ),
-    ),
-]
-
-
 @app.command()
 def reconcile(
     host: HostArgument = None,
     config: ConfigOption = None,
     yes: ReconcileYesOption = False,
-    allow_destroy: AllowDestroyOption = False,
     refresh_observation: RefreshObservationOption = False,
     max_rounds: MaxRoundsOption = None,
     operation_id: OperationIdOption = None,
-    allowed_hosts: AllowedHostsOption = None,
     json_output: ReconcileJsonOption = False,
 ) -> None:
     """Drift -> plan -> (with --yes) execute -> re-observe -> converge, as one bounded operation.
@@ -516,19 +499,13 @@ def reconcile(
     except ObserveUsageError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise typer.Exit(EXIT_USAGE)
-    allowed = sorted({slug.strip() for slug in allowed_hosts.split(",") if slug.strip()}) if allowed_hosts is not None else None
-    if allowed is not None and not allowed:
-        print("error: --allowed-hosts needs at least one host", file=sys.stderr)
-        raise typer.Exit(EXIT_USAGE)
     envelope = run_reconcile(
         cfg,
         host=host,
         apply_changes=yes,
-        allow_destroy=allow_destroy,
         refresh_observation=refresh_observation,
         max_rounds=max_rounds,
         operation_id=operation_id,
-        allowed_hosts=allowed,
     )
     emit(envelope, json_output, render_reconcile_text)
     if any(error.code in ("unknown_host", "refresh_observation_requires_host") for error in envelope.errors):
@@ -750,27 +727,15 @@ def _braindump_exit_code(envelope) -> int:
     return EXIT_FAILURE
 
 
-def _confirm_destructive(prompt: str, *, yes: bool, json_output: bool) -> None:
-    """Confirmation gate for `braindump review-delete`.
-
-    `--json` is non-interactive: destructive commands require `--yes` or fail as a usage error
-    before contacting Nautobot. In human mode, omitting `--yes` prompts; declining or EOF performs
-    no request.
-    """
-    if json_output:
-        if not yes:
-            typer.echo("error: --json requires --yes for destructive commands", err=True)
-            raise typer.Exit(EXIT_USAGE)
-        return
+def _execution_selected(action: str, *, yes: bool, json_output: bool) -> None:
+    """Default to an explicit preview; --yes selects execution without a human prompt."""
     if yes:
         return
-    try:
-        confirmed = typer.confirm(prompt)
-    except (typer.Abort, EOFError):
-        confirmed = False
-    if not confirmed:
-        typer.echo("aborted: not deleted", err=True)
-        raise typer.Exit(EXIT_USAGE)
+    if json_output:
+        print(json.dumps({"mode": "preview", "action": action, "executed": False, "target_validated": False}))
+    else:
+        print(f"Preview: {action} (--yes selects execution)")
+    raise typer.Exit(EXIT_OK)
 
 
 BraindumpJsonOption = Annotated[
@@ -862,7 +827,7 @@ def braindump_complete(
 ) -> None:
     """Directly transition one active Braindump to completed; no replacement row is created."""
     cfg = _load_config(config)
-    _confirm_destructive(
+    _execution_selected(
         f"Mark Braindump {braindump_id} completed? It becomes reference-only history and eligible for purge.",
         yes=yes,
         json_output=json_output,
@@ -896,7 +861,7 @@ def braindump_review_delete(
 ) -> None:
     """Delete only the current review, returning the Braindump to the unreviewed state."""
     cfg = _load_config(config)
-    _confirm_destructive(
+    _execution_selected(
         f"Delete the current review for Braindump {braindump_id}? "
         "The Braindump itself will remain, but become unreviewed.",
         yes=yes,

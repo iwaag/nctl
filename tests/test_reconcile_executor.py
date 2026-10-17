@@ -312,7 +312,7 @@ def test_destroy_reobservation_with_removal_completion_converges(tmp_path, monke
         ),
     )
 
-    envelope = run_reconcile(cfg, host=node.slug, apply_changes=True, allow_destroy=True)
+    envelope = run_reconcile(cfg, host=node.slug, apply_changes=True)
 
     assert envelope.ok
     assert envelope.data.state == "converged"
@@ -1668,31 +1668,9 @@ def _direct_round_setup(tmp_path, monkeypatch):
     )
 
 
-def test_destroy_without_capability_is_terminal_and_never_dispatches(tmp_path, monkeypatch):
-    ctx = _direct_round_setup(tmp_path, monkeypatch)
-    destroy = ReconcileAction(
-        id="destroy-1", reconciler_id="destroy_compute_instance", action_kind="compute_destroy",
-        targets=[Target(kind="compute_instance", slug="agfixture", name="agfixture", id="instance")],
-        claimed_diff_codes=["compute_instance_destroy_required"], reason="test", mutates=True,
-        requires_observation=True, parameters={"host_slugs": [ctx.node.slug]},
-    )
-    plan = ctx.make_plan([destroy])
-    monkeypatch.setattr(
-        executor_module, "execute_action",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("destroy must not dispatch")),
-    )
-    outcome = executor_module._execute_round(
-        ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
-        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
-    )
-    assert [(action.reconciler_id, action.success, action.mutated) for action in outcome.summary.actions] == [
-        ("destroy_compute_instance", False, False)
-    ]
-    assert "destroy_capability_not_enabled" in outcome.summary.actions[0].error
-    assert [error.code for error in outcome.terminal_errors] == ["destroy_capability_not_enabled"]
 
 
-def test_destroy_with_capability_dispatches_only_after_explicit_enablement(tmp_path, monkeypatch):
+def test_destroy_dispatches_without_an_authorization_switch(tmp_path, monkeypatch):
     ctx = _direct_round_setup(tmp_path, monkeypatch)
     destroy = ReconcileAction(
         id="destroy-1", reconciler_id="destroy_compute_instance", action_kind="compute_destroy",
@@ -1719,7 +1697,7 @@ def test_destroy_with_capability_dispatches_only_after_explicit_enablement(tmp_p
     )
     outcome = executor_module._execute_round(
         ctx.cfg, ctx.op, ctx.artifacts, 0, plan, ctx.snapshot,
-        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe, allow_destroy=True,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
     )
     assert seen == ["destroy_compute_instance"]
     assert outcome.summary.actions[0].success is True
@@ -1761,7 +1739,7 @@ def test_destroy_then_incomplete_observation_never_claims_convergence(tmp_path, 
     monkeypatch.setattr(executor_module, "execute_action", execute)
     outcome = executor_module._execute_round(
         ctx.cfg, ctx.op, ctx.artifacts, 0, ctx.make_plan([destroy]), ctx.snapshot,
-        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe, allow_destroy=True,
+        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
     )
     assert [item.reconciler_id for item in outcome.summary.actions] == [
         "destroy_compute_instance", "production_inventory", "observe_node"
@@ -2608,48 +2586,11 @@ def test_real_multi_round_ipam_convergence_for_non_dhcp_endpoint(tmp_path, monke
 # --- project_migration p5: --allowed-hosts ------------------------------------
 
 
-def test_action_outside_allowed_hosts_is_refused_before_dispatch(tmp_path, monkeypatch):
-    ctx = _direct_round_setup(tmp_path, monkeypatch)
-    link = ReconcileAction(
-        id="link_actual_node:other", reconciler_id="link_actual_node", action_kind="ledger_patch",
-        targets=[Target(kind="node", slug="other", name="other", id="other-id")],
-        claimed_diff_codes=["actual_node_not_linked"], reason="test", mutates=True, requires_observation=False,
-    )
-    monkeypatch.setattr(
-        executor_module, "execute_action",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("an action outside --allowed-hosts must not dispatch")),
-    )
-    outcome = executor_module._execute_round(
-        ctx.cfg, ctx.op, ctx.artifacts, 0, ctx.make_plan([link]), ctx.snapshot,
-        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
-        allowed_hosts=frozenset({ctx.node.slug}),
-    )
-    assert [error.code for error in outcome.terminal_errors] == ["action_outside_allowed_hosts"]
-    assert outcome.terminal_errors[0].detail["hosts"] == ["other"]
-    assert outcome.summary.actions[0].success is False and outcome.summary.actions[0].mutated is False
 
 
-def test_multi_host_ssh_action_partly_outside_allowed_hosts_is_refused(tmp_path, monkeypatch):
-    ctx = _direct_round_setup(tmp_path, monkeypatch)
-    observe = ReconcileAction(
-        id="observe_node", reconciler_id="observe_node", action_kind="observation",
-        targets=[Target(kind="node", slug=ctx.node.slug, name=ctx.node.slug)], claimed_diff_codes=[],
-        reason="test", mutates=True, requires_observation=False,
-        parameters={"host_slugs": [ctx.node.slug, "selfdep"]},
-    )
-    monkeypatch.setattr(
-        executor_module, "execute_action",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not dispatch")),
-    )
-    outcome = executor_module._execute_round(
-        ctx.cfg, ctx.op, ctx.artifacts, 0, ctx.make_plan([observe]), ctx.snapshot,
-        lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
-        allowed_hosts=frozenset({ctx.node.slug}),
-    )
-    assert [error.code for error in outcome.terminal_errors] == ["action_outside_allowed_hosts"]
 
 
-def test_action_inside_allowed_hosts_dispatches(tmp_path, monkeypatch):
+def test_explicit_action_targets_dispatch_without_host_authorization_scope(tmp_path, monkeypatch):
     ctx = _direct_round_setup(tmp_path, monkeypatch)
     link = ReconcileAction(
         id=f"link_actual_node:{ctx.node.slug}", reconciler_id="link_actual_node", action_kind="ledger_patch",
@@ -2675,13 +2616,12 @@ def test_action_inside_allowed_hosts_dispatches(tmp_path, monkeypatch):
     outcome = executor_module._execute_round(
         ctx.cfg, ctx.op, ctx.artifacts, 0, ctx.make_plan([link]), ctx.snapshot,
         lambda: datetime.now(timezone.utc), None, ctx.interrupted, ctx.probe,
-        allowed_hosts=frozenset({ctx.node.slug}),
     )
     assert seen == [link.id]
     assert outcome.terminal_errors == []
 
 
-def test_plan_mode_lists_actions_outside_allowed_hosts(tmp_path, monkeypatch):
+def test_plan_mode_remains_read_only_without_host_authorization_scope(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     _no_op_deployment_profiles(monkeypatch)
     node = _node()
@@ -2696,10 +2636,8 @@ def test_plan_mode_lists_actions_outside_allowed_hosts(tmp_path, monkeypatch):
         )],
     )
     monkeypatch.setattr(executor_module, "_build_plan_or_error", lambda *_a, **_k: (planned, None))
-    envelope = run_reconcile(cfg, apply_changes=False, allowed_hosts=["elsewhere"])
+    envelope = run_reconcile(cfg, apply_changes=False)
     assert envelope.data.state == "planned"
-    assert envelope.data.allowed_hosts == ["elsewhere"]
-    assert [row["hosts"] for row in envelope.data.outside_allowed_hosts] == [[node.slug]]
 
 
 def test_caller_chosen_operation_id_names_the_operation(tmp_path, monkeypatch):

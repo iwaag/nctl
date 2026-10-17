@@ -125,19 +125,12 @@ same document with `--yes`. These partial upserts preserve every omitted field
 on the existing node and compute instance. This is a retirement update, not a
 generic VM lifecycle API.
 
-1. Run `nctl reconcile GUEST --allow-destroy --json` without `--yes` and review the one pinned
-   `data.plan.actions` entry with `reconciler_id: destroy_compute_instance`: its target slug,
-   `evidence.vmid`, and `evidence.control_desired_node_slug` must name the expected guest, LXC VMID, and
-   exact Proxmox control node. `data.plan_path` names the identical durable plan artifact.
-2. `nctl reconcile GUEST --allow-destroy` remains a dry plan. `nctl reconcile GUEST --yes` refuses
-   the action with `destroy_capability_not_enabled`; neither command reaches Proxmox.
-3. Only after reviewing the same target, run `nctl reconcile GUEST --allow-destroy --yes`. The
-   handler re-derives the disposition before mutation and invokes only the bounded
-   `ansible_agdev/playbooks/proxmox/destroy_lxc.yml` adapter for that VMID and control node.
-4. Reconcile performs its normal control-node observation and Nautobot ingest. It completes only
-   when fresh drift observes the retained VirtualMachine with `proxmox_presence=absent`. If
-   destruction succeeded but that observation fails, retain the operation evidence and refresh
-   observation; do not submit a second destroy blindly.
+`nctl reconcile GUEST --json` previews the pinned guest target without
+mutation. `nctl reconcile GUEST --yes` executes the supported actions,
+including destruction when the selected guest's desired state calls for it.
+No separate destroy permission, approver or person handoff is required.
+The operation records the actual guest target and observed outcome.
+
 
 This removes only the planned LXC. `compute_instance_removal_complete` in fresh drift is successful
 removal evidence, so this reconcile ends `converged` with `ok: true`; unresolved or ambiguous
@@ -168,8 +161,8 @@ control node's enrollment only. So the recovery is the ordinary loop, from the g
 
 ```bash
 nctl reconcile GUEST --yes                 # hypervisor-side observation + ingest; guest appears in Actual State
-nctl reconcile GUEST --allow-destroy       # dry: expect one destroy_compute_instance
-nctl reconcile GUEST --allow-destroy --yes
+nctl reconcile GUEST       # dry: expect one destroy_compute_instance
+nctl reconcile GUEST --yes
 nctl prune GUEST --yes
 ```
 

@@ -45,14 +45,10 @@ terminal envelope is also written to the operation's `result.json`, so
 not been used before, so a caller can record the id before the operation
 starts and find it again with `nctl ops show` if it never sees the output.
 
-## `reconcile --allowed-hosts`
+## Reconcile targets
 
-`nctl reconcile HOST --yes --allowed-hosts a,b` bounds every action of every
-round: before dispatch, an action whose contacted hosts (`host_slugs`) — or,
-for ledger-only actions, node targets — fall outside the set is refused, the
-round stops with `action_outside_allowed_hosts`, and nothing of it runs. In
-plan mode the envelope lists such actions in `data.outside_allowed_hosts`.
-It complements `--allow-destroy`: a caller that never passes that flag never
-reaches a destroy, and a caller that passes `--allowed-hosts` never reaches a
-host it did not name, even when a later round or a multi-placement service
-profile would.
+`nctl reconcile HOST` is a read-only plan. `nctl reconcile HOST --yes`
+selects execution. HOST remains the planner's target selector; required
+infrastructure and observation actions retain their concrete targets. There
+is no second host-authorization scope and no separate destroy permission.
+Operation ids and per-action targets remain in the durable evidence.

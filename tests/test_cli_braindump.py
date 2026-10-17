@@ -456,7 +456,7 @@ def test_review_delete_no_op_when_absent(monkeypatch):
     assert "no change" in result.stdout
 
 
-def test_review_delete_declined_prompt_performs_no_write(monkeypatch):
+def test_review_delete_defaults_to_preview_without_a_prompt(monkeypatch):
     _setup(monkeypatch)
     monkeypatch.setattr(
         main, "build_braindump_review_delete", lambda cfg, braindump_id: (_ for _ in ()).throw(
@@ -466,10 +466,11 @@ def test_review_delete_declined_prompt_performs_no_write(monkeypatch):
 
     result = runner.invoke(main.app, ["braindump", "review-delete", BD_ID], input="n\n")
 
-    assert result.exit_code == 2
+    assert result.exit_code == 0
 
 
-def test_review_delete_json_without_yes_is_usage_exit(monkeypatch):
+
+def test_review_delete_json_without_execution_selection_returns_a_preview(monkeypatch):
     _setup(monkeypatch)
     monkeypatch.setattr(
         main, "build_braindump_review_delete", lambda cfg, braindump_id: (_ for _ in ()).throw(
@@ -479,8 +480,9 @@ def test_review_delete_json_without_yes_is_usage_exit(monkeypatch):
 
     result = runner.invoke(main.app, ["braindump", "review-delete", BD_ID, "--json"])
 
-    assert result.exit_code == 2
-    assert result.stdout == ""
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["executed"] is False
+
 
 
 # -- complete ----------------------------------------------------------------------------------
@@ -505,7 +507,7 @@ def test_complete_with_yes(monkeypatch):
     assert "completed braindump" in result.stdout
 
 
-def test_complete_declined_prompt_performs_no_write(monkeypatch):
+def test_complete_defaults_to_preview_without_a_prompt(monkeypatch):
     _setup(monkeypatch)
     monkeypatch.setattr(
         main, "build_braindump_complete", lambda cfg, braindump_id, *, reason: (_ for _ in ()).throw(
@@ -515,10 +517,11 @@ def test_complete_declined_prompt_performs_no_write(monkeypatch):
 
     result = runner.invoke(main.app, ["braindump", "complete", BD_ID, "--reason", "done"], input="n\n")
 
-    assert result.exit_code == 2
+    assert result.exit_code == 0
 
 
-def test_complete_json_without_yes_is_usage_exit(monkeypatch):
+
+def test_complete_json_without_execution_selection_returns_a_preview(monkeypatch):
     _setup(monkeypatch)
     monkeypatch.setattr(
         main, "build_braindump_complete", lambda cfg, braindump_id, *, reason: (_ for _ in ()).throw(
@@ -528,8 +531,9 @@ def test_complete_json_without_yes_is_usage_exit(monkeypatch):
 
     result = runner.invoke(main.app, ["braindump", "complete", BD_ID, "--reason", "done", "--json"])
 
-    assert result.exit_code == 2
-    assert result.stdout == ""
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["executed"] is False
+
 
 
 def test_complete_ineligible_is_failure_exit(monkeypatch):

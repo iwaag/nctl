@@ -95,8 +95,8 @@ def test_retired_absent_lxc_plans_one_capability_gated_destroy_action_and_no_obs
 def test_destroy_surface_exposes_only_the_bounded_capability_and_playbook():
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
     sources = "\n".join(path.read_text() for path in root.joinpath("src").rglob("*.py"))
-    assert "--allow-destroy" in sources
-    assert "destroy_capability_not_enabled" in sources
+    assert "--allow-destroy" not in sources
+    assert "destroy_capability_not_enabled" not in sources
     assert handler_for("destroy_compute_instance") is not None
     playbook = root.parent / "ansible_agdev/playbooks/proxmox/destroy_lxc.yml"
     content = playbook.read_text()

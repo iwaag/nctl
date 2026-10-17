@@ -45,12 +45,9 @@ class ReconcileData(BaseModel):
     mode: str
     # Capability supplied to this operation. This is durable evidence of the
     # invocation, never a planner field or persisted permission.
-    allow_destroy: bool = False
     # project_migration p5: the host set every action must stay within, when the
     # caller gave one (`--allowed-hosts`), and in plan mode the planned actions
     # that fall outside it (apply mode refuses them before dispatch).
-    allowed_hosts: list[str] | None = None
-    outside_allowed_hosts: list[dict[str, Any]] = Field(default_factory=list)
     scope: PlanScope
     state: str = "failed"
     event_log_path: str
