@@ -19,6 +19,7 @@ _REPO_PROFILE_NAMES = {
     "manual_toolchain",
     "nfs_client",
     "nfs_server",
+    "wfe_worker",
     "nomad_client",
     "nomad_server",
     "ollama",
@@ -55,6 +56,9 @@ def test_real_repo_file_validates(tmp_path):
     assert entries["comfyui"].observe_only is True
     assert [check.kind for check in entries["comfyui"].checks] == ["http", "file_exists"]
     assert entries["comfyui"].checks[1].path == "~/StabilityMatrix/Packages/ComfyUI"
+    # project_migration p7: a remote WFE execution node, installed by its playbook.
+    assert entries["wfe_worker"].action.kind == "playbook"
+    assert [check.kind for check in entries["wfe_worker"].checks] == ["file_exists"]
     assert entries["ollama"].checks[0].paths == ["/v1/models", "/api/tags"]
     assert entries["nomad_client"].dependencies == ["nomad_server"]
     assert entries["prometheus_node_exporter"].dependencies == ["prometheus"]
