@@ -470,15 +470,15 @@ def test_service_profile_action_excludes_manual_placement_hosts():
     svc = _service("s1", "agautolab")
     placements = [
         _placement(
-            "p1", service_id="s1", node_id="n1", deployment_profile="autolab_node"
+            "p1", service_id="s1", node_id="n1", deployment_profile="agag_agent"
         ).model_copy(update={"management_mode": "manual"}),
-        _placement("p2", service_id="s1", node_id="n2", deployment_profile="autolab_node"),
+        _placement("p2", service_id="s1", node_id="n2", deployment_profile="agag_agent"),
     ]
     snapshot = _snapshot(nodes=[agstudio, agautolab1], services=[svc], placements=placements)
     reconciliation = {
-        "autolab_node": ProfileReconciliation(
+        "agag_agent": ProfileReconciliation(
             action=ProfileAction(
-                kind="playbook", playbook="playbooks/agent/setup_autolab_node.yml"
+                kind="playbook", playbook="playbooks/agent/setup_agag_agent.yml"
             )
         )
     }
