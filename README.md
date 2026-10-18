@@ -67,6 +67,7 @@ export NAUTOBOT_TOKEN=...           # or set nautobot.token_file
 
 - [`register a new PC`](docs/register-a-new-pc.md) — new machine to converged, intent-only.
 - [`add a basic service`](docs/add-a-basic-service.md) — place a service on an existing node.
+- [`add a PC as a WFE execution node`](docs/add-a-wfe-worker.md) — a registered PC performs workflow runs for the coordinator.
 - [`add / retire a Proxmox LXC guest`](docs/add-and-retire-proxmox-lxc.md) — compute-backed guest
   creation and destruction workflow.
 - [`state bundle`](docs/state-bundle.md) — the cluster's desired/actual state as one downloadable
